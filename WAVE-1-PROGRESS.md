@@ -1,0 +1,65 @@
+# LLM Wire Wave 1 Progress
+
+## Current Milestone: M9 - Full Project Gates Verification & Wave 1 Reporting
+
+### Status
+
+- [x] **M0: Baseline & Safety Verification**
+  - Repository baseline recorded: `/code/gleam-dream/llm_wire` unborn `master`.
+  - Toolchain verified: Gleam 1.18.1, OTP 28, rebar 3.27.0.
+  - Sibling repository status inspected: `relay` uncommitted dependency additions preserved; sibling repos and `oversight` are strictly read-only.
+- [x] **M1: Package and Toolchain Scaffold**
+  - Created `gleam.toml`, `flake.nix`, `flake.lock`, `lefthook.yml`, `.gitignore`, `.envrc`, `AGENTS.md`, `CLAUDE.md`, `README.md`.
+  - Resolved dependencies and verified dev shell (`gleam check --target erlang`).
+  - Verified `agent-lsp` at `/etc/profiles/per-user/edgar/bin/agent-lsp`.
+- [x] **M2: Public Typed Facade & Domain Core Types**
+  - Implemented `src/llm_wire/types.gleam` and facade `src/llm_wire.gleam`.
+  - Defined checked constructors for `ModelId`, `CallId`, `ToolName`, `ApiKey`, `Endpoint`.
+  - Defined checked bounds for `Limits` and `Deadlines`.
+  - Defined `WireError` hierarchy, `StreamProgress`, `Outcome`, `TerminalOutcome`, `RetryEvidence`, `RetryClassification`.
+  - Added TDD tests in `test/llm_wire_types_test.gleam` (all passing).
+- [x] **M3: Pure Bounded SSE Framer**
+  - Implemented `src/llm_wire/sse.gleam` operating purely on `BitArray` fragments.
+  - Handles LF, CRLF, split CRLF across chunk boundaries, split multi-byte UTF-8, comment lines, `event`, `data`, `id`, `retry`, multiline data, blank lines, and incomplete EOF.
+  - Enforces `chunk_bytes_limit`, `line_bytes_limit`, and `event_bytes_limit` before buffer growth.
+  - Added 18 unit tests in `test/llm_wire_sse_test.gleam` including byte-by-byte split tests and split multi-byte emoji tests (all passing).
+- [x] **M4: OpenAI Wire Decoder & Semantic Reducer**
+  - Implemented `src/llm_wire/openai.gleam` for OpenAI Responses streaming protocol.
+  - Maps `item_id` and `output_index` routing coordinates to application `CallId`.
+  - Supports interleaved output items and interleaved tool calls with identical names.
+  - Accumulates tool call argument fragments and validates JSON before emitting `ToolCallCompleted`.
+  - Enforces text per-block limits, total text limits, argument per-call limits, total argument limits, active block limits.
+  - Handles `response.created`, `response.output_item.added`, `response.output_text.delta`, `response.function_call_arguments.delta`, `response.output_item.done`, `response.completed`, `error`, and unknown extensions.
+  - Added unit tests in `test/llm_wire_openai_test.gleam` (all passing).
+- [x] **M5: Anthropic Wire Decoder & Semantic Reducer**
+  - Implemented `src/llm_wire/anthropic.gleam` for Anthropic Messages streaming protocol.
+  - Maps content block indices to application `CallId`s.
+  - Ignores `ping` events and distinguishes `server_tool_use` from application `tool_use`.
+  - Replaces cumulative output token usage snapshots on `message_delta` without summing.
+  - Accumulates argument fragments and validates full JSON on `content_block_stop`.
+  - Handles `max_tokens` (`OutputLimited`), `end_turn`, `tool_use`, `error`, and unknown extensions.
+  - Added unit tests in `test/llm_wire_anthropic_test.gleam` (all passing).
+- [x] **M6: OTP Stream Owner & Concurrency Mechanics**
+  - Implemented single OTP Stream Owner actor in `src/llm_wire/owner.gleam`.
+  - Enforces queue count and queue bytes limits.
+  - Serializes reader calls: exactly one outstanding credited read allowed, returning `ConcurrentReadConflict` on race.
+  - Shared state across copied handles: closing one handle closes all copies.
+  - Idempotent cleanup: transport `close` and timers cancelled exactly once across double close, cancellation, or completion.
+  - Independent Overall and Idle deadline timers: resetting idle timer strictly on accepted semantic progress.
+  - Added unit tests in `test/llm_wire_owner_test.gleam` (all 38 test suites passing).
+- [x] **M7: In-Process Fake HTTP/SSE Server & Real Transport Integration**
+  - Built ephemeral in-process loopback HTTP/SSE server in `test/fake_server.gleam`.
+  - Built real TCP HTTP client with credit-based streaming in `src/llm_wire/transport.gleam` and `src/llm_wire/client.gleam`.
+  - Built real TCP tests in `test/llm_wire_integration_test.gleam` covering:
+    - Real HTTP streaming with OpenAI Responses
+    - Real HTTP streaming with Anthropic Messages
+    - Real HTTP status failure before stream setup (HTTP 429)
+    - Socket disconnect mid-stream with retry evidence assertions
+    - Socket disconnect before first byte with non-retryable classification
+  - All 43 test suites across the package passing cleanly.
+- [x] **M8: Oracle & Design Coverage Ledgers**
+  - Created `test/oracle/README.md` tracking ReqLLM v1.24.0, Jido AI v2.3.0, and provider fixtures with column schema.
+  - Created `DESIGN-COVERAGE.md` mapping all sections of `oversight/llm-design.md` with explicit preservation of all deferred backlog capabilities.
+- [/] **M9: Full Project Gates Verification & Final Wave 1 Report**
+  - Executing full verification commands (`gleam format --check`, `gleam check`, `gleam test`, `nix flake check`, `git diff --check`, `git status --short --branch`).
+  - Authoring comprehensive `WAVE-1-REPORT.md`.
