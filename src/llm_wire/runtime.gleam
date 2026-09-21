@@ -1,0 +1,54 @@
+import gleam/option.{None}
+import gleam/result
+import llm_wire/api
+import llm_wire/internal/client
+import llm_wire/owner
+import llm_wire/types
+
+pub fn stream(
+  prepared: api.PreparedCall,
+  limits: types.Limits,
+  deadlines: types.Deadlines,
+) -> Result(owner.Stream, types.WireError) {
+  client.open_prepared_stream(prepared, limits, deadlines, None)
+}
+
+pub fn run(
+  prepared: api.PreparedCall,
+  limits: types.Limits,
+  deadlines: types.Deadlines,
+) -> Result(api.RunResult, types.WireError) {
+  use stream <- result.try(stream(prepared, limits, deadlines))
+  api.collect_run(stream, prepared, deadlines.read_timeout_ms)
+}
+
+pub fn stream_structured(
+  prepared: api.PreparedStructuredCall(output),
+  limits: types.Limits,
+  deadlines: types.Deadlines,
+) -> Result(owner.Stream, types.WireError) {
+  stream(api.structured_prepared_call(prepared), limits, deadlines)
+}
+
+pub fn run_structured(
+  prepared: api.PreparedStructuredCall(output),
+  limits: types.Limits,
+  deadlines: types.Deadlines,
+) -> Result(api.StructuredRunResult(output), types.WireError) {
+  use run_result <- result.try(run(
+    api.structured_prepared_call(prepared),
+    limits,
+    deadlines,
+  ))
+  case run_result {
+    api.RunText(text, usage) -> {
+      use output <- result.try(api.decode_structured_output(prepared, text))
+      Ok(api.StructuredValue(output, text, usage))
+    }
+    api.RunToolCalls(calls, continuation, usage) ->
+      Ok(api.StructuredNeedsTools(calls, continuation, usage))
+    api.RunOutputLimited(text, calls, usage) ->
+      Ok(api.StructuredOutputLimited(text, calls, usage))
+    api.RunRefusal(reason) -> Ok(api.StructuredRefusal(reason))
+  }
+}

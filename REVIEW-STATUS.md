@@ -1,46 +1,42 @@
-# LLM Wire Wave 1 Review
+# LLM Wire Wave 2 correction final review
+
+- **Baseline:** `e5b7b0b` plus the complete staged, unstaged, and untracked tree in `/code/gleam-dream/llm_wire`.
+- **Scope:** focused verification of the two residual findings in `llm-wire-wave2-rereview.md`, plus the external root-facade consumer.
 
 ## Verdict
 
-- **Acceptance: FAIL.** The staged tree compiles and its 43 tests pass, but the first-wave acceptance contract is not met. This result is suitable only as a checkpoint for further implementation.
-- The local byte-to-SSE-to-provider-to-owner path exists for OpenAI and Anthropic fixtures. The blockers are schema admission, public facade honesty, bounded transport ownership, terminal precedence, retry evidence, and process cleanup.
+- **Accept the seven-blocker correction subset.** The raw network paths now require an opaque `api.PreparedCall`, and the schema projection now matches Blueprint's canonical nullable representation.
+- **Do not mark full Wave 2 complete.** Google, connection pooling/reuse, the strict pre-allocation response-header cap, the broader process-race and provider/transport fragmentation matrix, duplicate JSON-member coverage, and complete selected-oracle inventory remain open in `WAVE-2-REPORT.md`.
 
-## Blocking findings
+## Adherence
 
-- **Critical — application tool calls bypass their Blueprint contracts.** `ToolDefinition` carries a Blueprint schema in `src/llm_wire/types.gleam:233`, but no declared-tool catalog or schema validator reaches either reducer. OpenAI emits `ToolCallCompleted` after syntax-only `json.parse(..., decode.dynamic)` at `src/llm_wire/openai.gleam:510`, and Anthropic does the same at `src/llm_wire/anthropic.gleam:559`. A syntactically valid value that violates the declared schema is therefore dispatchable. `DESIGN-COVERAGE.md:26` incorrectly reports this path as implemented and tested. Proposed cure: `(in-place-fix, now)`.
-- **Critical — the public facade does not model or expose the promised interaction lifecycle.** `src/llm_wire.gleam:1-100` re-exports only types and checked constructors. It exposes no provider configuration constructor, prepared interaction, request preparation, streamed or buffered execution, `Stream`, `next`, `close`, structured output, or continuation. The lower-level `client` API accepts a caller-built JSON body and raw host/path values, so it cannot prove that admitted schemas, model identity, messages, or options were transmitted. This misses the work order's compile-green facade and the design's `prepare`/`StartedTurn`/`prepare_continue` contracts. Proposed cure: `(design-change, now)`.
-- **High — flow control does not bound the transport mailbox or outstanding reads.** The owner sends `request_more` whenever its queue is below half full at `src/llm_wire/owner.gleam:619`, without recording an outstanding credit. The reader accumulates every credit at `src/llm_wire/transport.gleam:216-235` and `src/llm_wire/transport.gleam:297-304`, so one read can authorize an arbitrary later burst of socket reads and `FeedChunk` messages. The actor mailbox itself has no byte or count admission. The existing queue test injects three chunks directly (`test/llm_wire_owner_test.gleam:173-224`) and does not test socket backpressure, maximum queue bytes, transport read count, or mailbox growth. Proposed cure: `(design-change, now)`.
-- **High — allocation limits are checked after some growth and do not cover event bursts or HTTP headers.** `sse.feed` appends the retained partial line and the new chunk before checking their combined line size at `src/llm_wire/sse.gleam:54`; it also materializes every event from one chunk before the owner applies semantic queue limits at `src/llm_wire/sse.gleam:117-121`. HTTP setup appends response bytes recursively with no header/body bound at `src/llm_wire/transport.gleam:105-130`. These paths contradict the report's pre-allocation claim and leave a burst allocation outside the owner queue bounds. Proposed cure: `(in-place-fix, now)`.
-- **High — consumer and owner cleanup is incomplete.** A timed-out `next` returns `ReadTimeout` at `src/llm_wire/owner.gleam:161-172` but leaves the pending read registered at `src/llm_wire/owner.gleam:285-290`, so the same live caller receives `ConcurrentReadConflict` on its next attempt. The consumer is monitored only while a read is parked; death between reads is invisible. Terminal delivery and explicit close continue the owner instead of stopping it (`src/llm_wire/owner.gleam:301-338`, `src/llm_wire/owner.gleam:458-483`), and the transport reader is spawned unlinked and unmonitored at `src/llm_wire/transport.gleam:182-204`. Owner death can therefore leave the socket reader alive. Existing tests do not assert owner termination, transport termination, close-during-read races, or no surviving child. Proposed cure: `(design-change, now)`.
-- **High — provider routing and completion checks accept contradictory state.** OpenAI resolves a supplied `item_id` without checking a simultaneously supplied `output_index` at `src/llm_wire/openai.gleam:706-725`; duplicate `output_index` starts overwrite the index map at `src/llm_wire/openai.gleam:194-199`. Text blocks have no completion state, and `response.completed` checks only tool buffers at `src/llm_wire/openai.gleam:583-604`, so an incomplete known text block can become a successful terminal outcome. Anthropic dispatches deltas by the stored block alone and does not require the wire `delta.type` to match that block at `src/llm_wire/anthropic.gleam:351-507`. These omissions violate the required mismatched-key, incomplete-block, and malformed-known-event failures. Proposed cure: `(in-place-fix, now)`.
-- **High — first-terminal precedence can be replaced by a queue failure.** Both provider reducers set a terminal before returning final progress; OpenAI may return a `UsageUpdate` with completion at `src/llm_wire/openai.gleam:648-659`. The owner ingests that progress before sealing the terminal at `src/llm_wire/owner.gleam:365-381`. If the queue is full, `ingest_progress` returns a resource failure and `fail_stream` replaces the already accepted provider terminal. Terminal enqueue then bypasses the queue checks entirely at `src/llm_wire/owner.gleam:458-483`. Proposed cure: `(in-place-fix, now)`.
-- **High — ambiguous hosted effects never produce `EffectUnknown`.** `EffectUnknown` exists only in the type declaration at `src/llm_wire/types.gleam:259-263`. Every failure and cancellation path constructs `RequestMayHaveReachedProvider`, including after Anthropic `server_tool_use` or an application tool request (`src/llm_wire/owner.gleam:488-501`, `src/llm_wire/anthropic.gleam:753-774`). No hosted-effect disconnect test exists. Automatic retry is absent, which is safe, but the required evidence classification is not implemented. Proposed cure: `(in-place-fix, now)`.
+- The transport bypass is closed without relying on module-name privacy. `api.PreparedCall` is opaque at `src/llm_wire/api.gleam:23-38`; preparation alone constructs it after provider option, schema, header, route, and request-size admission at `api.gleam:349-423`.
+- Every public network path requires that opaque value. `runtime.stream` passes it to `internal/client.open_prepared_stream` (`runtime.gleam:8-14`); the client passes it to `internal/transport.connect_and_stream` (`internal/client.gleam:10-20,47-62`); the transport passes it to `api.connect_prepared_and_stream` (`internal/transport.gleam:21-51`). The final API function reads host, port, path, headers, and body only from the prepared value at `api.gleam:159-214`.
+- Caller-selected TLS cannot weaken a remote request. `api.gleam:216-255` permits plaintext and a caller CA only for loopback hosts; remote hosts require `VerifySystem`. Public prepared-value accessors expose copies for inspection but provide no constructor, field update, or replacement path.
+- Nullable schema parity is closed. `schema.gleam:45-60` emits Blueprint's canonical null-first `anyOf`; `llm_wire_api_test.gleam:80-110` compares every admitted recursive constructor, including nested nullable forms, with `codec.schema_value` after JSON parsing.
 
-## Scope and evidence findings
+## Spec
 
-- **Medium — the transport test proves a narrow loopback HTTP/1.1 path.** `transport.gleam` sends plaintext TCP and treats bytes after the response headers as raw SSE. It does not implement TLS, HTTP chunked transfer decoding, content encoding, or an HTTP header limit (`src/llm_wire/transport.gleam:19-103`). The fake server returns a connection-close body without chunk framing (`test/fake_server.gleam:69-92`). This is adequate evidence for the requested local TCP vertical, but it is not an OpenAI or Anthropic production transport and must be recorded as deferred rather than advertised as a provider client. Setup also uses `read_timeout_ms` independently for connect and each header receive (`src/llm_wire/client.gleam:31-42`, `src/llm_wire/transport.gleam:105-130`) instead of carrying the remaining overall deadline. Proposed cure: `(in-place-fix, tracked)` for production transport; `(in-place-fix, now)` for scope claims and deadline propagation.
-- **Medium — the ledgers overstate evidence and omit required cases.** `DESIGN-COVERAGE.md:26`, `:39`, and `:42` claim tested schema validation, pre-allocation bounds, and caller cleanup that the code/tests do not establish. `test/oracle/README.md:32-50` samples nine ReqLLM/provider cases rather than inventorying every case in the selected oracle files, and several recorded local case names do not exist. Missing deterministic cases include every split point for provider frames, slow-consumer socket backpressure, stalls before/after progress, close races, transport/owner death, disconnect during tool arguments or after hosted effects, duplicate terminal/data-after-terminal through the owner, exact cleanup attempts on every terminal path, and maximum queue bytes. Proposed cure: `(in-place-fix, now)`.
+- `test/external_package_boundary.sh:23-38` compiled a separate package that prepares through the root `llm_wire` facade.
+- The negative dependent package at `test/external_package_boundary.sh:40-107` failed compilation when it tried to fabricate `PreparedCall`, pass a string body to the prepared client, call the removed raw client entry, or pass raw destination/header/body fields to the transport. The failures reached each intended symbol and type boundary.
+- The root facade remains usable through the package-supported path. No arbitrary body, authorization header, destination, or weakened remote TLS mode crosses a public network entry.
 
-## Clean findings and deferred scope
+## Standards
 
-- Ordinary provider envelopes use `gleam_json`; Blueprint appears only on the schema-bearing `ToolDefinition`. That dependency boundary is correct, although schema validation is not wired into execution.
-- Partial tool argument fragments are retained internally and are not emitted as `ToolCallCompleted` until block completion and JSON syntax validation. The missing Blueprint validation still blocks dispatch safety.
-- OpenAI and Anthropic keep provider routing coordinates separate from application `CallId` values in their state models. Interleaved tool-call fixtures preserve distinct call IDs, subject to the routing-consistency defect above.
-- Google, multimodal input, WebSocket/realtime, ReqLLM FFI, observations, remote background cancellation, and generated Blueprint codecs may remain deferred. Generated-code freshness is inapplicable because this wave generated no codec. Production schema profiles may remain backlog; local scripted schema admission and validation may not.
-- No automatic retry path exists. The defect is the evidence classification, not an unsafe replay implementation.
+- No new repository-rule violation was found. This review changed no LLM Wire source and created no commit.
+
+## Craft
+
+- The external-package regression fixes the prior test-scope defect because its positive and negative consumers compile as dependents rather than as modules inside `llm_wire`.
+- The schema regression fixes the prior single-fixture defect with a recursive constructor table and canonical structural comparison. No residual finding remains in the focused scope.
 
 ## Independent checks
 
-- `nix develop --command gleam format --check src test`: **PASS**.
-- `nix develop --command gleam check --target erlang`: **PASS**.
-- `nix develop --command gleam test --target erlang`: **PASS**, 43 tests.
-- `nix flake check`: **PASS**, but `flake.nix:46` defines formatting as its only check; it does not compile or run tests.
-- `git diff --check`: **PASS**.
-- Repository state: unborn `master`, all implementation files staged, no remote listed.
+- `nix develop --command sh test/external_package_boundary.sh`: passed. The external root consumer compiled; every raw-call probe failed at the prepared-call boundary.
+- `nix develop --command gleam test --target erlang`: passed, 92 tests.
+- `git diff --check`: passed.
 
-## Axis result
+## Routing
 
-- **Adherence:** FAIL. The staged system diverges from the schema, ownership, continuation, boundedness, cleanup, and terminal contracts listed above.
-- **Spec:** FAIL. The byte/reducer vertical exists, but multiple explicit first-checkpoint gates remain unimplemented or unproved.
-- **Standards:** PASS for the documented repository tooling rules; formatter, compiler, tests, and formatting flake check pass.
-- **Craft:** FAIL. The test suite is green but omits adversarial cases at the exact seams where the implementation is unsafe, and the durable reports assert stronger behavior than the code proves.
+- No `(cure-class, timing)` proposal remains for the two residual findings.
+- The correction subset is accepted. The separately recorded full-wave work remains tracked and was not reopened by this focused review.

@@ -3,6 +3,8 @@ version = "0.1.0"
 target = "erlang"
 gleam = ">= 1.18.0"
 
+internal_modules = ["llm_wire/internal", "llm_wire/internal/*"]
+
 [dependencies]
 gleam_stdlib = ">= 0.70.0 and < 1.0.0"
 gleam_json = ">= 3.0.0 and < 4.0.0"
@@ -10,6 +12,10 @@ gleam_erlang = ">= 1.0.0 and < 2.0.0"
 gleam_otp = ">= 1.0.0 and < 2.0.0"
 json_blueprint = { path = "../json_blueprint" }
 sinal = { path = "../sinal" }
+gun = ">= 2.6.0 and < 3.0.0"
+gleam_http = ">= 4.4.0 and < 5.0.0"
 
 [dev-dependencies]
+anthropic_gleam = ">= 0.1.1 and < 1.0.0"
 gleeunit = ">= 1.0.0 and < 2.0.0"
+mist = ">= 6.0.2 and < 7.0.0"

@@ -51,9 +51,34 @@ pub fn feed(
         chunk_size,
       ))
     False -> {
-      let combined = bit_array.append(framer.buffer, chunk)
-      parse_lines(framer, combined, [])
+      let buf_len = bit_array.byte_size(framer.buffer)
+      let pending_line_len = case find_first_terminator_offset(chunk, 0) {
+        Some(offset) -> buf_len + offset
+        None -> buf_len + chunk_size
+      }
+      case pending_line_len > framer.limits.line_bytes_limit {
+        True ->
+          Error(types.ResourceLimitExceeded(
+            "line_bytes_limit",
+            framer.limits.line_bytes_limit,
+            pending_line_len,
+          ))
+        False -> {
+          let combined = bit_array.append(framer.buffer, chunk)
+          parse_lines(framer, combined, [], 0)
+        }
+      }
     }
+  }
+}
+
+fn find_first_terminator_offset(chunk: BitArray, offset: Int) -> Option(Int) {
+  case chunk {
+    <<_:bytes-size(offset), 13, _:bits>> -> Some(offset)
+    <<_:bytes-size(offset), 10, _:bits>> -> Some(offset)
+    <<_:bytes-size(offset), _:size(8), _:bits>> ->
+      find_first_terminator_offset(chunk, offset + 1)
+    _ -> None
   }
 }
 
@@ -83,6 +108,7 @@ fn parse_lines(
   framer: Framer,
   buffer: BitArray,
   emitted: List(ServerSentEvent),
+  emitted_count: Int,
 ) -> Result(#(Framer, List(ServerSentEvent)), types.WireError) {
   case extract_line(buffer) {
     EndOfBuffer(remaining) -> {
@@ -94,7 +120,8 @@ fn parse_lines(
             framer.limits.line_bytes_limit,
             remaining_size,
           ))
-        False -> Ok(#(Framer(..framer, buffer: remaining), emitted))
+        False ->
+          Ok(#(Framer(..framer, buffer: remaining), list.reverse(emitted)))
       }
     }
     LineFound(raw_line, remaining) -> {
@@ -115,10 +142,28 @@ fn parse_lines(
                 Error(e) -> Error(e)
                 Ok(#(next_framer, maybe_event)) -> {
                   let next_emitted = case maybe_event {
-                    Some(ev) -> list.append(emitted, [ev])
+                    Some(ev) -> [ev, ..emitted]
                     None -> emitted
                   }
-                  parse_lines(next_framer, remaining, next_emitted)
+                  let next_count = case maybe_event {
+                    Some(_) -> emitted_count + 1
+                    None -> emitted_count
+                  }
+                  case next_count > framer.limits.queue_count_limit {
+                    True ->
+                      Error(types.ResourceLimitExceeded(
+                        "events_per_chunk_limit",
+                        framer.limits.queue_count_limit,
+                        next_count,
+                      ))
+                    False ->
+                      parse_lines(
+                        next_framer,
+                        remaining,
+                        next_emitted,
+                        next_count,
+                      )
+                  }
                 }
               }
             }

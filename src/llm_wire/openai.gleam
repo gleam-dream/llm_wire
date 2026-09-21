@@ -1,8 +1,10 @@
 import gleam/dict.{type Dict}
 import gleam/dynamic/decode
+import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import llm_wire/sse
 import llm_wire/types
@@ -10,11 +12,19 @@ import llm_wire/types
 pub opaque type Reducer {
   Reducer(
     limits: types.Limits,
+    admitted_tools: List(types.ToolDefinition),
     text_buffers: Dict(String, String),
     text_order: List(String),
+    text_done: Dict(String, Bool),
+    refusal_buffers: Dict(String, String),
+    refusal_order: List(String),
+    reasoning_buffers: Dict(String, String),
+    reasoning_order: List(String),
+    reasoning_done: Dict(String, Bool),
     tool_buffers: Dict(String, ToolBuffer),
     tool_order: List(String),
     index_to_item_id: Dict(Int, String),
+    seen_call_ids: List(String),
     active_blocks_count: Int,
     total_text_bytes: Int,
     total_argument_bytes: Int,
@@ -36,11 +46,19 @@ type ToolBuffer {
 pub fn new(limits: types.Limits) -> Reducer {
   Reducer(
     limits: limits,
+    admitted_tools: [],
     text_buffers: dict.new(),
     text_order: [],
+    text_done: dict.new(),
+    refusal_buffers: dict.new(),
+    refusal_order: [],
+    reasoning_buffers: dict.new(),
+    reasoning_order: [],
+    reasoning_done: dict.new(),
     tool_buffers: dict.new(),
     tool_order: [],
     index_to_item_id: dict.new(),
+    seen_call_ids: [],
     active_blocks_count: 0,
     total_text_bytes: 0,
     total_argument_bytes: 0,
@@ -50,8 +68,37 @@ pub fn new(limits: types.Limits) -> Reducer {
   )
 }
 
+pub fn new_with_tools(
+  limits: types.Limits,
+  tools: List(types.ToolDefinition),
+) -> Result(Reducer, types.WireError) {
+  case types.admit_tool_catalog(tools) {
+    Error(error) -> Error(error)
+    Ok(admitted) -> Ok(Reducer(..new(limits), admitted_tools: admitted))
+  }
+}
+
 pub fn terminal(reducer: Reducer) -> Option(types.TerminalOutcome) {
   reducer.terminal_outcome
+}
+
+pub fn retry_evidence(
+  reducer: Reducer,
+  fallback_classification: types.RetryClassification,
+) -> types.RetryEvidence {
+  let classification = case reducer.semantic_progress_observed {
+    True ->
+      case list.is_empty(reducer.tool_order) {
+        False -> types.EffectUnknown
+        True -> fallback_classification
+      }
+    False -> fallback_classification
+  }
+  types.RetryEvidence(
+    classification: classification,
+    response_bytes_observed: reducer.response_bytes_observed,
+    semantic_progress_observed: reducer.semantic_progress_observed,
+  )
 }
 
 pub fn step(
@@ -72,6 +119,12 @@ pub fn step(
 
         Some("response.output_text.delta") | Some("response.text.delta") ->
           handle_output_text_delta(with_bytes, event.data)
+
+        Some("response.refusal.delta") ->
+          handle_refusal_delta(with_bytes, event.data)
+
+        Some("response.reasoning_summary_text.delta") ->
+          handle_reasoning_delta(with_bytes, event.data)
 
         Some("response.function_call_arguments.delta") ->
           handle_function_arguments_delta(with_bytes, event.data)
@@ -182,87 +235,156 @@ fn handle_output_item_added(
             reducer.active_blocks_count + 1,
           ))
         False -> {
-          case
-            dict.has_key(reducer.text_buffers, added.item_id)
-            || dict.has_key(reducer.tool_buffers, added.item_id)
-          {
+          case dict.has_key(reducer.index_to_item_id, added.output_index) {
             True ->
               Error(types.ProtocolError(
-                "Duplicate output item id: " <> added.item_id,
+                "Duplicate output_index in output_item.added: "
+                <> int.to_string(added.output_index),
               ))
             False -> {
-              let updated_indices =
-                dict.insert(
-                  reducer.index_to_item_id,
-                  added.output_index,
-                  added.item_id,
-                )
-              case added.item_type {
-                "message" -> {
-                  let updated_text =
-                    dict.insert(reducer.text_buffers, added.item_id, "")
-                  let updated_order =
-                    list.append(reducer.text_order, [added.item_id])
-                  Ok(
-                    #(
-                      Reducer(
-                        ..reducer,
-                        text_buffers: updated_text,
-                        text_order: updated_order,
-                        index_to_item_id: updated_indices,
-                        active_blocks_count: reducer.active_blocks_count + 1,
-                      ),
-                      [],
-                    ),
-                  )
-                }
-                "function_call" -> {
-                  case added.call_id, added.name {
-                    Some(cid), Some(nm) -> {
-                      case types.call_id(cid), types.tool_name(nm) {
-                        Ok(call_id), Ok(tool_name) -> {
-                          let buffer =
-                            ToolBuffer(
-                              call_id: call_id,
-                              name: tool_name,
-                              arguments: "",
-                              is_done: False,
-                            )
-                          let updated_tools =
-                            dict.insert(
-                              reducer.tool_buffers,
-                              added.item_id,
-                              buffer,
-                            )
-                          let updated_order =
-                            list.append(reducer.tool_order, [added.item_id])
-                          Ok(
-                            #(
-                              Reducer(
-                                ..reducer,
-                                tool_buffers: updated_tools,
-                                tool_order: updated_order,
-                                index_to_item_id: updated_indices,
-                                active_blocks_count: reducer.active_blocks_count
-                                  + 1,
-                              ),
-                              [],
-                            ),
-                          )
+              case
+                dict.has_key(reducer.text_buffers, added.item_id)
+                || dict.has_key(reducer.reasoning_buffers, added.item_id)
+                || dict.has_key(reducer.tool_buffers, added.item_id)
+              {
+                True ->
+                  Error(types.ProtocolError(
+                    "Duplicate output item id: " <> added.item_id,
+                  ))
+                False -> {
+                  let updated_indices =
+                    dict.insert(
+                      reducer.index_to_item_id,
+                      added.output_index,
+                      added.item_id,
+                    )
+                  case added.item_type {
+                    "message" -> {
+                      let updated_text =
+                        dict.insert(reducer.text_buffers, added.item_id, "")
+                      let updated_order =
+                        list.append(reducer.text_order, [added.item_id])
+                      let updated_done =
+                        dict.insert(reducer.text_done, added.item_id, False)
+                      Ok(
+                        #(
+                          Reducer(
+                            ..reducer,
+                            text_buffers: updated_text,
+                            text_order: updated_order,
+                            text_done: updated_done,
+                            index_to_item_id: updated_indices,
+                            active_blocks_count: reducer.active_blocks_count + 1,
+                          ),
+                          [],
+                        ),
+                      )
+                    }
+                    "reasoning" -> {
+                      let updated_reasoning =
+                        dict.insert(
+                          reducer.reasoning_buffers,
+                          added.item_id,
+                          "",
+                        )
+                      let updated_order =
+                        list.append(reducer.reasoning_order, [added.item_id])
+                      let updated_done =
+                        dict.insert(
+                          reducer.reasoning_done,
+                          added.item_id,
+                          False,
+                        )
+                      Ok(
+                        #(
+                          Reducer(
+                            ..reducer,
+                            reasoning_buffers: updated_reasoning,
+                            reasoning_order: updated_order,
+                            reasoning_done: updated_done,
+                            index_to_item_id: updated_indices,
+                            active_blocks_count: reducer.active_blocks_count + 1,
+                          ),
+                          [],
+                        ),
+                      )
+                    }
+                    "function_call" -> {
+                      case added.call_id, added.name {
+                        Some(cid), Some(nm) -> {
+                          case list.contains(reducer.seen_call_ids, cid) {
+                            True ->
+                              Error(types.ProtocolError(
+                                "Duplicate tool call id: " <> cid,
+                              ))
+                            False -> {
+                              case
+                                list.any(reducer.admitted_tools, fn(tool) {
+                                  types.tool_definition_name(tool) == nm
+                                })
+                              {
+                                False ->
+                                  Error(types.ProtocolError(
+                                    "Tool call for unadmitted tool: " <> nm,
+                                  ))
+                                True -> {
+                                  case types.call_id(cid), types.tool_name(nm) {
+                                    Ok(call_id), Ok(tool_name) -> {
+                                      let buffer =
+                                        ToolBuffer(
+                                          call_id: call_id,
+                                          name: tool_name,
+                                          arguments: "",
+                                          is_done: False,
+                                        )
+                                      let updated_tools =
+                                        dict.insert(
+                                          reducer.tool_buffers,
+                                          added.item_id,
+                                          buffer,
+                                        )
+                                      let updated_order =
+                                        list.append(reducer.tool_order, [
+                                          added.item_id,
+                                        ])
+                                      let updated_seen_calls = [
+                                        cid,
+                                        ..reducer.seen_call_ids
+                                      ]
+                                      Ok(
+                                        #(
+                                          Reducer(
+                                            ..reducer,
+                                            tool_buffers: updated_tools,
+                                            tool_order: updated_order,
+                                            index_to_item_id: updated_indices,
+                                            seen_call_ids: updated_seen_calls,
+                                            active_blocks_count: reducer.active_blocks_count
+                                              + 1,
+                                          ),
+                                          [],
+                                        ),
+                                      )
+                                    }
+                                    _, _ ->
+                                      Error(types.ProtocolError(
+                                        "Invalid call_id or tool_name in function_call",
+                                      ))
+                                  }
+                                }
+                              }
+                            }
+                          }
                         }
                         _, _ ->
                           Error(types.ProtocolError(
-                            "Invalid call_id or tool_name in function_call",
+                            "function_call missing call_id or name",
                           ))
                       }
                     }
-                    _, _ ->
-                      Error(types.ProtocolError(
-                        "function_call missing call_id or name",
-                      ))
+                    _ -> Ok(#(reducer, []))
                   }
                 }
-                _ -> Ok(#(reducer, []))
               }
             }
           }
@@ -305,59 +427,230 @@ fn handle_output_text_delta(
     Ok(payload) -> {
       case resolve_item_id(reducer, payload.item_id, payload.output_index) {
         Error(err) -> Error(err)
-        Ok(item_id) -> {
-          case dict.get(reducer.text_buffers, item_id) {
-            Error(Nil) ->
-              Error(types.ProtocolError("Unknown text block id: " <> item_id))
-            Ok(existing) -> {
-              let delta_bytes = string.byte_size(payload.delta)
-              let block_bytes = string.byte_size(existing) + delta_bytes
-              let total_bytes = reducer.total_text_bytes + delta_bytes
+        Ok(item_id) ->
+          case dict.get(reducer.text_done, item_id) {
+            Ok(True) ->
+              Error(types.ProtocolError(
+                "Text delta received after message completion",
+              ))
+            _ -> handle_text_delta(reducer, item_id, payload.delta)
+          }
+      }
+    }
+  }
+}
 
-              case block_bytes > reducer.limits.text_bytes_per_block_limit {
-                True ->
-                  Error(types.ResourceLimitExceeded(
-                    "text_bytes_per_block_limit",
-                    reducer.limits.text_bytes_per_block_limit,
-                    block_bytes,
-                  ))
-                False ->
-                  case total_bytes > reducer.limits.total_text_bytes_limit {
-                    True ->
-                      Error(types.ResourceLimitExceeded(
-                        "total_text_bytes_limit",
-                        reducer.limits.total_text_bytes_limit,
-                        total_bytes,
-                      ))
-                    False -> {
-                      let updated_buffers =
-                        dict.insert(
-                          reducer.text_buffers,
-                          item_id,
-                          existing <> payload.delta,
-                        )
-                      Ok(
-                        #(
-                          Reducer(
-                            ..reducer,
-                            text_buffers: updated_buffers,
-                            total_text_bytes: total_bytes,
-                            semantic_progress_observed: True,
-                          ),
-                          [
-                            types.TextDelta(
-                              block_id: item_id,
-                              text: payload.delta,
-                            ),
-                          ],
-                        ),
-                      )
-                    }
-                  }
-              }
+fn handle_text_delta(
+  reducer: Reducer,
+  item_id: String,
+  delta: String,
+) -> Result(#(Reducer, List(types.StreamProgress)), types.WireError) {
+  case dict.get(reducer.text_buffers, item_id) {
+    Error(Nil) ->
+      Error(types.ProtocolError("Unknown text block id: " <> item_id))
+    Ok(existing) -> {
+      let delta_bytes = string.byte_size(delta)
+      let block_bytes = string.byte_size(existing) + delta_bytes
+      let total_bytes = reducer.total_text_bytes + delta_bytes
+
+      case block_bytes > reducer.limits.text_bytes_per_block_limit {
+        True ->
+          Error(types.ResourceLimitExceeded(
+            "text_bytes_per_block_limit",
+            reducer.limits.text_bytes_per_block_limit,
+            block_bytes,
+          ))
+        False ->
+          case total_bytes > reducer.limits.total_text_bytes_limit {
+            True ->
+              Error(types.ResourceLimitExceeded(
+                "total_text_bytes_limit",
+                reducer.limits.total_text_bytes_limit,
+                total_bytes,
+              ))
+            False -> {
+              let updated_buffers =
+                dict.insert(reducer.text_buffers, item_id, existing <> delta)
+              Ok(
+                #(
+                  Reducer(
+                    ..reducer,
+                    text_buffers: updated_buffers,
+                    total_text_bytes: total_bytes,
+                    semantic_progress_observed: True,
+                  ),
+                  [types.TextDelta(block_id: item_id, text: delta)],
+                ),
+              )
             }
           }
-        }
+      }
+    }
+  }
+}
+
+fn handle_refusal_delta(
+  reducer: Reducer,
+  data: String,
+) -> Result(#(Reducer, List(types.StreamProgress)), types.WireError) {
+  case json.parse(data, decode_text_delta()) {
+    Error(_) ->
+      Error(types.ProtocolError("Malformed response.refusal.delta payload"))
+    Ok(payload) -> {
+      case resolve_item_id(reducer, payload.item_id, payload.output_index) {
+        Error(err) -> Error(err)
+        Ok(item_id) ->
+          case dict.get(reducer.text_buffers, item_id) {
+            Error(Nil) ->
+              Error(types.ProtocolError("Unknown refusal block id: " <> item_id))
+            Ok(text_so_far) ->
+              case dict.get(reducer.text_done, item_id) {
+                Ok(True) ->
+                  Error(types.ProtocolError(
+                    "Refusal delta received after message completion",
+                  ))
+                _ -> {
+                  let refusal_so_far = case
+                    dict.get(reducer.refusal_buffers, item_id)
+                  {
+                    Ok(text) -> text
+                    Error(Nil) -> ""
+                  }
+                  let delta_bytes = string.byte_size(payload.delta)
+                  let block_bytes =
+                    string.byte_size(text_so_far)
+                    + string.byte_size(refusal_so_far)
+                    + delta_bytes
+                  let total_bytes = reducer.total_text_bytes + delta_bytes
+                  case block_bytes > reducer.limits.text_bytes_per_block_limit {
+                    True ->
+                      Error(types.ResourceLimitExceeded(
+                        "text_bytes_per_block_limit",
+                        reducer.limits.text_bytes_per_block_limit,
+                        block_bytes,
+                      ))
+                    False ->
+                      case total_bytes > reducer.limits.total_text_bytes_limit {
+                        True ->
+                          Error(types.ResourceLimitExceeded(
+                            "total_text_bytes_limit",
+                            reducer.limits.total_text_bytes_limit,
+                            total_bytes,
+                          ))
+                        False -> {
+                          let updated_buffers =
+                            dict.insert(
+                              reducer.refusal_buffers,
+                              item_id,
+                              refusal_so_far <> payload.delta,
+                            )
+                          let updated_order = case
+                            dict.has_key(reducer.refusal_buffers, item_id)
+                          {
+                            True -> reducer.refusal_order
+                            False ->
+                              list.append(reducer.refusal_order, [item_id])
+                          }
+                          Ok(
+                            #(
+                              Reducer(
+                                ..reducer,
+                                refusal_buffers: updated_buffers,
+                                refusal_order: updated_order,
+                                total_text_bytes: total_bytes,
+                                semantic_progress_observed: True,
+                              ),
+                              [
+                                types.RefusalDelta(
+                                  block_id: item_id,
+                                  text: payload.delta,
+                                ),
+                              ],
+                            ),
+                          )
+                        }
+                      }
+                  }
+                }
+              }
+          }
+      }
+    }
+  }
+}
+
+fn handle_reasoning_delta(
+  reducer: Reducer,
+  data: String,
+) -> Result(#(Reducer, List(types.StreamProgress)), types.WireError) {
+  case json.parse(data, decode_text_delta()) {
+    Error(_) ->
+      Error(types.ProtocolError(
+        "Malformed response.reasoning_summary_text.delta payload",
+      ))
+    Ok(payload) -> {
+      case resolve_item_id(reducer, payload.item_id, payload.output_index) {
+        Error(err) -> Error(err)
+        Ok(item_id) ->
+          case dict.get(reducer.reasoning_buffers, item_id) {
+            Error(Nil) ->
+              Error(types.ProtocolError(
+                "Unknown reasoning block id: " <> item_id,
+              ))
+            Ok(existing) ->
+              case dict.get(reducer.reasoning_done, item_id) {
+                Ok(True) ->
+                  Error(types.ProtocolError(
+                    "Reasoning delta received after block completion",
+                  ))
+                _ -> {
+                  let delta_bytes = string.byte_size(payload.delta)
+                  let block_bytes = string.byte_size(existing) + delta_bytes
+                  let total_bytes = reducer.total_text_bytes + delta_bytes
+                  case block_bytes > reducer.limits.text_bytes_per_block_limit {
+                    True ->
+                      Error(types.ResourceLimitExceeded(
+                        "text_bytes_per_block_limit",
+                        reducer.limits.text_bytes_per_block_limit,
+                        block_bytes,
+                      ))
+                    False ->
+                      case total_bytes > reducer.limits.total_text_bytes_limit {
+                        True ->
+                          Error(types.ResourceLimitExceeded(
+                            "total_text_bytes_limit",
+                            reducer.limits.total_text_bytes_limit,
+                            total_bytes,
+                          ))
+                        False -> {
+                          let updated_buffers =
+                            dict.insert(
+                              reducer.reasoning_buffers,
+                              item_id,
+                              existing <> payload.delta,
+                            )
+                          Ok(
+                            #(
+                              Reducer(
+                                ..reducer,
+                                reasoning_buffers: updated_buffers,
+                                total_text_bytes: total_bytes,
+                                semantic_progress_observed: True,
+                              ),
+                              [
+                                types.ReasoningDelta(
+                                  block_id: item_id,
+                                  text: payload.delta,
+                                ),
+                              ],
+                            ),
+                          )
+                        }
+                      }
+                  }
+                }
+              }
+          }
       }
     }
   }
@@ -507,22 +800,21 @@ fn handle_output_item_done(
                 True ->
                   Error(types.ProtocolError("Duplicate tool block completion"))
                 False -> {
-                  // Validate that arguments is valid JSON document
-                  case json.parse(tool.arguments, decode.dynamic) {
-                    Error(_) ->
-                      Error(types.ProtocolError(
-                        "Invalid JSON in tool call arguments",
+                  let tool_nm = types.tool_name_to_string(tool.name)
+                  case
+                    list.find(reducer.admitted_tools, fn(definition) {
+                      types.tool_definition_name(definition) == tool_nm
+                    })
+                  {
+                    Ok(admitted) -> {
+                      use Nil <- result.try(types.validate_tool_arguments(
+                        admitted,
+                        reducer.limits.argument_bytes_per_call_limit,
+                        tool.arguments,
                       ))
-                    Ok(_) -> {
                       let updated_tool = ToolBuffer(..tool, is_done: True)
                       let updated_buffers =
                         dict.insert(reducer.tool_buffers, item_id, updated_tool)
-                      let call =
-                        types.ToolCall(
-                          id: tool.call_id,
-                          name: tool.name,
-                          arguments_json: tool.arguments,
-                        )
                       Ok(
                         #(
                           Reducer(
@@ -530,16 +822,41 @@ fn handle_output_item_done(
                             tool_buffers: updated_buffers,
                             semantic_progress_observed: True,
                           ),
-                          [types.ToolCallCompleted(call)],
+                          [],
                         ),
                       )
                     }
+                    Error(Nil) ->
+                      Error(types.ProtocolError(
+                        "Tool call for unadmitted tool: " <> tool_nm,
+                      ))
                   }
                 }
               }
             }
-            // If it's a message text block, completing it is a no-op
-            Error(Nil) -> Ok(#(reducer, []))
+            Error(Nil) -> {
+              case dict.get(reducer.text_buffers, item_id) {
+                Ok(_) -> {
+                  let updated_done =
+                    dict.insert(reducer.text_done, item_id, True)
+                  Ok(#(Reducer(..reducer, text_done: updated_done), []))
+                }
+                Error(Nil) ->
+                  case dict.get(reducer.reasoning_buffers, item_id) {
+                    Ok(_) -> {
+                      let updated_done =
+                        dict.insert(reducer.reasoning_done, item_id, True)
+                      Ok(
+                        #(Reducer(..reducer, reasoning_done: updated_done), []),
+                      )
+                    }
+                    Error(Nil) ->
+                      Error(types.ProtocolError(
+                        "Unknown output item completed: " <> item_id,
+                      ))
+                  }
+              }
+            }
           }
         }
       }
@@ -580,6 +897,15 @@ fn handle_response_completed(
     Error(_) ->
       Error(types.ProtocolError("Malformed response.completed payload"))
     Ok(completed) -> {
+      // Check that all started text blocks are finished
+      use Nil <- result.try(check_all_text_completed(
+        reducer.text_done,
+        reducer.text_order,
+      ))
+      use Nil <- result.try(check_all_reasoning_completed(
+        reducer.reasoning_done,
+        reducer.reasoning_order,
+      ))
       // Check that all started tool calls are finished
       case check_all_tools_completed(reducer.tool_buffers) {
         Error(err) -> Error(err)
@@ -587,6 +913,12 @@ fn handle_response_completed(
           let all_text =
             list.filter_map(reducer.text_order, fn(id) {
               dict.get(reducer.text_buffers, id)
+            })
+            |> string.join("")
+
+          let refusal_text =
+            list.filter_map(reducer.refusal_order, fn(id) {
+              dict.get(reducer.refusal_buffers, id)
             })
             |> string.join("")
 
@@ -612,9 +944,15 @@ fn handle_response_completed(
 
           let terminal = case completed.status {
             "completed" -> {
-              let outcome = case all_calls {
-                [] -> types.CompletedText(all_text)
-                _ -> types.CompletedToolCalls(all_text, all_calls)
+              let outcome = case refusal_text, all_calls {
+                refusal, _ if refusal != "" -> types.Refused(refusal)
+                _, [] -> types.CompletedText(all_text)
+                _, _ ->
+                  types.CompletedToolCalls(
+                    all_text,
+                    all_calls,
+                    Some(completed.id),
+                  )
               }
               types.StreamFinished(outcome: outcome, usage: completed.usage)
             }
@@ -631,14 +969,19 @@ fn handle_response_completed(
                 retry: retry_evidence,
               )
             }
-            "cancelled" -> {
-              types.StreamCancelledLocally(retry: retry_evidence)
-            }
+            "cancelled" ->
+              types.StreamFailed(
+                error: types.ProviderError(
+                  code: Some("cancelled"),
+                  message: "Provider cancelled the response",
+                ),
+                retry: retry_evidence,
+              )
             other -> {
               types.StreamFailed(
                 error: types.ProviderError(
                   code: None,
-                  message: "Unknown response completion status: " <> other,
+                  message: "Unknown response status: " <> other,
                 ),
                 retry: retry_evidence,
               )
@@ -708,22 +1051,53 @@ fn resolve_item_id(
   maybe_item_id: Option(String),
   maybe_output_index: Option(Int),
 ) -> Result(String, types.WireError) {
-  case maybe_item_id {
-    Some(id) -> Ok(id)
-    None ->
-      case maybe_output_index {
-        Some(idx) ->
-          case dict.get(reducer.index_to_item_id, idx) {
-            Ok(id) -> Ok(id)
-            Error(Nil) ->
-              Error(types.ProtocolError(
-                "Unmapped output_index: " <> string.inspect(idx),
-              ))
-          }
-        None ->
-          Error(types.ProtocolError("Event missing item_id and output_index"))
+  case maybe_item_id, maybe_output_index {
+    Some(id), Some(idx) ->
+      case dict.get(reducer.index_to_item_id, idx) {
+        Ok(mapped_id) if mapped_id == id -> Ok(id)
+        Ok(_) ->
+          Error(types.ProtocolError(
+            "Contradictory item_id and output_index: item_id="
+            <> id
+            <> ", index="
+            <> int.to_string(idx),
+          ))
+        Error(Nil) ->
+          Error(types.ProtocolError(
+            "Unmapped output_index in delta: " <> int.to_string(idx),
+          ))
       }
+    Some(id), None -> Ok(id)
+    None, Some(idx) ->
+      case dict.get(reducer.index_to_item_id, idx) {
+        Ok(id) -> Ok(id)
+        Error(Nil) ->
+          Error(types.ProtocolError(
+            "Unmapped output_index in delta: " <> int.to_string(idx),
+          ))
+      }
+    None, None ->
+      Error(types.ProtocolError("Event missing item_id and output_index"))
   }
+}
+
+fn check_all_text_completed(
+  text_done: Dict(String, Bool),
+  text_order: List(String),
+) -> Result(Nil, types.WireError) {
+  list.fold(text_order, Ok(Nil), fn(acc, id) {
+    case acc {
+      Error(e) -> Error(e)
+      Ok(Nil) ->
+        case dict.get(text_done, id) {
+          Ok(True) -> Ok(Nil)
+          _ ->
+            Error(types.ProtocolError(
+              "Text block still incomplete at completion: " <> id,
+            ))
+        }
+    }
+  })
 }
 
 fn check_all_tools_completed(
@@ -738,6 +1112,25 @@ fn check_all_tools_completed(
           False ->
             Error(types.ProtocolError(
               "Tool call still incomplete at completion: " <> id,
+            ))
+        }
+    }
+  })
+}
+
+fn check_all_reasoning_completed(
+  reasoning_done: Dict(String, Bool),
+  reasoning_order: List(String),
+) -> Result(Nil, types.WireError) {
+  list.fold(reasoning_order, Ok(Nil), fn(acc, id) {
+    case acc {
+      Error(e) -> Error(e)
+      Ok(Nil) ->
+        case dict.get(reasoning_done, id) {
+          Ok(True) -> Ok(Nil)
+          _ ->
+            Error(types.ProtocolError(
+              "Reasoning block still incomplete at completion: " <> id,
             ))
         }
     }

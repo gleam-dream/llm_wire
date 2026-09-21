@@ -16,6 +16,16 @@ pub fn simple_event_test() {
   ])
 }
 
+pub fn event_burst_is_bounded_before_materializing_unbounded_events_test() {
+  let limits = types.Limits(..types.default_limits(), queue_count_limit: 1)
+  let framer = sse.new(limits)
+  case sse.feed(framer, <<"data: one\n\ndata: two\n\n":utf8>>) {
+    Error(types.ResourceLimitExceeded("events_per_chunk_limit", 1, 2)) ->
+      should.be_true(True)
+    _ -> should.fail()
+  }
+}
+
 pub fn multiline_data_test() {
   let framer = sse.new(types.default_limits())
   let chunk = <<"data: first line\ndata: second line\n\n":utf8>>
@@ -90,6 +100,44 @@ pub fn byte_by_byte_split_test() {
   ])
 }
 
+pub fn representative_frames_survive_every_single_byte_boundary_test() {
+  let cases = [
+    #(
+      "event: response.output_text.delta\ndata: {\"delta\":\"left 🚀 right\"}\n\n",
+      [
+        sse.ServerSentEvent(
+          event: Some("response.output_text.delta"),
+          data: "{\"delta\":\"left 🚀 right\"}",
+          id: None,
+          retry: None,
+        ),
+      ],
+    ),
+    #(
+      ": keepalive\r\nevent: usage\r\ndata: first\r\ndata: second\r\nid: m-1\r\nretry: 3000\r\n\r\n",
+      [
+        sse.ServerSentEvent(
+          event: Some("usage"),
+          data: "first\nsecond",
+          id: Some("m-1"),
+          retry: Some(3000),
+        ),
+      ],
+    ),
+  ]
+  list.each(cases, fn(example) {
+    let #(raw, expected) = example
+    let bits = bit_array.from_string(raw)
+    list.each(split_boundaries(bits), fn(boundary) {
+      let #(before, after) = boundary
+      let framer = sse.new(types.default_limits())
+      let assert Ok(#(framer, left_events)) = sse.feed(framer, before)
+      let assert Ok(#(_framer, right_events)) = sse.feed(framer, after)
+      list.append(left_events, right_events) |> should.equal(expected)
+    })
+  })
+}
+
 pub fn split_utf8_multibyte_test() {
   let framer = sse.new(types.default_limits())
   // The rocket emoji 🚀 is 4 bytes: 0xF0 0x9F 0x99 0x80
@@ -126,6 +174,7 @@ pub fn chunk_limit_test() {
       argument_bytes_per_call_limit: 100,
       total_argument_bytes_limit: 100,
       extension_bytes_limit: 100,
+      response_body_bytes_limit: 100,
     )
   let framer = sse.new(limits)
   let chunk = <<"data: this is longer than ten bytes\n\n":utf8>>
@@ -147,6 +196,7 @@ pub fn line_limit_test() {
       argument_bytes_per_call_limit: 100,
       total_argument_bytes_limit: 100,
       extension_bytes_limit: 100,
+      response_body_bytes_limit: 100,
     )
   let framer = sse.new(limits)
   let chunk = <<
@@ -186,5 +236,18 @@ fn split_bytes(bits: BitArray) -> List(BitArray) {
   case bits {
     <<b:size(8), rest:bits>> -> [<<b:size(8)>>, ..split_bytes(rest)]
     _ -> []
+  }
+}
+
+fn split_boundaries(bits: BitArray) -> List(#(BitArray, BitArray)) {
+  case bits {
+    <<byte:size(8), rest:bits>> -> [
+      #(<<>>, bits),
+      ..list.map(split_boundaries(rest), fn(split) {
+        let #(prefix, suffix) = split
+        #(bit_array.append(<<byte:size(8)>>, prefix), suffix)
+      })
+    ]
+    _ -> [#(<<>>, bits)]
   }
 }

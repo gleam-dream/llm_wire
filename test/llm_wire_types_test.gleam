@@ -68,6 +68,7 @@ pub fn limits_validation_test() {
     argument_bytes_per_call_limit: 10_000,
     total_argument_bytes_limit: 50_000,
     extension_bytes_limit: 2048,
+    response_body_bytes_limit: 100_000,
   )
   |> should.be_ok
 
@@ -83,6 +84,7 @@ pub fn limits_validation_test() {
     argument_bytes_per_call_limit: 10_000,
     total_argument_bytes_limit: 50_000,
     extension_bytes_limit: 2048,
+    response_body_bytes_limit: 100_000,
   )
   |> should.be_error
 }

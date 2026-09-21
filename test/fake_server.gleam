@@ -109,9 +109,18 @@ pub fn send_http_error(
     <> status_text
     <> "\r\nContent-Type: application/json\r\nContent-Length: "
     <> string.inspect(string.byte_size(body))
-    <> "\r\nConnection: close\r\n\r\n"
+    <> "\r\nRetry-After: 3\r\nConnection: close\r\n\r\n"
     <> body
   let res = tcp.send(socket, bit_array.from_string(header))
   tcp.close(socket)
   res
+}
+
+pub fn send_raw_response(
+  socket: tcp.Socket,
+  response: String,
+) -> Result(Nil, String) {
+  let result = tcp.send(socket, bit_array.from_string(response))
+  tcp.close(socket)
+  result
 }

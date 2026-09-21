@@ -3,6 +3,7 @@ import gleeunit/should
 import llm_wire/anthropic
 import llm_wire/sse
 import llm_wire/types
+import tool_fixtures
 
 pub fn anthropic_text_stream_test() {
   let reducer = anthropic.new(types.default_limits())
@@ -118,7 +119,9 @@ pub fn anthropic_text_stream_test() {
 }
 
 pub fn anthropic_tool_use_stream_test() {
-  let reducer = anthropic.new(types.default_limits())
+  let tool = tool_fixtures.string_field_tool("get_stock_price", "symbol")
+  let assert Ok(reducer) =
+    anthropic.new_with_tools(types.default_limits(), [tool])
 
   // message_start
   let ev1 =
@@ -162,7 +165,7 @@ pub fn anthropic_tool_use_stream_test() {
   let assert Ok(#(reducer, p4)) = anthropic.step(reducer, ev4)
   p4 |> should.equal([])
 
-  // content_block_stop index 0 -> closes block, validates JSON, emits ToolCallCompleted!
+  // Closing a block validates it but keeps executable calls private until terminal.
   let ev5 =
     sse.ServerSentEvent(
       event: Some("content_block_stop"),
@@ -173,14 +176,7 @@ pub fn anthropic_tool_use_stream_test() {
   let assert Ok(#(reducer, p5)) = anthropic.step(reducer, ev5)
   let assert Ok(expected_call_id) = types.call_id("toolu_123")
   let assert Ok(expected_tool_name) = types.tool_name("get_stock_price")
-  p5
-  |> should.equal([
-    types.ToolCallCompleted(types.ToolCall(
-      id: expected_call_id,
-      name: expected_tool_name,
-      arguments_json: "{\"symbol\": \"AAPL\"}",
-    )),
-  ])
+  p5 |> should.equal([])
 
   // message_delta
   let ev6 =
@@ -210,7 +206,8 @@ pub fn anthropic_tool_use_stream_test() {
   )
 
   case outcome {
-    types.CompletedToolCalls(_text, calls) -> {
+    types.CompletedToolCalls(_text, calls, response_id) -> {
+      response_id |> should.equal(Some("msg_2"))
       calls
       |> should.equal([
         types.ToolCall(
@@ -225,7 +222,9 @@ pub fn anthropic_tool_use_stream_test() {
 }
 
 pub fn anthropic_invalid_json_arguments_test() {
-  let reducer = anthropic.new(types.default_limits())
+  let tool = tool_fixtures.string_field_tool("test", "value")
+  let assert Ok(reducer) =
+    anthropic.new_with_tools(types.default_limits(), [tool])
   let ev1 =
     sse.ServerSentEvent(
       event: Some("content_block_start"),
@@ -438,4 +437,123 @@ pub fn anthropic_error_test() {
       ),
     )),
   )
+}
+
+pub fn anthropic_refusal_terminal_is_a_refusal_result_test() {
+  let reducer = anthropic.new(types.default_limits())
+  let start =
+    sse.ServerSentEvent(
+      event: Some("content_block_start"),
+      data: "{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}",
+      id: None,
+      retry: None,
+    )
+  let assert Ok(#(reducer, _)) = anthropic.step(reducer, start)
+  let delta =
+    sse.ServerSentEvent(
+      event: Some("content_block_delta"),
+      data: "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"I cannot help with that request.\"}}",
+      id: None,
+      retry: None,
+    )
+  let assert Ok(#(reducer, _)) = anthropic.step(reducer, delta)
+  let stop_block =
+    sse.ServerSentEvent(
+      event: Some("content_block_stop"),
+      data: "{\"type\":\"content_block_stop\",\"index\":0}",
+      id: None,
+      retry: None,
+    )
+  let assert Ok(#(reducer, _)) = anthropic.step(reducer, stop_block)
+  let stop_reason =
+    sse.ServerSentEvent(
+      event: Some("message_delta"),
+      data: "{\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"refusal\"}}",
+      id: None,
+      retry: None,
+    )
+  let assert Ok(#(reducer, _)) = anthropic.step(reducer, stop_reason)
+  let message_stop =
+    sse.ServerSentEvent(
+      event: Some("message_stop"),
+      data: "{\"type\":\"message_stop\"}",
+      id: None,
+      retry: None,
+    )
+  let assert Ok(#(reducer, _)) = anthropic.step(reducer, message_stop)
+  anthropic.terminal(reducer)
+  |> should.equal(
+    Some(types.StreamFinished(
+      types.Refused("I cannot help with that request."),
+      None,
+    )),
+  )
+}
+
+pub fn anthropic_unknown_stop_reason_is_not_reported_as_success_test() {
+  let reducer = anthropic.new(types.default_limits())
+  let stop_reason =
+    sse.ServerSentEvent(
+      event: Some("message_delta"),
+      data: "{\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"future_state\"}}",
+      id: None,
+      retry: None,
+    )
+  let assert Ok(#(reducer, _)) = anthropic.step(reducer, stop_reason)
+  let message_stop =
+    sse.ServerSentEvent(
+      event: Some("message_stop"),
+      data: "{\"type\":\"message_stop\"}",
+      id: None,
+      retry: None,
+    )
+  let assert Ok(#(reducer, _)) = anthropic.step(reducer, message_stop)
+  case anthropic.terminal(reducer) {
+    Some(types.StreamFailed(types.ProviderError(Some("future_state"), _), _)) ->
+      should.be_true(True)
+    _ -> should.fail()
+  }
+}
+
+pub fn anthropic_successful_hosted_effect_remains_effect_unknown_test() {
+  let reducer = anthropic.new(types.default_limits())
+  let start =
+    sse.ServerSentEvent(
+      event: Some("content_block_start"),
+      data: "{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"server_tool_use\",\"id\":\"srv_1\",\"name\":\"web_search\"}}",
+      id: None,
+      retry: None,
+    )
+  let assert Ok(#(reducer, _)) = anthropic.step(reducer, start)
+  let stop_block =
+    sse.ServerSentEvent(
+      event: Some("content_block_stop"),
+      data: "{\"type\":\"content_block_stop\",\"index\":0}",
+      id: None,
+      retry: None,
+    )
+  let assert Ok(#(reducer, _)) = anthropic.step(reducer, stop_block)
+  let stop_reason =
+    sse.ServerSentEvent(
+      event: Some("message_delta"),
+      data: "{\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"pause_turn\"}}",
+      id: None,
+      retry: None,
+    )
+  let assert Ok(#(reducer, _)) = anthropic.step(reducer, stop_reason)
+  let message_stop =
+    sse.ServerSentEvent(
+      event: Some("message_stop"),
+      data: "{\"type\":\"message_stop\"}",
+      id: None,
+      retry: None,
+    )
+  let assert Ok(#(reducer, _)) = anthropic.step(reducer, message_stop)
+  case anthropic.terminal(reducer) {
+    Some(types.StreamFailed(
+      types.ProviderError(Some("pause_turn"), _),
+      types.RetryEvidence(classification: types.EffectUnknown, ..),
+    )) -> should.be_true(True)
+    _ -> should.fail()
+  }
 }

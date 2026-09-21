@@ -3,6 +3,179 @@ import gleeunit/should
 import llm_wire/openai
 import llm_wire/sse
 import llm_wire/types
+import tool_fixtures
+
+fn event(name: String, data: String) -> sse.ServerSentEvent {
+  sse.ServerSentEvent(event: Some(name), data: data, id: None, retry: None)
+}
+
+pub fn openai_refusal_delta_is_reduced_and_terminally_refused_test() {
+  let reducer = openai.new(types.default_limits())
+  let assert Ok(#(reducer, [])) =
+    openai.step(
+      reducer,
+      event(
+        "response.output_item.added",
+        "{\"output_index\":0,\"item\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\"}}",
+      ),
+    )
+  let assert Ok(#(reducer, refusal_progress)) =
+    openai.step(
+      reducer,
+      event(
+        "response.refusal.delta",
+        "{\"output_index\":0,\"item_id\":\"msg_1\",\"delta\":\"I cannot help with that.\"}",
+      ),
+    )
+  refusal_progress
+  |> should.equal([
+    types.RefusalDelta(block_id: "msg_1", text: "I cannot help with that."),
+  ])
+  let assert Ok(#(reducer, [])) =
+    openai.step(
+      reducer,
+      event(
+        "response.output_item.done",
+        "{\"output_index\":0,\"item\":{\"id\":\"msg_1\",\"type\":\"message\"}}",
+      ),
+    )
+  let assert Ok(#(reducer, _)) =
+    openai.step(
+      reducer,
+      event(
+        "response.completed",
+        "{\"response\":{\"id\":\"resp_refusal\",\"status\":\"completed\"}}",
+      ),
+    )
+  openai.terminal(reducer)
+  |> should.equal(
+    Some(types.StreamFinished(
+      outcome: types.Refused("I cannot help with that."),
+      usage: None,
+    )),
+  )
+}
+
+pub fn openai_reasoning_summary_delta_is_routed_and_completed_test() {
+  let reducer = openai.new(types.default_limits())
+  let assert Ok(#(reducer, [])) =
+    openai.step(
+      reducer,
+      event(
+        "response.output_item.added",
+        "{\"output_index\":2,\"item\":{\"id\":\"reason_1\",\"type\":\"reasoning\"}}",
+      ),
+    )
+  let assert Ok(#(reducer, progress)) =
+    openai.step(
+      reducer,
+      event(
+        "response.reasoning_summary_text.delta",
+        "{\"output_index\":2,\"item_id\":\"reason_1\",\"delta\":\"Checking the result.\"}",
+      ),
+    )
+  progress
+  |> should.equal([
+    types.ReasoningDelta(block_id: "reason_1", text: "Checking the result."),
+  ])
+  let assert Ok(#(reducer, [])) =
+    openai.step(
+      reducer,
+      event(
+        "response.output_item.done",
+        "{\"output_index\":2,\"item\":{\"id\":\"reason_1\",\"type\":\"reasoning\"}}",
+      ),
+    )
+  let assert Ok(#(reducer, _)) =
+    openai.step(
+      reducer,
+      event(
+        "response.completed",
+        "{\"response\":{\"id\":\"resp_reason\",\"status\":\"completed\"}}",
+      ),
+    )
+  openai.terminal(reducer)
+  |> should.equal(
+    Some(types.StreamFinished(outcome: types.CompletedText(""), usage: None)),
+  )
+}
+
+pub fn openai_incomplete_reasoning_item_cannot_complete_response_test() {
+  let reducer = openai.new(types.default_limits())
+  let assert Ok(#(reducer, [])) =
+    openai.step(
+      reducer,
+      event(
+        "response.output_item.added",
+        "{\"output_index\":0,\"item\":{\"id\":\"reason_1\",\"type\":\"reasoning\"}}",
+      ),
+    )
+  let result =
+    openai.step(
+      reducer,
+      event(
+        "response.completed",
+        "{\"response\":{\"id\":\"resp_reason\",\"status\":\"completed\"}}",
+      ),
+    )
+  result |> should.be_error
+}
+
+pub fn openai_refusal_cannot_arrive_after_message_completion_test() {
+  let reducer = openai.new(types.default_limits())
+  let assert Ok(#(reducer, [])) =
+    openai.step(
+      reducer,
+      event(
+        "response.output_item.added",
+        "{\"output_index\":0,\"item\":{\"id\":\"msg_1\",\"type\":\"message\"}}",
+      ),
+    )
+  let assert Ok(#(reducer, [])) =
+    openai.step(
+      reducer,
+      event(
+        "response.output_item.done",
+        "{\"output_index\":0,\"item\":{\"id\":\"msg_1\"}}",
+      ),
+    )
+  openai.step(
+    reducer,
+    event(
+      "response.refusal.delta",
+      "{\"output_index\":0,\"item_id\":\"msg_1\",\"delta\":\"late\"}",
+    ),
+  )
+  |> should.be_error
+}
+
+pub fn openai_text_cannot_arrive_after_message_completion_test() {
+  let reducer = openai.new(types.default_limits())
+  let assert Ok(#(reducer, [])) =
+    openai.step(
+      reducer,
+      event(
+        "response.output_item.added",
+        "{\"output_index\":0,\"item\":{\"id\":\"msg_1\",\"type\":\"message\"}}",
+      ),
+    )
+  let assert Ok(#(reducer, [])) =
+    openai.step(
+      reducer,
+      event(
+        "response.output_item.done",
+        "{\"output_index\":0,\"item\":{\"id\":\"msg_1\"}}",
+      ),
+    )
+  openai.step(
+    reducer,
+    event(
+      "response.output_text.delta",
+      "{\"output_index\":0,\"item_id\":\"msg_1\",\"delta\":\"late\"}",
+    ),
+  )
+  |> should.be_error
+}
 
 pub fn openai_text_stream_test() {
   let reducer = openai.new(types.default_limits())
@@ -53,6 +226,17 @@ pub fn openai_text_stream_test() {
   progress4
   |> should.equal([types.TextDelta(block_id: "item_1", text: "world!")])
 
+  // output_item.done
+  let ev_done =
+    sse.ServerSentEvent(
+      event: Some("response.output_item.done"),
+      data: "{\"output_index\": 0, \"item\": {\"id\": \"item_1\", \"type\": \"message\", \"role\": \"assistant\"}}",
+      id: None,
+      retry: None,
+    )
+  let assert Ok(#(reducer, progress_done)) = openai.step(reducer, ev_done)
+  progress_done |> should.equal([])
+
   // response.completed
   let ev5 =
     sse.ServerSentEvent(
@@ -85,7 +269,8 @@ pub fn openai_text_stream_test() {
 }
 
 pub fn openai_interleaved_tool_calls_test() {
-  let reducer = openai.new(types.default_limits())
+  let tool = tool_fixtures.string_field_tool("get_weather", "city")
+  let assert Ok(reducer) = openai.new_with_tools(types.default_limits(), [tool])
 
   // Add tool call 1: item_1, index 0, call_id "call_weather_1"
   let ev1 =
@@ -138,14 +323,7 @@ pub fn openai_interleaved_tool_calls_test() {
   let assert Ok(#(reducer, p5)) = openai.step(reducer, ev5)
   let assert Ok(expected_call_id1) = types.call_id("call_weather_1")
   let assert Ok(expected_tool_name) = types.tool_name("get_weather")
-  p5
-  |> should.equal([
-    types.ToolCallCompleted(types.ToolCall(
-      id: expected_call_id1,
-      name: expected_tool_name,
-      arguments_json: "{\"city\": \"Tokyo\"}",
-    )),
-  ])
+  p5 |> should.equal([])
 
   // Done for call 2
   let ev6 =
@@ -157,14 +335,7 @@ pub fn openai_interleaved_tool_calls_test() {
     )
   let assert Ok(#(reducer, p6)) = openai.step(reducer, ev6)
   let assert Ok(expected_call_id2) = types.call_id("call_weather_2")
-  p6
-  |> should.equal([
-    types.ToolCallCompleted(types.ToolCall(
-      id: expected_call_id2,
-      name: expected_tool_name,
-      arguments_json: "{\"city\": \"Paris\"}",
-    )),
-  ])
+  p6 |> should.equal([])
 
   // Response completed
   let ev7 =
@@ -178,7 +349,8 @@ pub fn openai_interleaved_tool_calls_test() {
 
   let assert Some(types.StreamFinished(outcome, _)) = openai.terminal(reducer)
   case outcome {
-    types.CompletedToolCalls(_text, calls) -> {
+    types.CompletedToolCalls(_text, calls, response_id) -> {
+      response_id |> should.equal(Some("resp_1"))
       calls
       |> should.equal([
         types.ToolCall(
@@ -197,8 +369,26 @@ pub fn openai_interleaved_tool_calls_test() {
   }
 }
 
-pub fn openai_invalid_json_arguments_test() {
+pub fn openai_provider_cancellation_is_not_attributed_to_local_owner_test() {
   let reducer = openai.new(types.default_limits())
+  let completed =
+    sse.ServerSentEvent(
+      event: Some("response.completed"),
+      data: "{\"response\":{\"id\":\"resp_cancelled\",\"status\":\"cancelled\"}}",
+      id: None,
+      retry: None,
+    )
+  let assert Ok(#(reducer, _)) = openai.step(reducer, completed)
+  case openai.terminal(reducer) {
+    Some(types.StreamFailed(types.ProviderError(Some("cancelled"), _), _)) ->
+      should.be_true(True)
+    _ -> should.fail()
+  }
+}
+
+pub fn openai_invalid_json_arguments_test() {
+  let tool = tool_fixtures.int_field_tool("calc", "x")
+  let assert Ok(reducer) = openai.new_with_tools(types.default_limits(), [tool])
   let ev1 =
     sse.ServerSentEvent(
       event: Some("response.output_item.added"),

@@ -1,0 +1,294 @@
+import gleam/option.{None, Some}
+import gleeunit/should
+import llm_wire/anthropic
+import llm_wire/openai
+import llm_wire/owner
+import llm_wire/sse
+import llm_wire/types
+import tool_fixtures
+
+// Finding 6A: OpenAI duplicate output_index in output_item.added must be rejected
+pub fn finding_6a_openai_duplicate_output_index_test() {
+  let reducer = openai.new(types.default_limits())
+
+  let ev1 =
+    sse.ServerSentEvent(
+      event: Some("response.output_item.added"),
+      data: "{\"output_index\": 0, \"item\": {\"id\": \"item_1\", \"type\": \"message\", \"role\": \"assistant\"}}",
+      id: None,
+      retry: None,
+    )
+  let assert Ok(#(reducer, _)) = openai.step(reducer, ev1)
+
+  // Second item with duplicate output_index 0 but different item_id
+  let ev2 =
+    sse.ServerSentEvent(
+      event: Some("response.output_item.added"),
+      data: "{\"output_index\": 0, \"item\": {\"id\": \"item_2\", \"type\": \"message\", \"role\": \"assistant\"}}",
+      id: None,
+      retry: None,
+    )
+  // Must fail with ProtocolError, not overwrite index_to_item_id
+  case openai.step(reducer, ev2) {
+    Error(types.ProtocolError(_)) -> should.be_true(True)
+    _ -> should.fail()
+  }
+}
+
+// Finding 6B: OpenAI contradictory output_index and item_id must be rejected
+pub fn finding_6b_openai_contradictory_routing_test() {
+  let reducer = openai.new(types.default_limits())
+
+  let ev1 =
+    sse.ServerSentEvent(
+      event: Some("response.output_item.added"),
+      data: "{\"output_index\": 0, \"item\": {\"id\": \"item_1\", \"type\": \"message\", \"role\": \"assistant\"}}",
+      id: None,
+      retry: None,
+    )
+  let assert Ok(#(reducer, _)) = openai.step(reducer, ev1)
+
+  let ev2 =
+    sse.ServerSentEvent(
+      event: Some("response.output_item.added"),
+      data: "{\"output_index\": 1, \"item\": {\"id\": \"item_2\", \"type\": \"message\", \"role\": \"assistant\"}}",
+      id: None,
+      retry: None,
+    )
+  let assert Ok(#(reducer, _)) = openai.step(reducer, ev2)
+
+  // Delta specifies output_index 0 (item_1) but item_id "item_2"
+  let ev3 =
+    sse.ServerSentEvent(
+      event: Some("response.output_text.delta"),
+      data: "{\"output_index\": 0, \"item_id\": \"item_2\", \"delta\": \"mismatch\"}",
+      id: None,
+      retry: None,
+    )
+  case openai.step(reducer, ev3) {
+    Error(types.ProtocolError(_)) -> should.be_true(True)
+    _ -> should.fail()
+  }
+}
+
+// Finding 6C: OpenAI incomplete text block at response.completed must be rejected
+pub fn finding_6c_openai_incomplete_text_block_test() {
+  let reducer = openai.new(types.default_limits())
+
+  let ev1 =
+    sse.ServerSentEvent(
+      event: Some("response.output_item.added"),
+      data: "{\"output_index\": 0, \"item\": {\"id\": \"item_1\", \"type\": \"message\", \"role\": \"assistant\"}}",
+      id: None,
+      retry: None,
+    )
+  let assert Ok(#(reducer, _)) = openai.step(reducer, ev1)
+
+  let ev2 =
+    sse.ServerSentEvent(
+      event: Some("response.output_text.delta"),
+      data: "{\"output_index\": 0, \"item_id\": \"item_1\", \"delta\": \"unfinished...\"}",
+      id: None,
+      retry: None,
+    )
+  let assert Ok(#(reducer, _)) = openai.step(reducer, ev2)
+
+  // response.completed arriving without response.output_item.done for item_1
+  let ev3 =
+    sse.ServerSentEvent(
+      event: Some("response.completed"),
+      data: "{\"response\": {\"id\": \"resp_1\", \"status\": \"completed\"}}",
+      id: None,
+      retry: None,
+    )
+  case openai.step(reducer, ev3) {
+    Error(types.ProtocolError(_)) -> should.be_true(True)
+    _ -> should.fail()
+  }
+}
+
+// Finding 6D: Anthropic delta.type mismatch with block type must be rejected
+pub fn finding_6d_anthropic_delta_type_mismatch_test() {
+  let reducer = anthropic.new(types.default_limits())
+
+  let ev1 =
+    sse.ServerSentEvent(
+      event: Some("message_start"),
+      data: "{\"type\": \"message_start\", \"message\": {\"id\": \"msg_1\", \"type\": \"message\", \"role\": \"assistant\", \"model\": \"claude-3-5\", \"usage\": {\"input_tokens\": 15, \"output_tokens\": 1}}}",
+      id: None,
+      retry: None,
+    )
+  let assert Ok(#(reducer, _)) = anthropic.step(reducer, ev1)
+
+  // Start a text block
+  let ev2 =
+    sse.ServerSentEvent(
+      event: Some("content_block_start"),
+      data: "{\"type\": \"content_block_start\", \"index\": 0, \"content_block\": {\"type\": \"text\", \"text\": \"\"}}",
+      id: None,
+      retry: None,
+    )
+  let assert Ok(#(reducer, _)) = anthropic.step(reducer, ev2)
+
+  // Send input_json_delta to text block!
+  let ev3 =
+    sse.ServerSentEvent(
+      event: Some("content_block_delta"),
+      data: "{\"type\": \"content_block_delta\", \"index\": 0, \"delta\": {\"type\": \"input_json_delta\", \"partial_json\": \"{}\"}}",
+      id: None,
+      retry: None,
+    )
+  case anthropic.step(reducer, ev3) {
+    Error(types.ProtocolError(_)) -> should.be_true(True)
+    _ -> should.fail()
+  }
+}
+
+pub fn finding_8_anthropic_hosted_effect_is_unknown_after_failure_test() {
+  let reducer = anthropic.new(types.default_limits())
+  let start =
+    sse.ServerSentEvent(
+      event: Some("content_block_start"),
+      data: "{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"server_tool_use\"}}",
+      id: None,
+      retry: None,
+    )
+  let assert Ok(#(reducer, _)) = anthropic.step(reducer, start)
+  let failure =
+    sse.ServerSentEvent(
+      event: Some("error"),
+      data: "{\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"failure\"}}",
+      id: None,
+      retry: None,
+    )
+  let assert Ok(#(reducer, _)) = anthropic.step(reducer, failure)
+  case anthropic.terminal(reducer) {
+    Some(types.StreamFailed(_, evidence)) ->
+      evidence.classification |> should.equal(types.EffectUnknown)
+    _ -> should.fail()
+  }
+}
+
+// Finding 5A: Owner timed-out read must not cause ConcurrentReadConflict on next read
+pub fn finding_5a_owner_timeout_read_cleanup_test() {
+  let dummy_transport =
+    owner.TransportPort(request_more: fn() { Nil }, close: fn() { Nil })
+  let assert Ok(stream) =
+    owner.start_openai_stream(
+      types.default_limits(),
+      types.default_deadlines(),
+      dummy_transport,
+    )
+
+  // Call next with 10ms timeout when no data has been fed
+  let res1 = owner.next(stream, 10)
+  res1 |> should.equal(Error(types.ReadTimeout))
+
+  // The caller calls next again. It should NOT return ConcurrentReadConflict
+  let res2 = owner.next(stream, 10)
+  res2 |> should.not_equal(Error(types.ConcurrentReadConflict))
+
+  let _ = owner.close(stream)
+  Nil
+}
+
+// Finding 7: Provider terminal must take precedence over late progress queue failure
+pub fn finding_7_terminal_precedence_over_queue_failure_test() {
+  let limits =
+    types.Limits(
+      ..types.default_limits(),
+      queue_count_limit: 1,
+      queue_bytes_limit: 100_000,
+    )
+  let dummy_transport =
+    owner.TransportPort(request_more: fn() { Nil }, close: fn() { Nil })
+  let assert Ok(stream) =
+    owner.start_openai_stream(
+      limits,
+      types.default_deadlines(),
+      dummy_transport,
+    )
+
+  // Add an item and text delta to fill the queue with 1 item
+  owner.feed_chunk(stream, <<
+    "event: response.output_item.added\ndata: {\"output_index\": 0, \"item\": {\"id\": \"item_1\", \"type\": \"message\", \"role\": \"assistant\"}}\n\n":utf8,
+  >>)
+  owner.feed_chunk(stream, <<
+    "event: response.output_text.delta\ndata: {\"output_index\": 0, \"item_id\": \"item_1\", \"delta\": \"Hi\"}\n\n":utf8,
+  >>)
+  owner.feed_chunk(stream, <<
+    "event: response.output_item.done\ndata: {\"output_index\": 0, \"item_id\": \"item_1\"}\n\n":utf8,
+  >>)
+
+  // Queue now has 1 TextDelta item. Now feed response.completed with usage!
+  // This produces UsageUpdate (which exceeds queue_count_limit of 1) and terminal outcome StreamFinished.
+  owner.feed_chunk(stream, <<
+    "event: response.completed\ndata: {\"response\": {\"id\": \"resp_1\", \"status\": \"completed\", \"usage\": {\"input_tokens\": 1, \"output_tokens\": 1, \"total_tokens\": 2}}}\n\n":utf8,
+  >>)
+
+  // Read until terminal:
+  let assert Ok(types.NextProgress(_)) = owner.next(stream, 1000)
+  let term_res = owner.next(stream, 1000)
+  case term_res {
+    Ok(types.StreamTerminal(types.StreamFinished(..))) -> should.be_true(True)
+    _ -> should.fail()
+  }
+
+  let _ = owner.close(stream)
+  Nil
+}
+
+pub fn finding_1_unadmitted_tool_is_rejected_before_completion_test() {
+  let reducer = openai.new(types.default_limits())
+  let event =
+    sse.ServerSentEvent(
+      event: Some("response.output_item.added"),
+      data: "{\"output_index\":0,\"item\":{\"id\":\"item_1\",\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"unknown\"}}",
+      id: None,
+      retry: None,
+    )
+
+  openai.step(reducer, event)
+  |> should.be_error
+}
+
+pub fn finding_1_invalid_native_schema_arguments_are_not_emitted_test() {
+  let tool = tool_fixtures.string_field_tool("weather", "city")
+  let assert Ok(reducer) = openai.new_with_tools(types.default_limits(), [tool])
+  let started =
+    sse.ServerSentEvent(
+      event: Some("response.output_item.added"),
+      data: "{\"output_index\":0,\"item\":{\"id\":\"item_1\",\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"weather\"}}",
+      id: None,
+      retry: None,
+    )
+  let assert Ok(#(reducer, _)) = openai.step(reducer, started)
+  let arguments =
+    sse.ServerSentEvent(
+      event: Some("response.function_call_arguments.delta"),
+      data: "{\"output_index\":0,\"item_id\":\"item_1\",\"delta\":\"{\\\"city\\\":42}\"}",
+      id: None,
+      retry: None,
+    )
+  let assert Ok(#(reducer, _)) = openai.step(reducer, arguments)
+  let completed =
+    sse.ServerSentEvent(
+      event: Some("response.output_item.done"),
+      data: "{\"output_index\":0,\"item\":{\"id\":\"item_1\"}}",
+      id: None,
+      retry: None,
+    )
+
+  openai.step(reducer, completed)
+  |> should.be_error
+}
+
+pub fn finding_1_duplicate_catalog_names_are_rejected_test() {
+  let first = tool_fixtures.string_field_tool("weather", "city")
+  let second = tool_fixtures.string_field_tool("weather", "location")
+
+  case openai.new_with_tools(types.default_limits(), [first, second]) {
+    Error(types.PreparationError(_)) -> should.be_true(True)
+    _ -> should.fail()
+  }
+}
