@@ -1,3 +1,4 @@
+import gleam/dynamic/decode
 import gleam/erlang/process
 import gleam/erlang/reference
 import gleam/float
@@ -9,8 +10,6 @@ import gleam/order.{Gt, Lt}
 import gleam/result
 import gleam/string
 import json/blueprint/codec
-import json/blueprint/json_text
-import json/blueprint/parser
 import json/blueprint/runtime
 import llm_wire/owner
 import llm_wire/schema
@@ -128,8 +127,9 @@ type GunSetupError {
 
 type GunHandle
 
-@external(erlang, "llm_wire_gun_ffi", "connect_and_stream")
-fn gun_connect_and_stream(
+@external(erlang, "llm_wire_gun_ffi", "connect_and_stream_gleam")
+fn gun_connect_and_stream_with_pool(
+  pool: Option(process.Pid),
   host: String,
   port: Int,
   path: String,
@@ -170,6 +170,34 @@ pub fn connect_prepared_and_stream(
   on_error: fn(String) -> Nil,
   on_request_sent: fn() -> Nil,
 ) -> Result(#(owner.TransportPort, process.Pid), types.WireError) {
+  connect_prepared_and_stream_with_pool(
+    None,
+    prepared,
+    overall_timeout_ms,
+    tls_mode,
+    max_header_bytes,
+    max_chunk_bytes,
+    owner_pid,
+    on_chunk,
+    on_eof,
+    on_error,
+    on_request_sent,
+  )
+}
+
+pub fn connect_prepared_and_stream_with_pool(
+  pool_pid: Option(process.Pid),
+  prepared: PreparedCall,
+  overall_timeout_ms: Int,
+  tls_mode: types.TlsMode,
+  max_header_bytes: Int,
+  max_chunk_bytes: Int,
+  owner_pid: process.Pid,
+  on_chunk: fn(BitArray) -> Nil,
+  on_eof: fn() -> Nil,
+  on_error: fn(String) -> Nil,
+  on_request_sent: fn() -> Nil,
+) -> Result(#(owner.TransportPort, process.Pid), types.WireError) {
   use Nil <- result.try(validate_prepared_transport(prepared, tls_mode))
   let #(tls_name, ca_file) = case tls_mode {
     types.Plaintext -> #("plaintext", "")
@@ -177,7 +205,8 @@ pub fn connect_prepared_and_stream(
     types.VerifyCaFile(path) -> #("verify_ca_file", path)
   }
   case
-    gun_connect_and_stream(
+    gun_connect_and_stream_with_pool(
+      pool_pid,
       prepared.host,
       prepared.port,
       prepared.path,
@@ -290,9 +319,10 @@ pub fn prepare_structured(
         Error(_) ->
           Error(types.PreparationError("Structured output codec has no schema"))
         Ok(output_schema) -> {
-          use schema_json <- result.try(schema.strict_output_schema(
-            output_schema,
-          ))
+          use schema_json <- result.try(case config_provider(config) {
+            types.Google -> schema.google_strict_output_schema(output_schema)
+            _ -> schema.strict_output_schema(output_schema)
+          })
           use contract <- result.try(case runtime.from_schema(output_schema) {
             Ok(value) -> Ok(value)
             Error(error) ->
@@ -369,13 +399,20 @@ fn prepare_with_format(
       )
     types.AnthropicConfig(..) ->
       encode_anthropic_request(request, tool_json, structured_format)
+    types.GoogleConfig(..) ->
+      encode_google_request(request, tool_json, structured_format)
   }
   use body_text <- result.try(body)
   let #(host, port, base_path, tls_mode) = endpoint_parts
   use provider_path <- result.try(case provider {
     types.OpenAI -> Ok("/responses")
     types.Anthropic -> Ok("/messages")
-    types.Google -> Error(types.PreparationError("Google is not implemented"))
+    types.Google ->
+      Ok(
+        "/models/"
+        <> types.model_id_to_string(request.model)
+        <> ":streamGenerateContent?alt=sse",
+      )
   })
   let path = base_path <> provider_path
   let headers =
@@ -642,6 +679,7 @@ fn config_provider(config: types.ProviderConfig) -> types.Provider {
   case config {
     types.OpenAIConfig(..) -> types.OpenAI
     types.AnthropicConfig(..) -> types.Anthropic
+    types.GoogleConfig(..) -> types.Google
   }
 }
 
@@ -657,6 +695,7 @@ fn config_endpoint(config: types.ProviderConfig) -> types.Endpoint {
   case config {
     types.OpenAIConfig(endpoint:, ..) -> endpoint
     types.AnthropicConfig(endpoint:, ..) -> endpoint
+    types.GoogleConfig(endpoint:, ..) -> endpoint
   }
 }
 
@@ -664,6 +703,7 @@ fn config_api_key(config: types.ProviderConfig) -> types.ApiKey {
   case config {
     types.OpenAIConfig(api_key:, ..) -> api_key
     types.AnthropicConfig(api_key:, ..) -> api_key
+    types.GoogleConfig(api_key:, ..) -> api_key
   }
 }
 
@@ -683,6 +723,11 @@ fn config_headers(config: types.ProviderConfig) -> List(#(String, String)) {
     types.AnthropicConfig(version:, ..) ->
       case version {
         Some(value) -> [#("anthropic-version", value)]
+        None -> []
+      }
+    types.GoogleConfig(api_version:, ..) ->
+      case api_version {
+        Some(value) -> [#("x-goog-api-version", value)]
         None -> []
       }
   }
@@ -717,7 +762,10 @@ fn request_headers(
         ..list.append(additional_headers, list.append(version_header, common))
       ]
     }
-    types.Google -> list.append(additional_headers, common)
+    types.Google -> [
+      #("x-goog-api-key", types.api_key_expose(api_key)),
+      ..list.append(additional_headers, common)
+    ]
   }
 }
 
@@ -772,12 +820,24 @@ fn validate_provider_options(
   provider: types.Provider,
   request: types.Request,
 ) -> Result(Nil, types.WireError) {
-  case provider == types.OpenAI && !list.is_empty(request.stop_sequences) {
-    True ->
-      Error(types.PreparationError(
-        "stop_sequences are not supported by the Responses profile",
-      ))
-    False -> Ok(Nil)
+  case provider {
+    types.OpenAI ->
+      case list.is_empty(request.stop_sequences) {
+        True -> Ok(Nil)
+        False ->
+          Error(types.PreparationError(
+            "stop_sequences are not supported by the Responses profile",
+          ))
+      }
+    types.Google ->
+      case list.length(request.stop_sequences) > 5 {
+        True ->
+          Error(types.PreparationError(
+            "Google GenerationConfig.stopSequences accepts at most 5 values",
+          ))
+        False -> Ok(Nil)
+      }
+    types.Anthropic -> Ok(Nil)
   }
 }
 
@@ -792,9 +852,11 @@ fn encode_tools(
 ) -> Result(List(json.Json), types.WireError) {
   list.fold(tools, Ok([]), fn(acc, tool) {
     use prior <- result.try(acc)
-    use parameters <- result.try(
-      schema.provider_schema(types.tool_schema(tool)),
-    )
+    use parameters <- result.try(case provider {
+      types.Google ->
+        schema.google_function_parameters_schema(types.tool_schema(tool))
+      _ -> schema.provider_schema(types.tool_schema(tool))
+    })
     let name = json.string(types.tool_definition_name(tool))
     let description = json.string(types.tool_description(tool))
     use encoded <- result.try(case provider {
@@ -815,7 +877,14 @@ fn encode_tools(
             #("input_schema", parameters),
           ]),
         )
-      types.Google -> Error(types.PreparationError("Google is not implemented"))
+      types.Google ->
+        Ok(
+          json.object([
+            #("name", name),
+            #("description", description),
+            #("parametersJsonSchema", parameters),
+          ]),
+        )
     })
     Ok(list.append(prior, [encoded]))
   })
@@ -926,6 +995,255 @@ fn encode_object_text(fields: List(#(String, String))) -> String {
   <> "}"
 }
 
+fn encode_google_request(
+  request: types.Request,
+  tools: List(json.Json),
+  structured_format: Option(StructuredFormat),
+) -> Result(String, types.WireError) {
+  let system_parts =
+    list.filter_map(request.messages, fn(message) {
+      case message {
+        types.SystemMessage(content) ->
+          Ok("{\"text\":" <> json.to_string(json.string(content)) <> "}")
+        _ -> Error(Nil)
+      }
+    })
+  let system_field = case system_parts {
+    [] -> []
+    parts -> [
+      #("systemInstruction", "{\"parts\":[" <> string.join(parts, ",") <> "]}"),
+    ]
+  }
+
+  use contents <- result.try(build_google_contents(
+    request.messages,
+    request.messages,
+  ))
+
+  let base = [#("contents", "[" <> string.join(contents, ",") <> "]")]
+
+  let tool_fields = case tools {
+    [] -> []
+    _ -> [
+      #(
+        "tools",
+        json.to_string(
+          json.array(
+            [
+              json.object([
+                #("functionDeclarations", json.array(tools, fn(t) { t })),
+              ]),
+            ],
+            fn(v) { v },
+          ),
+        ),
+      ),
+    ]
+  }
+
+  let gen_config_field = case
+    google_generation_config(request, structured_format)
+  {
+    Some(cfg) -> [#("generationConfig", json.to_string(cfg))]
+    None -> []
+  }
+
+  Ok(
+    encode_object_text(list.append(
+      base,
+      list.append(system_field, list.append(tool_fields, gen_config_field)),
+    )),
+  )
+}
+
+fn google_generation_config(
+  request: types.Request,
+  structured_format: Option(StructuredFormat),
+) -> Option(json.Json) {
+  let option_fields = request_option_fields(request, types.Google)
+  let format_fields = case structured_format {
+    Some(StructuredFormat(_, schema_json)) -> [
+      #("responseMimeType", json.string("application/json")),
+      #("responseSchema", schema_json),
+    ]
+    None -> []
+  }
+  let all_fields = list.append(option_fields, format_fields)
+  case all_fields {
+    [] -> None
+    _ -> Some(json.object(all_fields))
+  }
+}
+
+fn build_google_contents(
+  messages: List(types.Message),
+  all_messages: List(types.Message),
+) -> Result(List(String), types.WireError) {
+  let non_system =
+    list.filter(messages, fn(m) {
+      case m {
+        types.SystemMessage(_) -> False
+        _ -> True
+      }
+    })
+  build_google_contents_loop(non_system, all_messages, [])
+}
+
+fn build_google_contents_loop(
+  remaining: List(types.Message),
+  all_messages: List(types.Message),
+  acc: List(String),
+) -> Result(List(String), types.WireError) {
+  case remaining {
+    [] -> Ok(acc)
+    [types.ToolResultMessage(..), ..] -> {
+      let #(tool_results, rest) =
+        collect_consecutive_tool_results(remaining, [])
+      use response_parts <- result.try(
+        list.fold(tool_results, Ok([]), fn(p_acc, tr) {
+          use parts_so_far <- result.try(p_acc)
+          case tr {
+            types.ToolResultMessage(call_id, content) -> {
+              let tool_name = find_tool_call_name(all_messages, call_id)
+              let response_json = case
+                json.parse(content, decode.dict(decode.string, decode.dynamic))
+              {
+                Ok(_) -> content
+                Error(_) ->
+                  "{\"output\":" <> json.to_string(json.string(content)) <> "}"
+              }
+              let id_part = case
+                find_tool_call_provider_id(all_messages, call_id)
+              {
+                None -> ""
+                Some(provider_id) ->
+                  ",\"id\":" <> json.to_string(json.string(provider_id))
+              }
+              let fr =
+                "{\"name\":"
+                <> json.to_string(json.string(tool_name))
+                <> ",\"response\":"
+                <> response_json
+                <> id_part
+                <> "}"
+              let part = "{\"functionResponse\":" <> fr <> "}"
+              Ok(list.append(parts_so_far, [part]))
+            }
+            _ -> Ok(parts_so_far)
+          }
+        }),
+      )
+      let turn =
+        "{\"role\":\"user\",\"parts\":["
+        <> string.join(response_parts, ",")
+        <> "]}"
+      build_google_contents_loop(rest, all_messages, list.append(acc, [turn]))
+    }
+    [message, ..rest] -> {
+      use turn <- result.try(single_google_turn(message))
+      build_google_contents_loop(rest, all_messages, list.append(acc, [turn]))
+    }
+  }
+}
+
+fn collect_consecutive_tool_results(
+  messages: List(types.Message),
+  acc: List(types.Message),
+) -> #(List(types.Message), List(types.Message)) {
+  case messages {
+    [types.ToolResultMessage(..) as tr, ..rest] ->
+      collect_consecutive_tool_results(rest, list.append(acc, [tr]))
+    _ -> #(acc, messages)
+  }
+}
+
+fn single_google_turn(
+  message: types.Message,
+) -> Result(String, types.WireError) {
+  case message {
+    types.SystemMessage(_) -> Ok("{}")
+    types.UserMessage(content) ->
+      Ok(
+        "{\"role\":\"user\",\"parts\":[{\"text\":"
+        <> json.to_string(json.string(content))
+        <> "}]}",
+      )
+    types.AssistantMessage(content) ->
+      Ok(
+        "{\"role\":\"model\",\"parts\":[{\"text\":"
+        <> json.to_string(json.string(content))
+        <> "}]}",
+      )
+    types.AssistantToolCalls(calls) -> {
+      let empty: Result(List(String), types.WireError) = Ok([])
+      use parts <- result.try(
+        list.fold(calls, empty, fn(acc, call) {
+          use prior <- result.try(acc)
+          use input <- result.try(canonical_json(call.arguments_json))
+          let id_part = case call.provider_id {
+            None -> ""
+            Some(provider_id) ->
+              ",\"id\":" <> json.to_string(json.string(provider_id))
+          }
+          let fc =
+            "{\"name\":"
+            <> json.to_string(json.string(types.tool_name_to_string(call.name)))
+            <> ",\"args\":"
+            <> input
+            <> id_part
+            <> "}"
+          let part = "{\"functionCall\":" <> fc <> "}"
+          Ok(list.append(prior, [part]))
+        }),
+      )
+      Ok("{\"role\":\"model\",\"parts\":[" <> string.join(parts, ",") <> "]}")
+    }
+    types.ToolResultMessage(..) -> Ok("{}")
+  }
+}
+
+fn find_tool_call_name(
+  messages: List(types.Message),
+  call_id: types.CallId,
+) -> String {
+  let found =
+    list.find_map(messages, fn(msg) {
+      case msg {
+        types.AssistantToolCalls(calls) ->
+          case list.find(calls, fn(c) { c.id == call_id }) {
+            Ok(c) -> Ok(types.tool_name_to_string(c.name))
+            Error(Nil) -> Error(Nil)
+          }
+        _ -> Error(Nil)
+      }
+    })
+  case found {
+    Ok(name) -> name
+    Error(Nil) -> types.call_id_to_string(call_id)
+  }
+}
+
+fn find_tool_call_provider_id(
+  messages: List(types.Message),
+  call_id: types.CallId,
+) -> Option(String) {
+  let found =
+    list.find_map(messages, fn(msg) {
+      case msg {
+        types.AssistantToolCalls(calls) ->
+          case list.find(calls, fn(c) { c.id == call_id }) {
+            Ok(c) -> Ok(c.provider_id)
+            Error(Nil) -> Error(Nil)
+          }
+        _ -> Error(Nil)
+      }
+    })
+  case found {
+    Ok(provider_id) -> provider_id
+    Error(Nil) -> None
+  }
+}
+
 fn anthropic_message_json(
   message: types.Message,
 ) -> Result(String, types.WireError) {
@@ -1003,12 +1321,12 @@ fn anthropic_message_json(
 }
 
 fn canonical_json(raw: String) -> Result(String, types.WireError) {
-  case parser.parse_value_from_string(parser.default_limits(), raw) {
+  case json.parse(raw, decode.dynamic) {
     Error(_) ->
       Error(types.PreparationError(
         "Continuation contains invalid tool argument JSON",
       ))
-    Ok(value) -> Ok(json_text.render_value(value))
+    Ok(_) -> Ok(raw)
   }
 }
 
@@ -1067,7 +1385,7 @@ fn request_option_fields(
       case provider {
         types.OpenAI -> [#("max_output_tokens", json.int(value))]
         types.Anthropic -> []
-        types.Google -> []
+        types.Google -> [#("maxOutputTokens", json.int(value))]
       }
     None -> []
   }
@@ -1076,13 +1394,20 @@ fn request_option_fields(
     None -> []
   }
   let top_p = case request.top_p {
-    Some(value) -> [#("top_p", json.float(value))]
+    Some(value) ->
+      case provider {
+        types.Google -> [#("topP", json.float(value))]
+        _ -> [#("top_p", json.float(value))]
+      }
     None -> []
   }
   let stop = case request.stop_sequences, provider {
     [], _ -> []
     values, types.Anthropic -> [
       #("stop_sequences", json.array(values, json.string)),
+    ]
+    values, types.Google -> [
+      #("stopSequences", json.array(values, json.string)),
     ]
     _, _ -> []
   }

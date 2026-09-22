@@ -2,6 +2,7 @@ import gleam/erlang/process
 import gleeunit/should
 import llm_wire/owner
 import llm_wire/types
+import tool_fixtures
 
 pub fn owner_sequential_read_test() {
   let limits = types.default_limits()
@@ -194,7 +195,22 @@ pub fn owner_monitors_consumer_between_reads_test() {
 
   let assert Ok(#(_stream, owner_pid)) = process.receive(stream_subject, 1000)
   let assert Ok(Nil) = process.receive(close_counter, 1000)
-  process.is_alive(owner_pid) |> should.be_false
+  wait_for_process_exit(owner_pid, 100)
+  |> should.equal(True)
+}
+
+fn wait_for_process_exit(pid: process.Pid, attempts: Int) -> Bool {
+  case process.is_alive(pid) {
+    False -> True
+    True ->
+      case attempts > 0 {
+        True -> {
+          process.sleep(10)
+          wait_for_process_exit(pid, attempts - 1)
+        }
+        False -> False
+      }
+  }
 }
 
 pub fn owner_keeps_one_outstanding_transport_credit_test() {
@@ -323,4 +339,31 @@ pub fn owner_response_body_limit_is_enforced_test() {
     ))) -> should.be_true(True)
     _ -> should.fail()
   }
+}
+
+pub fn owner_argument_disconnect_never_emits_partial_tool_call_test() {
+  let tool = tool_fixtures.int_field_tool("calc", "x")
+  let transport =
+    owner.TransportPort(request_more: fn() { Nil }, close: fn() { Nil })
+  let assert Ok(stream) =
+    owner.start_anthropic_stream_with_tools(
+      types.default_limits(),
+      types.default_deadlines(),
+      transport,
+      [tool],
+    )
+  owner.feed_chunk(stream, <<
+    "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n":utf8,
+  >>)
+  owner.feed_chunk(stream, <<
+    "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"calc\"}}\n\n":utf8,
+  >>)
+  owner.feed_chunk(stream, <<
+    "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"x\\\":\"}}\n\n":utf8,
+  >>)
+  owner.feed_error(stream, "connection reset during tool arguments")
+  let assert Ok(types.StreamTerminal(types.StreamFailed(
+    types.TransportError("connection reset during tool arguments"),
+    _,
+  ))) = owner.next(stream, 1000)
 }

@@ -1,42 +1,45 @@
-# LLM Wire Wave 2 correction final review
+# `llm_wire` Wave 3 final correction review
 
-- **Baseline:** `e5b7b0b` plus the complete staged, unstaged, and untracked tree in `/code/gleam-dream/llm_wire`.
-- **Scope:** focused verification of the two residual findings in `llm-wire-wave2-rereview.md`, plus the external root-facade consumer.
+Date: 2026-09-21  
+Baseline: `e643755` plus the current staged, unstaged, and untracked recovery set  
+Scope: final verification of the ordinary-JSON decision and the residual pooled-owner cleanup
 
 ## Verdict
 
-- **Accept the seven-blocker correction subset.** The raw network paths now require an opaque `api.PreparedCall`, and the schema projection now matches Blueprint's canonical nullable representation.
-- **Do not mark full Wave 2 complete.** Google, connection pooling/reuse, the strict pre-allocation response-header cap, the broader process-race and provider/transport fragmentation matrix, duplicate JSON-member coverage, and complete selected-oracle inventory remain open in `WAVE-2-REPORT.md`.
+**Accept the delivered correction subset.** No blocking finding remains in this focused review.
 
-## Adherence
+The provider wire boundary now uses ordinary `gleam/json` parsing and Gleam decoders. The separate strict-JSON module and Erlang FFI are absent, and duplicate-member rejection is no longer an acceptance criterion. Blueprint remains attached to the schema domain: tool schemas, structured-output schemas, and schema-backed validation and decoding.
 
-- The transport bypass is closed without relying on module-name privacy. `api.PreparedCall` is opaque at `src/llm_wire/api.gleam:23-38`; preparation alone constructs it after provider option, schema, header, route, and request-size admission at `api.gleam:349-423`.
-- Every public network path requires that opaque value. `runtime.stream` passes it to `internal/client.open_prepared_stream` (`runtime.gleam:8-14`); the client passes it to `internal/transport.connect_and_stream` (`internal/client.gleam:10-20,47-62`); the transport passes it to `api.connect_prepared_and_stream` (`internal/transport.gleam:21-51`). The final API function reads host, port, path, headers, and body only from the prepared value at `api.gleam:159-214`.
-- Caller-selected TLS cannot weaken a remote request. `api.gleam:216-255` permits plaintext and a caller CA only for loopback hosts; remote hosts require `VerifySystem`. Public prepared-value accessors expose copies for inspection but provide no constructor, field update, or replacement path.
-- Nullable schema parity is closed. `schema.gleam:45-60` emits Blueprint's canonical null-first `anyOf`; `llm_wire_api_test.gleam:80-110` compares every admitted recursive constructor, including nested nullable forms, with `codec.schema_value` after JSON parsing.
+The pool now stops the parked connection owner when the monitored Gun connection dies. The peer-close regression exercises the Gun `DOWN` path, observes removal of the dead pooled entry, and proves the pool can establish and use a replacement under one-per-target and one-total limits. Every pool shutdown in the pool suite now asserts the fallible stop result.
 
-## Spec
+This is acceptance of the delivered subset, not completion of the broader Wave 3 capability scope. The updated report continues to describe that scope as partial. Strict response-header preallocation also remains unavailable with the current Gun interface and still requires the explicit contract decision already recorded: patch or pin a suitable Gun interface, or declare the capability unavailable. The contract must not be weakened silently.
 
-- `test/external_package_boundary.sh:23-38` compiled a separate package that prepares through the root `llm_wire` facade.
-- The negative dependent package at `test/external_package_boundary.sh:40-107` failed compilation when it tried to fabricate `PreparedCall`, pass a string body to the prepared client, call the removed raw client entry, or pass raw destination/header/body fields to the transport. The failures reached each intended symbol and type boundary.
-- The root facade remains usable through the package-supported path. No arbitrary body, authorization header, destination, or weakened remote TLS mode crosses a public network entry.
+## Independent evidence
 
-## Standards
+### Ordinary JSON boundary
 
-- No new repository-rule violation was found. This review changed no LLM Wire source and created no commit.
+- `src/llm_wire/openai.gleam`, `anthropic.gleam`, and `google.gleam` parse provider response envelopes with `gleam/json.parse` and typed or dynamic Gleam decoders.
+- Continuation argument validation in `src/llm_wire/api.gleam` uses `json.parse(raw, decode.dynamic)`. Google tool-result object recognition likewise uses `json.parse` with a Gleam dictionary decoder. Request and continuation values are emitted through `gleam/json` values and encoding, with validated raw argument objects inserted where the provider requires JSON values rather than strings.
+- Neither `src/llm_wire/internal/strict_json.gleam` nor `src/llm_wire_strict_json_ffi.erl` exists in the working tree. No source or test reference to `strict_json`, `wire_json`, direct OTP `json:decode`, duplicate-member callbacks, or duplicate-member guarantees remains.
+- Blueprint imports are limited to the codec/schema and runtime validation paths in `types.gleam`, `api.gleam`, and `schema.gleam`. They are not used as the generic provider wire parser.
 
-## Craft
+This satisfies the authoritative simplification decision. Duplicate JSON members follow the standard parser's semantics; the package does not add a second parser or advertise a stricter wire guarantee.
 
-- The external-package regression fixes the prior test-scope defect because its positive and negative consumers compile as dependents rather than as modules inside `llm_wire`.
-- The schema regression fixes the prior single-fixture defect with a recursive constructor table and canonical structural comparison. No residual finding remains in the focused scope.
+### Pooled owner lifecycle
 
-## Independent checks
+`src/llm_wire_gun_pool.erl:296-310` handles a monitored Gun connection `DOWN`. It now calls `stop_owner(Entry#conn_entry.owner_pid)` before notifying any lessee and removing the connection entry. This closes the terminal path identified in the preceding rereview: the successful connector worker waits in `keep_connection_owner/1` for exactly that stop message after transferring the connection.
 
-- `nix develop --command sh test/external_package_boundary.sh`: passed. The external root consumer compiled; every raw-call probe failed at the prepared-call boundary.
-- `nix develop --command gleam test --target erlang`: passed, 92 tests.
-- `git diff --check`: passed.
+`pool_remote_connection_death_reclaims_entry_test` closes the first connection from the peer, waits until the pool reports zero connections, and then completes another request through a new connection while both configured connection limits are one. The test directly exercises entry reclamation and replacement capacity. The source assertion supplies the complementary owner-exit guarantee because the parked worker's only receive clause exits on `stop`.
 
-## Routing
+All nine `stop_pool(p)` calls in `test/llm_wire_pool_test.gleam` assert `Ok(Nil)`. The earlier unused-result warnings are gone.
 
-- No `(cure-class, timing)` proposal remains for the two residual findings.
-- The correction subset is accepted. The separately recorded full-wave work remains tracked and was not reopened by this focused review.
+## Verification
+
+- `nix develop --command gleam test --target erlang`: **pass**, 122 tests, no failures and no unused-result warnings.
+- `nix develop --command sh test/external_package_boundary.sh`: **pass**. The root-facade consumer compiled, and forbidden prepared-call construction, raw transport access, and `api.prepared_headers` access failed at the package boundary as expected.
+- `nix develop --command gleam check --target erlang`: **pass**, no warnings.
+- `nix develop --command gleam format --check src test`: **pass**.
+- `nix flake check`: **pass** for the host system; Nix reported the other systems as incompatible and omitted them.
+- `git diff --check` and `git diff --cached --check`: **pass**.
+
+No `llm_wire` source or test file was changed during this review, and no commit was created.

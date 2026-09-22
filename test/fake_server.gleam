@@ -1,5 +1,6 @@
 import gleam/bit_array
 import gleam/erlang/process
+import gleam/int
 import gleam/list
 import gleam/string
 import llm_wire/tcp
@@ -123,4 +124,18 @@ pub fn send_raw_response(
   let result = tcp.send(socket, bit_array.from_string(response))
   tcp.close(socket)
   result
+}
+
+pub fn send_chunked_sse_keepalive(
+  socket: tcp.Socket,
+  payload: String,
+) -> Result(Nil, String) {
+  let header =
+    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n"
+  let chunk =
+    int.to_base16(string.byte_size(payload))
+    <> "\r\n"
+    <> payload
+    <> "\r\n0\r\n\r\n"
+  tcp.send(socket, bit_array.from_string(header <> chunk))
 }

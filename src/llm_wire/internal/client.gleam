@@ -1,4 +1,5 @@
-import gleam/option.{type Option, unwrap}
+import gleam/erlang/process
+import gleam/option.{type Option, None, unwrap}
 import llm_wire/api
 import llm_wire/internal/transport
 import llm_wire/owner
@@ -13,11 +14,27 @@ pub fn open_prepared_stream(
   deadlines: types.Deadlines,
   tls_override: Option(types.TlsMode),
 ) -> Result(owner.Stream, types.WireError) {
+  open_prepared_stream_with_pool(
+    prepared,
+    limits,
+    deadlines,
+    tls_override,
+    None,
+  )
+}
+
+pub fn open_prepared_stream_with_pool(
+  prepared: api.PreparedCall,
+  limits: types.Limits,
+  deadlines: types.Deadlines,
+  tls_override: Option(types.TlsMode),
+  pool_pid: Option(process.Pid),
+) -> Result(owner.Stream, types.WireError) {
   let provider = api.prepared_provider(prepared)
   let tools = api.prepared_tools(prepared)
   let prepared_tls_mode = api.prepared_tls_mode(prepared)
   let tls_mode = unwrap(tls_override, prepared_tls_mode)
-  open_stream(prepared, provider, limits, deadlines, tools, tls_mode)
+  open_stream(prepared, provider, limits, deadlines, tools, tls_mode, pool_pid)
 }
 
 fn open_stream(
@@ -27,6 +44,7 @@ fn open_stream(
   deadlines: types.Deadlines,
   tools: List(types.ToolDefinition),
   tls_mode: types.TlsMode,
+  pool_pid: Option(process.Pid),
 ) -> Result(owner.Stream, types.WireError) {
   let overall_started_ms = transport.monotonic_millis()
   let dummy_transport =
@@ -45,7 +63,8 @@ fn open_stream(
           let on_request_sent = fn() { owner.request_was_sent(stream) }
 
           case
-            transport.connect_and_stream(
+            transport.connect_and_stream_with_pool(
+              pool_pid,
               prepared,
               remaining_overall_ms(
                 overall_started_ms,
@@ -113,6 +132,11 @@ fn start_owner(
         tools,
       )
     types.Google ->
-      Error(types.ConfigurationError("Google streaming is not implemented"))
+      owner.start_google_stream_with_tools(
+        limits,
+        deadlines,
+        transport_port,
+        tools,
+      )
   }
 }

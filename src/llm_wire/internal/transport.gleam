@@ -1,4 +1,5 @@
 import gleam/erlang/process
+import gleam/option.{type Option, None}
 import gleam/result
 import llm_wire/api
 import llm_wire/types
@@ -30,8 +31,37 @@ pub fn connect_and_stream(
   on_error: fn(String) -> Nil,
   on_request_sent: fn() -> Nil,
 ) -> Result(TransportHandle, types.WireError) {
+  connect_and_stream_with_pool(
+    None,
+    prepared,
+    overall_timeout_ms,
+    tls_mode,
+    max_header_bytes,
+    max_chunk_bytes,
+    owner_pid,
+    on_chunk,
+    on_eof,
+    on_error,
+    on_request_sent,
+  )
+}
+
+pub fn connect_and_stream_with_pool(
+  pool_pid: Option(process.Pid),
+  prepared: api.PreparedCall,
+  overall_timeout_ms: Int,
+  tls_mode: types.TlsMode,
+  max_header_bytes: Int,
+  max_chunk_bytes: Int,
+  owner_pid: process.Pid,
+  on_chunk: fn(BitArray) -> Nil,
+  on_eof: fn() -> Nil,
+  on_error: fn(String) -> Nil,
+  on_request_sent: fn() -> Nil,
+) -> Result(TransportHandle, types.WireError) {
   use #(transport_port, transport_pid) <- result.try(
-    api.connect_prepared_and_stream(
+    api.connect_prepared_and_stream_with_pool(
+      pool_pid,
       prepared,
       overall_timeout_ms,
       tls_mode,

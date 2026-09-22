@@ -90,6 +90,16 @@ pub fn raw_transport_fields_cannot_be_supplied() {
     fn() { Nil },
   )
 }
+
+pub fn credential_headers_cannot_be_inspected() {
+  let assert Ok(key) = llm_wire.api_key("consumer-key")
+  let assert Ok(endpoint) = llm_wire.endpoint("https://api.example.test/v1")
+  let assert Ok(model) = llm_wire.model_id("consumer-model")
+  let config = llm_wire.openai_config(key, endpoint, None, None)
+  let request = llm_wire.new_request(model, [llm_wire.UserMessage("hello")])
+  let assert Ok(prepared) = llm_wire.prepare(config, request, llm_wire.default_limits())
+  api.prepared_headers(prepared)
+}
 EOF
 
 if (cd "$negative" && gleam check --target erlang) >"$scratch/negative.log" 2>&1; then
@@ -103,6 +113,12 @@ if ! rg -q 'PreparedCall' "$scratch/negative.log" \
   || ! rg -q 'connect_and_stream' "$scratch/negative.log"; then
   cat "$scratch/negative.log" >&2
   printf '%s\n' "The external probe failed before reaching the raw-call type boundary." >&2
+  exit 1
+fi
+
+if ! rg -q 'prepared_headers' "$scratch/negative.log"; then
+  cat "$scratch/negative.log" >&2
+  printf '%s\n' "The external probe did not enforce credential accessor privacy." >&2
   exit 1
 fi
 

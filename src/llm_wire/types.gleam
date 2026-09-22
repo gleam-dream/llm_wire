@@ -119,6 +119,7 @@ pub type ProviderConfig {
     project: Option(String),
   )
   AnthropicConfig(api_key: ApiKey, endpoint: Endpoint, version: Option(String))
+  GoogleConfig(api_key: ApiKey, endpoint: Endpoint, api_version: Option(String))
 }
 
 pub type Limits {
@@ -255,8 +256,21 @@ pub fn anthropic_config(
   AnthropicConfig(api_key, endpoint, version)
 }
 
+pub fn google_config(
+  api_key: ApiKey,
+  endpoint: Endpoint,
+  api_version: Option(String),
+) -> ProviderConfig {
+  GoogleConfig(api_key, endpoint, api_version)
+}
+
 pub type ToolCall {
-  ToolCall(id: CallId, name: ToolName, arguments_json: String)
+  ToolCall(
+    id: CallId,
+    name: ToolName,
+    arguments_json: String,
+    provider_id: Option(String),
+  )
 }
 
 pub type Message {

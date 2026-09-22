@@ -153,6 +153,62 @@ pub fn continuation_is_opaque_and_bound_to_its_prepared_interaction_test() {
   fake_server.stop(server)
 }
 
+pub fn anthropic_continuation_restores_typed_tool_use_input_test() {
+  let assert Ok(server) = fake_server.start()
+  let stream =
+    "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-test\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n"
+    <> "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"calc\"}}\n\n"
+    <> "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"x\\\":42}\"}}\n\n"
+    <> "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n"
+    <> "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":2}}\n\n"
+    <> "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+  process.spawn_unlinked(fn() {
+    let assert Ok(socket) = fake_server.accept_connection(server, 2000)
+    let assert Ok(_) = fake_server.read_request_headers(socket, 2000)
+    let _ =
+      fake_server.send_sse_stream(
+        socket,
+        [#(0, bit_array.from_string(stream))],
+        True,
+      )
+    Nil
+  })
+
+  let assert Ok(key) = types.api_key("sk-local-test")
+  let assert Ok(endpoint) =
+    types.endpoint("http://127.0.0.1:" <> int.to_string(server.port) <> "/v1")
+  let assert Ok(model) = types.model_id("claude-test")
+  let config = types.anthropic_config(key, endpoint, None)
+  let tool = tool_fixtures.int_field_tool("calc", "x")
+  let request =
+    types.new_request(model, [types.UserMessage("calculate")])
+    |> types.with_tools([tool])
+  let assert Ok(prepared) = api.prepare(config, request, types.default_limits())
+  let assert Ok(api.RunToolCalls([call], continuation, _)) =
+    runtime.run(prepared, types.default_limits(), types.default_deadlines())
+  let assert Ok(follow_up) =
+    api.prepare_continue(
+      prepared,
+      continuation,
+      [types.ToolResult(call.id, "{\"result\":42}")],
+      types.default_limits(),
+    )
+  let body = api.prepared_request_json(follow_up)
+  string.contains(body, "\"role\":\"assistant\"")
+  |> should.equal(True)
+  string.contains(
+    body,
+    "\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"calc\",\"input\":{\"x\":42}",
+  )
+  |> should.equal(True)
+  string.contains(
+    body,
+    "\"type\":\"tool_result\",\"tool_use_id\":\"toolu_1\",\"content\":\"{\\\"result\\\":42}\"",
+  )
+  |> should.equal(True)
+  fake_server.stop(server)
+}
+
 pub fn buffered_api_preserves_openai_refusal_outcome_test() {
   let assert Ok(server) = fake_server.start()
   process.spawn_unlinked(fn() {
@@ -357,7 +413,9 @@ pub fn real_http_anthropic_streaming_test() {
   case outcome {
     types.CompletedToolCalls(_, calls, _response_id) -> {
       calls
-      |> should.equal([types.ToolCall(call_id, tool_name, "{\"x\": 42}")])
+      |> should.equal([
+        types.ToolCall(call_id, tool_name, "{\"x\": 42}", Some("call_99")),
+      ])
     }
     _ -> panic as "expected CompletedToolCalls"
   }

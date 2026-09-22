@@ -6,6 +6,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/string
 import llm_wire/anthropic
+import llm_wire/google
 import llm_wire/openai
 import llm_wire/sse
 import llm_wire/telemetry
@@ -22,6 +23,7 @@ pub type TransportPort {
 pub type ProviderAdapter {
   OpenAIAdapter(openai.Reducer)
   AnthropicAdapter(anthropic.Reducer)
+  GoogleAdapter(google.Reducer)
 }
 
 type Message {
@@ -142,6 +144,27 @@ pub fn start_anthropic_stream_with_tools(
     Error(error) -> Error(error)
     Ok(reducer) ->
       start_stream(AnthropicAdapter(reducer), limits, deadlines, transport)
+  }
+}
+
+pub fn start_google_stream(
+  limits: types.Limits,
+  deadlines: types.Deadlines,
+  transport: TransportPort,
+) -> Result(Stream, types.WireError) {
+  start_stream(GoogleAdapter(google.new(limits)), limits, deadlines, transport)
+}
+
+pub fn start_google_stream_with_tools(
+  limits: types.Limits,
+  deadlines: types.Deadlines,
+  transport: TransportPort,
+  tools: List(types.ToolDefinition),
+) -> Result(Stream, types.WireError) {
+  case google.new_with_tools(limits, tools) {
+    Error(error) -> Error(error)
+    Ok(reducer) ->
+      start_stream(GoogleAdapter(reducer), limits, deadlines, transport)
   }
 }
 
@@ -844,6 +867,7 @@ fn provider_name(provider: ProviderAdapter) -> String {
   case provider {
     OpenAIAdapter(_) -> "openai"
     AnthropicAdapter(_) -> "anthropic"
+    GoogleAdapter(_) -> "google"
   }
 }
 
@@ -889,6 +913,7 @@ fn get_retry_evidence(
   case provider {
     OpenAIAdapter(r) -> openai.retry_evidence(r, fallback)
     AnthropicAdapter(r) -> anthropic.retry_evidence(r, fallback)
+    GoogleAdapter(r) -> google.retry_evidence(r, fallback)
   }
 }
 
@@ -909,6 +934,12 @@ fn step_provider(
         Error(e) -> Error(e)
       }
     }
+    GoogleAdapter(r) -> {
+      case google.step(r, event) {
+        Ok(#(nr, p)) -> Ok(#(GoogleAdapter(nr), p))
+        Error(e) -> Error(e)
+      }
+    }
   }
 }
 
@@ -918,6 +949,7 @@ fn terminal_provider(
   case provider {
     OpenAIAdapter(r) -> openai.terminal(r)
     AnthropicAdapter(r) -> anthropic.terminal(r)
+    GoogleAdapter(r) -> google.terminal(r)
   }
 }
 

@@ -357,11 +357,13 @@ pub fn openai_interleaved_tool_calls_test() {
           id: expected_call_id1,
           name: expected_tool_name,
           arguments_json: "{\"city\": \"Tokyo\"}",
+          provider_id: Some("call_weather_1"),
         ),
         types.ToolCall(
           id: expected_call_id2,
           name: expected_tool_name,
           arguments_json: "{\"city\": \"Paris\"}",
+          provider_id: Some("call_weather_2"),
         ),
       ])
     }

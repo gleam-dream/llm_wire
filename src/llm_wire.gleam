@@ -1,7 +1,8 @@
 import gleam/list
-import gleam/option.{type Option}
+import gleam/option.{type Option, None}
 import llm_wire/api
 import llm_wire/owner
+import llm_wire/pool
 import llm_wire/runtime
 import llm_wire/types
 
@@ -53,6 +54,8 @@ pub const openai_config = types.openai_config
 
 pub const anthropic_config = types.anthropic_config
 
+pub const google_config = types.google_config
+
 pub type Request =
   types.Request
 
@@ -95,6 +98,46 @@ pub fn run(
   deadlines: Deadlines,
 ) -> Result(RunResult, WireError) {
   case runtime.run(prepared, limits, deadlines) {
+    Error(error) -> Error(error)
+    Ok(api.RunText(text, usage)) -> Ok(RunText(text, usage))
+    Ok(api.RunToolCalls(calls, continuation, usage)) ->
+      Ok(RunToolCalls(
+        list.map(calls, from_types_tool_call),
+        continuation,
+        usage,
+      ))
+    Ok(api.RunOutputLimited(text, calls, usage)) ->
+      Ok(RunOutputLimited(text, list.map(calls, from_types_tool_call), usage))
+    Ok(api.RunRefusal(reason)) -> Ok(RunRefusal(reason))
+  }
+}
+
+pub type Pool =
+  pool.Pool
+
+pub type PoolConfig =
+  pool.PoolConfig
+
+pub type PoolInfo =
+  pool.PoolInfo
+
+pub const default_pool_config = pool.default_pool_config
+
+pub const start_pool = pool.start
+
+pub const stop_pool = pool.stop
+
+pub const pool_info = pool.info
+
+pub const stream_with_pool = runtime.stream_with_pool
+
+pub fn run_with_pool(
+  pool: Pool,
+  prepared: PreparedCall,
+  limits: Limits,
+  deadlines: Deadlines,
+) -> Result(RunResult, WireError) {
+  case runtime.run_with_pool(pool, prepared, limits, deadlines) {
     Error(error) -> Error(error)
     Ok(api.RunText(text, usage)) -> Ok(RunText(text, usage))
     Ok(api.RunToolCalls(calls, continuation, usage)) ->
@@ -299,7 +342,7 @@ fn to_types_message(message: Message) -> types.Message {
 }
 
 fn to_types_tool_call(call: ToolCall) -> types.ToolCall {
-  types.ToolCall(call.id, call.name, call.arguments_json)
+  types.ToolCall(call.id, call.name, call.arguments_json, None)
 }
 
 fn from_types_tool_call(call: types.ToolCall) -> ToolCall {

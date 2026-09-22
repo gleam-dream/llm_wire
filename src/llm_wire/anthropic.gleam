@@ -814,7 +814,12 @@ fn handle_message_stop(
         list.filter_map(reducer.block_order, fn(idx) {
           case dict.get(reducer.blocks, idx) {
             Ok(ToolUseBlock(cid, name, args, _)) ->
-              Ok(types.ToolCall(id: cid, name: name, arguments_json: args))
+              Ok(types.ToolCall(
+                id: cid,
+                name: name,
+                arguments_json: args,
+                provider_id: Some(types.call_id_to_string(cid)),
+              ))
             _ -> Error(Nil)
           }
         })

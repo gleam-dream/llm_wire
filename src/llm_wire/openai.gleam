@@ -930,6 +930,7 @@ fn handle_response_completed(
                     id: tb.call_id,
                     name: tb.name,
                     arguments_json: tb.arguments,
+                    provider_id: Some(types.call_id_to_string(tb.call_id)),
                   ))
                 Error(Nil) -> Error(Nil)
               }

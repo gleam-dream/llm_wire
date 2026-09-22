@@ -175,6 +175,16 @@ pub fn provider_schema(
   }
 }
 
+/// Projects the Blueprint subset admitted by Google's JSON Schema field.
+/// Google exposes this under `parametersJsonSchema`; it is deliberately kept
+/// as a provider-specific admission point even though its supported value
+/// projection currently matches the common OpenAI-compatible subset.
+pub fn google_function_parameters_schema(
+  schema: codec.Schema,
+) -> Result(json.Json, types.WireError) {
+  provider_schema(schema)
+}
+
 fn provider_schema_supported(schema: codec.Schema) -> Bool {
   case schema {
     codec.StringSchema
@@ -292,6 +302,69 @@ fn strict_schema(schema: codec.Schema) -> Result(json.Json, types.WireError) {
       Error(types.PreparationError(
         "Structured output uses an unsupported Blueprint schema variant",
       ))
+  }
+}
+
+pub fn google_strict_output_schema(
+  schema: codec.Schema,
+) -> Result(json.Json, types.WireError) {
+  case schema {
+    codec.ObjectSchema(_) -> google_strict_schema(schema)
+    _ ->
+      Error(types.PreparationError(
+        "Structured output requires an object root schema",
+      ))
+  }
+}
+
+fn google_strict_schema(
+  schema: codec.Schema,
+) -> Result(json.Json, types.WireError) {
+  case schema {
+    codec.NullableSchema(_) ->
+      Error(types.PreparationError(
+        "Google structured output does not support nullable/anyOf schema",
+      ))
+    codec.ObjectSchema(properties) -> {
+      case list.any(properties, fn(property) { !property.required }) {
+        True ->
+          Error(types.PreparationError(
+            "Strict structured output requires every object property to be required",
+          ))
+        False -> {
+          let empty: Result(List(#(String, json.Json)), types.WireError) =
+            Ok([])
+          use encoded <- result.try(
+            list.fold(properties, empty, fn(acc, property) {
+              use prior <- result.try(acc)
+              use property_schema <- result.try(google_strict_schema(
+                property.schema,
+              ))
+              Ok(list.append(prior, [#(property.name, property_schema)]))
+            }),
+          )
+          let required = list.map(properties, fn(property) { property.name })
+          Ok(
+            json.object([
+              #("type", json.string("object")),
+              #("properties", json.object(encoded)),
+              #("required", json.array(required, json.string)),
+            ]),
+          )
+        }
+      }
+    }
+    codec.FieldSchema(_, inner) -> google_strict_schema(inner)
+    codec.ListSchema(item) -> {
+      use item_schema <- result.try(google_strict_schema(item))
+      Ok(
+        json.object([
+          #("type", json.string("array")),
+          #("items", item_schema),
+        ]),
+      )
+    }
+    other -> strict_schema(other)
   }
 }
 
