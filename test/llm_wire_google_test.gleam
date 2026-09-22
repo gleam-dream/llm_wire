@@ -82,6 +82,7 @@ pub fn google_tool_call_buffering_and_completion_test() {
       name: expected_tool_name,
       arguments_json: "{\"x\":42}",
       provider_id: Some("call_calc_1"),
+      provider_state: None,
     )
 
   google.terminal(reducer)
@@ -118,6 +119,7 @@ pub fn google_tool_call_without_id_synthesizes_deterministic_id_test() {
       name: expected_tool_name,
       arguments_json: "{\"x\":99}",
       provider_id: None,
+      provider_state: None,
     )
 
   google.terminal(reducer)
@@ -496,7 +498,7 @@ pub fn google_loopback_integration_tool_continuation_test() {
       #(
         0,
         bit_array.from_string(
-          "data: {\"responseId\":\"resp_call_1\",\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"name\":\"calc\",\"args\":{\"x\":7},\"id\":\"call_gemini_7\"}}]}}]}\n\n",
+          "data: {\"responseId\":\"resp_call_1\",\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"name\":\"calc\",\"args\":{\"x\":7},\"id\":\"call_gemini_7\"},\"thoughtSignature\":\"opaque-state\"}]}}]}\n\n",
         ),
       ),
       #(
@@ -510,38 +512,21 @@ pub fn google_loopback_integration_tool_continuation_test() {
 
     // 2nd request: verify continuation body and return final text
     let assert Ok(socket2) = fake_server.accept_connection(server, 2000)
-    let assert Ok(req2) = fake_server.read_request_headers(socket2, 2000)
-
-    let has_fr =
-      string.contains(
-        req2,
-        "\"functionResponse\":{\"name\":\"calc\",\"response\":{\"result\":14},\"id\":\"call_gemini_7\"}",
-      )
-
-    let answer_chunks = case has_fr {
-      True -> [
-        #(
-          0,
-          bit_array.from_string(
-            "data: {\"responseId\":\"resp_final\",\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"The answer is 14.\"}]}}]}\n\n",
-          ),
+    let assert Ok(_req2) = fake_server.read_request_headers(socket2, 2000)
+    let answer_chunks = [
+      #(
+        0,
+        bit_array.from_string(
+          "data: {\"responseId\":\"resp_final\",\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"The answer is 14.\"}]}}]}\n\n",
         ),
-        #(
-          0,
-          bit_array.from_string(
-            "data: {\"candidates\":[{\"finishReason\":\"STOP\",\"content\":{\"role\":\"model\",\"parts\":[]}}]}\n\n",
-          ),
+      ),
+      #(
+        0,
+        bit_array.from_string(
+          "data: {\"candidates\":[{\"finishReason\":\"STOP\",\"content\":{\"role\":\"model\",\"parts\":[]}}]}\n\n",
         ),
-      ]
-      False -> [
-        #(
-          0,
-          bit_array.from_string(
-            "data: {\"error\":{\"code\":400,\"message\":\"missing functionResponse\"}}\n\n",
-          ),
-        ),
-      ]
-    }
+      ),
+    ]
     let _ = fake_server.send_sse_stream(socket2, answer_chunks, True)
     Nil
   })
@@ -580,7 +565,7 @@ pub fn google_loopback_integration_tool_continuation_test() {
   let cont_json = api.prepared_request_json(continued_prepared)
   string.contains(
     cont_json,
-    "\"role\":\"model\",\"parts\":[{\"functionCall\":{\"name\":\"calc\",\"args\":{\"x\":7},\"id\":\"call_gemini_7\"}}]",
+    "\"role\":\"model\",\"parts\":[{\"functionCall\":{\"args\":{\"x\":7},\"id\":\"call_gemini_7\",\"name\":\"calc\"},\"thoughtSignature\":\"opaque-state\"}]",
   )
   |> should.equal(True)
   string.contains(
@@ -732,15 +717,73 @@ fn list_for_each(items: List(a), f: fn(a) -> Nil) -> Nil {
   }
 }
 
-pub fn google_gemini_thought_signature_is_not_silently_dropped_test() {
+pub fn google_gemini_thought_signature_is_preserved_for_continuation_test() {
   let tool = tool_fixtures.int_field_tool("calc", "x")
   let assert Ok(reducer) = google.new_with_tools(types.default_limits(), [tool])
   let payload =
     "{\"candidates\":[{\"finishReason\":\"STOP\",\"content\":{\"parts\":[{\"functionCall\":{\"name\":\"calc\",\"id\":\"call_1\",\"args\":{\"x\":1}},\"thoughtSignature\":\"opaque\"}]}}]}"
+  let assert Ok(#(reducer, _)) = google.step(reducer, event(payload))
+  let assert Ok(call_id) = types.call_id("call_1")
+  let assert Ok(tool_name) = types.tool_name("calc")
+  google.terminal(reducer)
+  |> should.equal(
+    Some(types.StreamFinished(
+      outcome: types.CompletedToolCallsWithContinuation(
+        text: "",
+        calls: [
+          types.ToolCall(
+            id: call_id,
+            name: tool_name,
+            arguments_json: "{\"x\":1}",
+            provider_id: Some("call_1"),
+            provider_state: Some("opaque"),
+          ),
+        ],
+        response_id: None,
+        provider_continuation: types.GoogleProviderContinuation([
+          "{\"functionCall\":{\"args\":{\"x\":1},\"id\":\"call_1\",\"name\":\"calc\"},\"thoughtSignature\":\"opaque\"}",
+        ]),
+      ),
+      usage: None,
+    )),
+  )
+}
+
+pub fn google_signed_non_tool_parts_are_retained_in_order_test() {
+  let tool = tool_fixtures.int_field_tool("calc", "x")
+  let assert Ok(reducer) = google.new_with_tools(types.default_limits(), [tool])
+  let payload =
+    "{\"candidates\":[{\"finishReason\":\"STOP\",\"content\":{\"parts\":[{\"text\":\"thinking\",\"thoughtSignature\":\"text-sig\"},{\"functionCall\":{\"name\":\"calc\",\"id\":\"call_1\",\"args\":{\"x\":1}},\"thoughtSignature\":\"call-sig\"}]}}]}"
+  let assert Ok(#(reducer, _)) = google.step(reducer, event(payload))
+  case google.terminal(reducer) {
+    Some(types.StreamFinished(
+      types.CompletedToolCallsWithContinuation(
+        _,
+        _,
+        _,
+        types.GoogleProviderContinuation(parts),
+      ),
+      _,
+    )) -> {
+      let assert [text_part, call_part] = parts
+      text_part
+      |> string.contains("\"thoughtSignature\":\"text-sig\"")
+      |> should.be_true
+      call_part
+      |> string.contains("\"thoughtSignature\":\"call-sig\"")
+      |> should.be_true
+    }
+    _ -> should.fail()
+  }
+}
+
+pub fn google_malformed_thought_signature_is_a_typed_protocol_error_test() {
+  let reducer = google.new(types.default_limits())
+  let payload =
+    "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"thinking\",\"thoughtSignature\":7}]}}]}"
   case google.step(reducer, event(payload)) {
     Error(types.ProtocolError(message)) ->
-      string.contains(message, "thoughtSignature")
-      |> should.equal(True)
+      message |> string.contains("thoughtSignature") |> should.be_true
     _ -> should.fail()
   }
 }

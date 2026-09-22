@@ -270,13 +270,29 @@ pub type ToolCall {
     name: ToolName,
     arguments_json: String,
     provider_id: Option(String),
+    provider_state: Option(String),
   )
+}
+
+/// Provider-owned state needed to replay a model turn exactly during a
+/// continuation. The payload is opaque provider JSON, never credentials or a
+/// live transport handle.
+pub type ProviderContinuation {
+  GoogleProviderContinuation(parts: List(String))
+}
+
+pub type Content {
+  TextContent(text: String)
+  ImageUrlContent(url: String)
+  InlineImageContent(mime_type: String, base64_data: String)
 }
 
 pub type Message {
   SystemMessage(content: String)
   UserMessage(content: String)
+  UserContent(parts: List(Content))
   AssistantMessage(content: String)
+  AssistantContent(parts: List(Content))
   AssistantToolCalls(calls: List(ToolCall))
   ToolResultMessage(call_id: CallId, content: String)
 }
@@ -389,6 +405,11 @@ pub type ToolResult {
   ToolResult(call_id: CallId, content: String)
 }
 
+pub type PromptCache {
+  OpenAiPromptCacheKey(key: String)
+  GoogleCachedContent(name: String)
+}
+
 pub type Request {
   Request(
     model: ModelId,
@@ -398,6 +419,8 @@ pub type Request {
     temperature: Option(Float),
     top_p: Option(Float),
     stop_sequences: List(String),
+    prompt_cache: Option(PromptCache),
+    provider_continuation: Option(ProviderContinuation),
   )
 }
 
@@ -410,6 +433,8 @@ pub fn new_request(model: ModelId, messages: List(Message)) -> Request {
     temperature: None,
     top_p: None,
     stop_sequences: [],
+    prompt_cache: None,
+    provider_continuation: None,
   )
 }
 
@@ -433,6 +458,17 @@ pub fn with_stop_sequences(req: Request, seqs: List(String)) -> Request {
   Request(..req, stop_sequences: seqs)
 }
 
+pub fn with_prompt_cache(req: Request, cache: PromptCache) -> Request {
+  Request(..req, prompt_cache: Some(cache))
+}
+
+pub fn with_provider_continuation(
+  req: Request,
+  continuation: ProviderContinuation,
+) -> Request {
+  Request(..req, provider_continuation: Some(continuation))
+}
+
 pub type Usage {
   Usage(input_tokens: Int, output_tokens: Int, total_tokens: Int)
 }
@@ -452,6 +488,12 @@ pub type Outcome {
     text: String,
     calls: List(ToolCall),
     response_id: Option(String),
+  )
+  CompletedToolCallsWithContinuation(
+    text: String,
+    calls: List(ToolCall),
+    response_id: Option(String),
+    provider_continuation: ProviderContinuation,
   )
   OutputLimited(partial_text: String, partial_calls: List(ToolCall))
 }

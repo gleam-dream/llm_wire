@@ -149,6 +149,141 @@ pub fn prepare_anthropic_request_uses_messages_wire_test() {
   body |> string.contains("\"stop_sequences\":[\"END\"]") |> should.be_true
 }
 
+pub fn prepare_openai_request_encodes_typed_multimodal_content_test() {
+  let assert Ok(key) = types.api_key("test-key")
+  let assert Ok(endpoint) = types.endpoint("https://api.example.test/v1")
+  let assert Ok(model) = types.model_id("gpt-test")
+  let config = types.openai_config(key, endpoint, None, None)
+  let request =
+    types.new_request(model, [
+      types.UserContent([
+        types.TextContent("describe this"),
+        types.ImageUrlContent("https://example.test/image.png"),
+        types.InlineImageContent("image/png", "aGVsbG8="),
+      ]),
+    ])
+  let assert Ok(prepared) = api.prepare(config, request, types.default_limits())
+  let body = api.prepared_request_json(prepared)
+  body
+  |> string.contains("\"type\":\"input_text\",\"text\":\"describe this\"")
+  |> should.be_true
+  body
+  |> string.contains(
+    "\"type\":\"input_image\",\"image_url\":\"https://example.test/image.png\"",
+  )
+  |> should.be_true
+  body
+  |> string.contains(
+    "\"type\":\"input_image\",\"image_url\":\"data:image/png;base64,aGVsbG8=\"",
+  )
+  |> should.be_true
+}
+
+pub fn prepare_anthropic_request_encodes_inline_image_content_test() {
+  let assert Ok(key) = types.api_key("test-key")
+  let assert Ok(endpoint) = types.endpoint("https://api.example.test/v1")
+  let assert Ok(model) = types.model_id("claude-test")
+  let config = types.anthropic_config(key, endpoint, None)
+  let request =
+    types.new_request(model, [
+      types.UserContent([
+        types.TextContent("what is shown"),
+        types.InlineImageContent("image/jpeg", "aW1hZ2U="),
+      ]),
+    ])
+  let assert Ok(prepared) = api.prepare(config, request, types.default_limits())
+  let body = api.prepared_request_json(prepared)
+  body
+  |> string.contains("\"type\":\"text\",\"text\":\"what is shown\"")
+  |> should.be_true
+  body
+  |> string.contains(
+    "\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":\"image/jpeg\",\"data\":\"aW1hZ2U=\"}",
+  )
+  |> should.be_true
+}
+
+pub fn prepare_google_request_encodes_inline_image_and_rejects_url_test() {
+  let assert Ok(key) = types.api_key("test-key")
+  let assert Ok(endpoint) =
+    types.endpoint("https://generativelanguage.example.test")
+  let assert Ok(model) = types.model_id("gemini-test")
+  let config = types.google_config(key, endpoint, None)
+  let request =
+    types.new_request(model, [
+      types.UserContent([
+        types.TextContent("read this"),
+        types.InlineImageContent("image/webp", "d2VicA=="),
+      ]),
+    ])
+  let assert Ok(prepared) = api.prepare(config, request, types.default_limits())
+  let body = api.prepared_request_json(prepared)
+  body |> string.contains("\"text\":\"read this\"") |> should.be_true
+  body
+  |> string.contains(
+    "\"inlineData\":{\"mimeType\":\"image/webp\",\"data\":\"d2VicA==\"}",
+  )
+  |> should.be_true
+
+  let url_request =
+    types.new_request(model, [
+      types.UserContent([
+        types.ImageUrlContent("https://example.test/image.png"),
+      ]),
+    ])
+  case api.prepare(config, url_request, types.default_limits()) {
+    Error(types.PreparationError(reason)) ->
+      reason
+      |> string.contains("does not support image URLs")
+      |> should.be_true
+    _ -> should.fail()
+  }
+}
+
+pub fn provider_prompt_cache_references_are_encoded_and_scoped_test() {
+  let assert Ok(key) = types.api_key("test-key")
+  let assert Ok(model) = types.model_id("gpt-test")
+  let assert Ok(openai_endpoint) = types.endpoint("https://api.example.test/v1")
+  let openai_config = types.openai_config(key, openai_endpoint, None, None)
+  let openai_request =
+    types.with_prompt_cache(
+      types.new_request(model, [types.UserMessage("hello")]),
+      types.OpenAiPromptCacheKey("stable-prompt-v1"),
+    )
+  let assert Ok(prepared) =
+    api.prepare(openai_config, openai_request, types.default_limits())
+  api.prepared_request_json(prepared)
+  |> string.contains("\"prompt_cache_key\":\"stable-prompt-v1\"")
+  |> should.be_true
+
+  let assert Ok(google_endpoint) =
+    types.endpoint("https://generativelanguage.example.test")
+  let google_config = types.google_config(key, google_endpoint, None)
+  let google_request =
+    types.with_prompt_cache(
+      types.new_request(model, [types.UserMessage("hello")]),
+      types.GoogleCachedContent("cachedContents/example"),
+    )
+  let assert Ok(google_prepared) =
+    api.prepare(google_config, google_request, types.default_limits())
+  api.prepared_request_json(google_prepared)
+  |> string.contains("\"cachedContent\":\"cachedContents/example\"")
+  |> should.be_true
+
+  let invalid_google =
+    types.with_prompt_cache(
+      types.new_request(model, [types.UserMessage("hello")]),
+      types.OpenAiPromptCacheKey("wrong-provider"),
+    )
+  case api.prepare(google_config, invalid_google, types.default_limits()) {
+    Error(types.PreparationError(reason)) ->
+      reason
+      |> string.contains("cannot be used with the Google profile")
+      |> should.be_true
+    _ -> should.fail()
+  }
+}
+
 pub fn preparation_rejects_non_loopback_plain_http_test() {
   let assert Ok(key) = types.api_key("test-key")
   let assert Ok(endpoint) = types.endpoint("http://api.example.test/v1")

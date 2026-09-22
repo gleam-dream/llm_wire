@@ -376,6 +376,9 @@ handle_checkout_create(Target, TimeoutMs, Deadline, ClientPid, From, State) ->
     end.
 
 start_connector(Target, TimeoutMs, Deadline, ClientPid, From, State) ->
+    {noreply, start_connector_state(Target, TimeoutMs, Deadline, ClientPid, From, State)}.
+
+start_connector_state(Target, TimeoutMs, Deadline, ClientPid, From, State) ->
     Pool = self(),
     Ref = make_ref(),
     {WorkerPid, WorkerMon} = spawn_monitor(fun() ->
@@ -397,7 +400,7 @@ start_connector(Target, TimeoutMs, Deadline, ClientPid, From, State) ->
         worker_mon = WorkerMon,
         timer_ref = TimerRef
     },
-    {noreply, State#state{connecting = [Connector | State#state.connecting]}}.
+    State#state{connecting = [Connector | State#state.connecting]}.
 
 do_checkin(LeaseRef, Health, State) ->
     case find_leased_by_ref(LeaseRef, State#state.conns) of
@@ -451,9 +454,9 @@ maybe_serve_waiter(State) ->
             Target = Waiter#waiter.target,
             erlang:cancel_timer(Waiter#waiter.timer_ref),
             RemainingMs = erlang:max(Waiter#waiter.deadline - now_ms(), 100),
-            start_connector(Target, RemainingMs, Waiter#waiter.deadline,
-                            Waiter#waiter.client_pid, Waiter#waiter.from,
-                            State#state{waiters = RemainingWaiters});
+            start_connector_state(Target, RemainingMs, Waiter#waiter.deadline,
+                                  Waiter#waiter.client_pid, Waiter#waiter.from,
+                                  State#state{waiters = RemainingWaiters});
         none ->
             State
     end.

@@ -440,6 +440,96 @@ pub fn pool_waiter_queue_serves_next_request_when_connection_checked_in_test() {
   fake_server.stop(server)
 }
 
+pub fn pool_waiter_is_restarted_after_client_cleanup_callback_test() {
+  let assert Ok(server) = fake_server.start()
+  let config =
+    pool.PoolConfig(
+      max_connections_per_target: 1,
+      max_total_connections: 1,
+      idle_timeout_ms: 10_000,
+    )
+  let assert Ok(p) = llm_wire.start_pool(config)
+
+  let first_response =
+    "event: response.output_item.added\ndata: {\"output_index\":0,\"item\":{\"id\":\"first\",\"type\":\"message\"}}\n\n"
+    <> "event: response.output_text.delta\ndata: {\"output_index\":0,\"item_id\":\"first\",\"delta\":\"held\"}\n\n"
+  let second_response =
+    "event: response.output_item.added\ndata: {\"output_index\":0,\"item\":{\"id\":\"second\",\"type\":\"message\"}}\n\n"
+    <> "event: response.output_text.delta\ndata: {\"output_index\":0,\"item_id\":\"second\",\"delta\":\"recovered\"}\n\n"
+    <> "event: response.output_item.done\ndata: {\"output_index\":0,\"item\":{\"id\":\"second\",\"type\":\"message\"}}\n\n"
+    <> "event: response.completed\ndata: {\"response\":{\"id\":\"second\",\"status\":\"completed\"}}\n\n"
+
+  let server_worker =
+    process.spawn_unlinked(fn() {
+      let assert Ok(sock1) = fake_server.accept_connection(server, 3000)
+      let assert Ok(_) = fake_server.read_request_headers(sock1, 3000)
+      let _ =
+        fake_server.send_sse_stream(
+          sock1,
+          [#(0, <<first_response:utf8>>)],
+          False,
+        )
+      let assert Ok(sock2) = fake_server.accept_connection(server, 3000)
+      let assert Ok(_) = fake_server.read_request_headers(sock2, 3000)
+      let _ =
+        fake_server.send_sse_stream(
+          sock2,
+          [#(0, <<second_response:utf8>>)],
+          True,
+        )
+      Nil
+    })
+
+  let prep = openai_prepared(server.port, "gpt-4o")
+  let owner_subject = process.new_subject()
+  let first_client =
+    process.spawn_unlinked(fn() {
+      let assert Ok(stream) =
+        llm_wire.stream_with_pool(
+          p,
+          prep,
+          llm_wire.default_limits(),
+          llm_wire.default_deadlines(),
+        )
+      let assert Ok(stream_owner) = owner.owner_pid(stream)
+      process.send(owner_subject, stream_owner)
+      process.sleep(5000)
+    })
+  let assert Ok(stream_owner) = process.receive(owner_subject, 3000)
+  let assert True = wait_for_pool_leases(p, 1, 300)
+
+  let waiter_subject = process.new_subject()
+  process.spawn_unlinked(fn() {
+    let result =
+      llm_wire.run_with_pool(
+        p,
+        prep,
+        llm_wire.default_limits(),
+        types.Deadlines(
+          overall_timeout_ms: 3000,
+          read_timeout_ms: 3000,
+          idle_timeout_ms: 3000,
+        ),
+      )
+    process.send(waiter_subject, result)
+  })
+  let assert True = wait_for_pool_waiters(p, 1, 300)
+
+  // Killing the checked-out owner drives the pool's DOWN cleanup callback.
+  // The callback must start a replacement connector with a bare pool state.
+  process.kill(stream_owner)
+  process.kill(first_client)
+
+  let assert Ok(Ok(llm_wire.RunText(text, _))) =
+    process.receive(waiter_subject, 3000)
+  let assert True = text == "recovered"
+  let info = llm_wire.pool_info(p)
+  let assert True = info.waiting_requests == 0
+  let assert Ok(Nil) = llm_wire.stop_pool(p)
+  process.kill(server_worker)
+  fake_server.stop(server)
+}
+
 fn wait_for_pool_reclamation(
   p: pool.Pool,
   stream_owner: process.Pid,
@@ -468,6 +558,21 @@ fn wait_for_pool_empty(p: pool.Pool, attempts: Int) -> Bool {
         True -> {
           process.sleep(10)
           wait_for_pool_empty(p, attempts - 1)
+        }
+        False -> False
+      }
+  }
+}
+
+fn wait_for_pool_leases(p: pool.Pool, expected: Int, attempts: Int) -> Bool {
+  let info = llm_wire.pool_info(p)
+  case info.leased_connections == expected {
+    True -> True
+    False ->
+      case attempts > 0 {
+        True -> {
+          process.sleep(10)
+          wait_for_pool_leases(p, expected, attempts - 1)
         }
         False -> False
       }

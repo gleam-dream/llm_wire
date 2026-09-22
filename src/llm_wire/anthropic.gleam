@@ -819,6 +819,7 @@ fn handle_message_stop(
                 name: name,
                 arguments_json: args,
                 provider_id: Some(types.call_id_to_string(cid)),
+                provider_state: None,
               ))
             _ -> Error(Nil)
           }

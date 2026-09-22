@@ -414,7 +414,7 @@ pub fn real_http_anthropic_streaming_test() {
     types.CompletedToolCalls(_, calls, _response_id) -> {
       calls
       |> should.equal([
-        types.ToolCall(call_id, tool_name, "{\"x\": 42}", Some("call_99")),
+        types.ToolCall(call_id, tool_name, "{\"x\": 42}", Some("call_99"), None),
       ])
     }
     _ -> panic as "expected CompletedToolCalls"

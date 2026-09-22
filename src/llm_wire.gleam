@@ -73,6 +73,15 @@ pub const with_top_p = types.with_top_p
 
 pub const with_stop_sequences = types.with_stop_sequences
 
+pub type PromptCache {
+  OpenAiPromptCacheKey(key: String)
+  GoogleCachedContent(name: String)
+}
+
+pub fn with_prompt_cache(req: Request, cache: PromptCache) -> Request {
+  types.with_prompt_cache(req, to_types_prompt_cache(cache))
+}
+
 pub type PreparedCall =
   api.PreparedCall
 
@@ -258,9 +267,17 @@ pub const default_deadlines = types.default_deadlines
 pub type Message {
   SystemMessage(content: String)
   UserMessage(content: String)
+  UserContent(parts: List(Content))
   AssistantMessage(content: String)
+  AssistantContent(parts: List(Content))
   AssistantToolCalls(calls: List(ToolCall))
   ToolResultMessage(call_id: CallId, content: String)
+}
+
+pub type Content {
+  TextContent(text: String)
+  ImageUrlContent(url: String)
+  InlineImageContent(mime_type: String, base64_data: String)
 }
 
 pub type ToolResult {
@@ -333,7 +350,10 @@ fn to_types_message(message: Message) -> types.Message {
   case message {
     SystemMessage(content) -> types.SystemMessage(content)
     UserMessage(content) -> types.UserMessage(content)
+    UserContent(parts) -> types.UserContent(list.map(parts, to_types_content))
     AssistantMessage(content) -> types.AssistantMessage(content)
+    AssistantContent(parts) ->
+      types.AssistantContent(list.map(parts, to_types_content))
     AssistantToolCalls(calls) ->
       types.AssistantToolCalls(list.map(calls, to_types_tool_call))
     ToolResultMessage(call_id, content) ->
@@ -341,8 +361,24 @@ fn to_types_message(message: Message) -> types.Message {
   }
 }
 
+fn to_types_content(content: Content) -> types.Content {
+  case content {
+    TextContent(text) -> types.TextContent(text)
+    ImageUrlContent(url) -> types.ImageUrlContent(url)
+    InlineImageContent(mime_type, base64_data) ->
+      types.InlineImageContent(mime_type, base64_data)
+  }
+}
+
+fn to_types_prompt_cache(cache: PromptCache) -> types.PromptCache {
+  case cache {
+    OpenAiPromptCacheKey(key) -> types.OpenAiPromptCacheKey(key)
+    GoogleCachedContent(name) -> types.GoogleCachedContent(name)
+  }
+}
+
 fn to_types_tool_call(call: ToolCall) -> types.ToolCall {
-  types.ToolCall(call.id, call.name, call.arguments_json, None)
+  types.ToolCall(call.id, call.name, call.arguments_json, None, None)
 }
 
 fn from_types_tool_call(call: types.ToolCall) -> ToolCall {

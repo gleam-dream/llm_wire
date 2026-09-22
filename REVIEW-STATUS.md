@@ -1,45 +1,127 @@
-# `llm_wire` Wave 3 final correction review
-
-Date: 2026-09-21  
-Baseline: `e643755` plus the current staged, unstaged, and untracked recovery set  
-Scope: final verification of the ordinary-JSON decision and the residual pooled-owner cleanup
+# LLM Wire Wave 4 focused rereview
 
 ## Verdict
 
-**Accept the delivered correction subset.** No blocking finding remains in this focused review.
+All four review findings are closed. Google now retains the complete signed
+model-part sequence and rejects malformed signatures, Blueprint's
+`codec.schema_value` is the sole schema projector, the pool repair has a
+deterministic cleanup-callback regression, and all three ReqLLM ports retain
+their selected upstream assertions. The focused Wave 4 correction set is
+**accepted**.
 
-The provider wire boundary now uses ordinary `gleam/json` parsing and Gleam decoders. The separate strict-JSON module and Erlang FFI are absent, and duplicate-member rejection is no longer an acceptance criterion. Blueprint remains attached to the schema domain: tool schemas, structured-output schemas, and schema-backed validation and decoding.
+This is a focused rereview of the findings in `llm-wire-wave4-review.md`, not a
+new full-package review. The installed review skill's mandatory primitive
+files remain unavailable, so the rereview uses direct source, upstream-test,
+and executable-gate evidence without inventing the missing rubric.
 
-The pool now stops the parked connection owner when the monitored Gun connection dies. The peer-close regression exercises the Gun `DOWN` path, observes removal of the dead pooled entry, and proves the pool can establish and use a replacement under one-per-target and one-total limits. Every pool shutdown in the pool suite now asserts the fallible stop result.
+## Finding status
 
-This is acceptance of the delivered subset, not completion of the broader Wave 3 capability scope. The updated report continues to describe that scope as partial. Strict response-header preallocation also remains unavailable with the current Gun interface and still requires the explicit contract decision already recorded: patch or pin a suitable Gun interface, or declare the capability unavailable. The contract must not be weakened silently.
+### Closed — Google signed-part retention and malformed signature handling
 
-## Independent evidence
+`src/llm_wire/google.gleam:292-334` now distinguishes an absent
+`thoughtSignature` from a present value of the wrong type. A malformed value
+returns a typed `ProtocolError`. Every decoded model part is retained as
+provider-owned JSON in arrival order, including signed text and other non-tool
+parts. At a tool terminal, `google.gleam:485-527` places the ordered parts in a
+`GoogleProviderContinuation`.
 
-### Ordinary JSON boundary
+`src/llm_wire/api.gleam:479-539,1169-1269` carries that continuation through
+the opaque prepared interaction and substitutes the complete retained model
+turn at the corresponding assistant-tool-call position before the ordered
+function responses. The signature remains on its original part; application
+call IDs, provider call IDs, and provider continuation state remain separate.
 
-- `src/llm_wire/openai.gleam`, `anthropic.gleam`, and `google.gleam` parse provider response envelopes with `gleam/json.parse` and typed or dynamic Gleam decoders.
-- Continuation argument validation in `src/llm_wire/api.gleam` uses `json.parse(raw, decode.dynamic)`. Google tool-result object recognition likewise uses `json.parse` with a Gleam dictionary decoder. Request and continuation values are emitted through `gleam/json` values and encoding, with validated raw argument objects inserted where the provider requires JSON values rather than strings.
-- Neither `src/llm_wire/internal/strict_json.gleam` nor `src/llm_wire_strict_json_ffi.erl` exists in the working tree. No source or test reference to `strict_json`, `wire_json`, direct OTP `json:decode`, duplicate-member callbacks, or duplicate-member guarantees remains.
-- Blueprint imports are limited to the codec/schema and runtime validation paths in `types.gleam`, `api.gleam`, and `schema.gleam`. They are not used as the generic provider wire parser.
+The focused reducer tests cover a signed text part followed by a signed
+function-call part, their order, and a non-string signature error. The local
+two-request test checks the exact retained signed function-call part and the
+provider call ID in the prepared continuation body. This closes the original
+finding for the implemented tool-continuation path. Durable serialization and
+non-tool final-turn persistence remain outside this accepted subset as already
+reported.
 
-This satisfies the authoritative simplification decision. Duplicate JSON members follow the standard parser's semantics; the package does not add a second parser or advertise a stricter wire guarantee.
+### Closed — Blueprint is the single schema projection authority
 
-### Pooled owner lifecycle
+`src/llm_wire/schema.gleam:13-47` now begins every schema-bearing wire value
+with `codec.schema_value(schema)`. The local recursion converts Blueprint's
+`value.Value` representation into ordinary `gleam/json`; it does not recreate
+the schema AST projection. Tool and structured-output profile functions now
+validate their admitted subset and then call that same bridge.
 
-`src/llm_wire_gun_pool.erl:296-310` handles a monitored Gun connection `DOWN`. It now calls `stop_owner(Entry#conn_entry.owner_pid)` before notifying any lessee and removing the connection entry. This closes the terminal path identified in the preceding rereview: the successful connector worker waits in `keep_connection_owner/1` for exactly that stop message after transferring the connection.
+This meets the intended boundary: Blueprint owns schema semantics and runtime
+validation, while ordinary provider envelopes continue to use Gleam JSON. No
+strict envelope abstraction or duplicate schema renderer was introduced.
 
-`pool_remote_connection_death_reclaims_entry_test` closes the first connection from the peer, waits until the pool reports zero connections, and then completes another request through a new connection while both configured connection limits are one. The test directly exercises entry reclamation and replacement capacity. The source assertion supplies the complementary owner-exit guarantee because the parked worker's only receive clause exits on `stop`.
+### Closed — all three ReqLLM ports retain their selected assertions
 
-All nine `stop_pool(p)` calls in `test/llm_wire_pool_test.gleam` assert `Ok(Nil)`. The earlier unused-result warnings are gone.
+The revision and Apache-2.0 provenance remain exact. Two replacement ports now
+retain their selected upstream triggers and observations:
 
-## Verification
+- The assistant multi-content case constructs the same ordered assistant text
+  and URL-image parts and proves both remain admitted and encoded.
+- The Responses structured-tool-output case constructs the same call identity
+  and structured result and proves the `function_call_output` contains that
+  call ID and JSON output.
 
-- `nix develop --command gleam test --target erlang`: **pass**, 122 tests, no failures and no unused-result warnings.
-- `nix develop --command sh test/external_package_boundary.sh`: **pass**. The root-facade consumer compiled, and forbidden prepared-call construction, raw transport access, and `api.prepared_headers` access failed at the package boundary as expected.
-- `nix develop --command gleam check --target erlang`: **pass**, no warnings.
-- `nix develop --command gleam format --check src test`: **pass**.
-- `nix flake check`: **pass** for the host system; Nix reported the other systems as incompatible and omitted them.
-- `git diff --check` and `git diff --cached --check`: **pass**.
+The rich continuation comparator is now honestly labeled local rather than an
+upstream port. That resolves the provenance overclaim for that case.
 
-No `llm_wire` source or test file was changed during this review, and no commit was created.
+Its replacement uses pinned ReqLLM
+`test/provider/openai/responses_api_unit_test.exs:796-818`, “encodes input
+messages correctly.” Both upstream and local cases construct ordered user and
+assistant text messages, then assert that the user block is `input_text` and
+the assistant block is `output_text`. The first rereview exposed that the
+initial replacement incorrectly expected `input_text` for both roles. The
+source now selects the text content type by role, and
+`test/llm_wire_wave4_oracle_test.gleam:64-81` asserts the exact upstream role,
+order, content type, and text values.
+
+Together with the assistant multi-content and structured tool-output cases,
+this supplies three faithful executable ReqLLM ports. Provider-specific Google
+continuation ordering remains correctly classified as local evidence.
+
+### Closed — pool waiter callback regression
+
+`test/llm_wire_pool_test.gleam:443-530` deterministically leases the only
+connection, queues a waiter, kills the checked-out stream owner, and requires
+the cleanup callback to start a replacement connection that serves the waiter.
+It then reads pool state and stops the still-callable pool successfully.
+
+This reaches the corrected `maybe_serve_waiter/1` connector branch rather than
+the older checked-in-idle-connection path. Together with the helper split in
+`src/llm_wire_gun_pool.erl`, it closes the state-tuple crash finding.
+
+## Mock LLM assessment
+
+The `dwmkerr/mock-llm` section is appropriately bounded. Its README documents
+`POST /v1/chat/completions`, Chat Completions request/choice envelopes,
+sequence-based tool examples, and Chat Completions SSE behavior. It says
+Responses support is future extension work. LLM Wire uses OpenAI Responses,
+Anthropic Messages, and Google GenerateContent, so the report makes no endpoint
+or payload compatibility claim, did not run the server, and did not add a
+dependency. That is the correct disposition for this wave.
+
+## Independent verification
+
+- `nix develop --command gleam test --target erlang` — **133 passed, no
+  failures**. Expected negative TLS fixture notices were emitted.
+- `nix develop --command sh test/external_package_boundary.sh` — passed; the
+  root facade compiled and raw prepared-call/transport construction failed at
+  the intended boundary.
+- `nix flake check` — passed the available `aarch64-darwin` check; Nix omitted
+  incompatible systems.
+- `git diff --check 188c70b` and `git diff --cached --check` — passed.
+
+## Acceptance boundary
+
+Accept the Google continuation correction, Blueprint projection correction,
+pool callback correction, and all three replacement ReqLLM ports. The rich
+continuation test is correctly classified as local. This accepts the focused
+Wave 4 correction set, not the full retained package scope.
+
+The wider Wave 4 boundary remains unchanged: multimodal and provider-option
+parity, embeddings, Anthropic cache breakpoints, detailed usage/reasoning/stop
+coverage, durable continuation, replay-safe retry, lifecycle observations,
+batch/background operations, remote cancellation, realtime, and release
+hardening remain open. The response-header pre-allocation question remains the
+recorded dependency decision; this rereview adds no fork, parser, or new
+requirement.

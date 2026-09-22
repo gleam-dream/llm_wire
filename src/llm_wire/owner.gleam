@@ -877,6 +877,10 @@ fn terminal_name(terminal: types.TerminalOutcome) -> String {
     types.StreamFinished(types.Refused(_), _) -> "refused"
     types.StreamFinished(types.CompletedToolCalls(_, _, _), _) ->
       "completed_tools"
+    types.StreamFinished(
+      types.CompletedToolCallsWithContinuation(_, _, _, _),
+      _,
+    ) -> "completed_tools"
     types.StreamFinished(types.OutputLimited(_, _), _) -> "output_limited"
     types.StreamFailed(_, _) -> "failed"
     types.StreamCancelledLocally(_) -> "cancelled"

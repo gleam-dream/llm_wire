@@ -215,6 +215,7 @@ pub fn anthropic_tool_use_stream_test() {
           name: expected_tool_name,
           arguments_json: "{\"symbol\": \"AAPL\"}",
           provider_id: Some("toolu_123"),
+          provider_state: None,
         ),
       ])
     }

@@ -25,6 +25,8 @@ pub opaque type Reducer {
     terminal_outcome: Option(types.TerminalOutcome),
     response_id: Option(String),
     usage: Option(types.Usage),
+    provider_parts: List(String),
+    has_thought_signature: Bool,
   )
 }
 
@@ -34,6 +36,7 @@ pub type ToolBuffer {
     provider_id: Option(String),
     name: types.ToolName,
     arguments: String,
+    provider_state: Option(String),
   )
 }
 
@@ -52,6 +55,8 @@ pub fn new(limits: types.Limits) -> Reducer {
     terminal_outcome: None,
     response_id: None,
     usage: None,
+    provider_parts: [],
+    has_thought_signature: False,
   )
 }
 
@@ -288,12 +293,43 @@ fn process_part(
   reducer: Reducer,
   part: Dynamic,
 ) -> Result(#(Reducer, List(types.StreamProgress)), types.WireError) {
+  use thought_signature <- result.try(thought_signature(part))
+  use encoded_part <- result.try(
+    dynamic_json(part)
+    |> result.replace_error(types.ProtocolError(
+      "Gemini model part cannot be retained for continuation",
+    )),
+  )
+  let with_provider_part =
+    Reducer(
+      ..reducer,
+      provider_parts: [json.to_string(encoded_part), ..reducer.provider_parts],
+      has_thought_signature: case thought_signature {
+        Some(_) -> True
+        None -> reducer.has_thought_signature
+      },
+    )
+  case get_field(part, "functionCall") {
+    Ok(function_call) ->
+      process_function_call(
+        with_provider_part,
+        function_call,
+        thought_signature,
+      )
+    Error(Nil) ->
+      process_part_without_thought_signature(with_provider_part, part)
+  }
+}
+
+fn thought_signature(part: Dynamic) -> Result(Option(String), types.WireError) {
   case get_field(part, "thoughtSignature") {
-    Ok(_) ->
-      Error(types.ProtocolError(
-        "Gemini thoughtSignature cannot be preserved by the current continuation contract",
+    Error(Nil) -> Ok(None)
+    Ok(value) ->
+      get_string(value)
+      |> result.map(Some)
+      |> result.replace_error(types.ProtocolError(
+        "Gemini thoughtSignature must be a string",
       ))
-    Error(Nil) -> process_part_without_thought_signature(reducer, part)
   }
 }
 
@@ -341,10 +377,7 @@ fn process_part_without_thought_signature(
     }
     Error(Nil) -> {
       // Check for functionCall
-      case get_field(part, "functionCall") {
-        Error(Nil) -> Ok(#(reducer, []))
-        Ok(fc) -> process_function_call(reducer, fc)
-      }
+      Ok(#(reducer, []))
     }
   }
 }
@@ -352,6 +385,7 @@ fn process_part_without_thought_signature(
 fn process_function_call(
   reducer: Reducer,
   fc: Dynamic,
+  provider_state: Option(String),
 ) -> Result(#(Reducer, List(types.StreamProgress)), types.WireError) {
   use name_str <- result.try(
     get_field(fc, "name")
@@ -415,7 +449,13 @@ fn process_function_call(
                 False -> {
                   use call_id <- result.try(types.call_id(raw_id))
                   let buffer =
-                    ToolBuffer(call_id, provider_id, tool_name, args_json)
+                    ToolBuffer(
+                      call_id,
+                      provider_id,
+                      tool_name,
+                      args_json,
+                      provider_state,
+                    )
                   let updated_buffers =
                     dict.insert(reducer.tool_buffers, raw_id, buffer)
                   let updated_order = list.append(reducer.tool_order, [raw_id])
@@ -461,15 +501,29 @@ fn apply_finish_reason(
         _ -> {
           // Validate every tool call against admitted tools
           use calls <- result.try(validate_and_build_tool_calls(reducer))
-          let outcome =
-            types.StreamFinished(
-              types.CompletedToolCalls(
-                reducer.text_buffer,
-                calls,
-                reducer.response_id,
-              ),
-              reducer.usage,
-            )
+          let outcome = case reducer.has_thought_signature {
+            True ->
+              types.StreamFinished(
+                types.CompletedToolCallsWithContinuation(
+                  reducer.text_buffer,
+                  calls,
+                  reducer.response_id,
+                  types.GoogleProviderContinuation(list.reverse(
+                    reducer.provider_parts,
+                  )),
+                ),
+                reducer.usage,
+              )
+            False ->
+              types.StreamFinished(
+                types.CompletedToolCalls(
+                  reducer.text_buffer,
+                  calls,
+                  reducer.response_id,
+                ),
+                reducer.usage,
+              )
+          }
           Ok(Reducer(..reducer, terminal_outcome: Some(outcome)))
         }
       }
@@ -582,6 +636,7 @@ fn validate_and_build_tool_calls(
                 buf.name,
                 buf.arguments,
                 buf.provider_id,
+                buf.provider_state,
               )
             Ok(list.append(collected, [call]))
           }
@@ -595,7 +650,13 @@ fn build_unvalidated_tool_calls(reducer: Reducer) -> List(types.ToolCall) {
   list.filter_map(reducer.tool_order, fn(raw_id) {
     case dict.get(reducer.tool_buffers, raw_id) {
       Ok(buf) ->
-        Ok(types.ToolCall(buf.call_id, buf.name, buf.arguments, buf.provider_id))
+        Ok(types.ToolCall(
+          buf.call_id,
+          buf.name,
+          buf.arguments,
+          buf.provider_id,
+          buf.provider_state,
+        ))
       Error(Nil) -> Error(Nil)
     }
   })

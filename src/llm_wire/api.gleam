@@ -44,6 +44,7 @@ pub opaque type Continuation {
     source_calls: List(types.ToolCall),
     conversation: List(types.Message),
     response_id: Option(String),
+    provider_continuation: Option(types.ProviderContinuation),
     origin: reference.Reference,
   )
 }
@@ -389,14 +390,14 @@ fn prepare_with_format(
   use Nil <- result.try(validate_provider_options(provider, request))
   use tool_json <- result.try(encode_tools(provider, admitted_tools))
   let body = case config {
-    types.OpenAIConfig(..) ->
-      Ok(
-        json.to_string(encode_openai_request(
-          request,
-          tool_json,
-          structured_format,
-        )),
-      )
+    types.OpenAIConfig(..) -> {
+      use encoded <- result.try(encode_openai_request(
+        request,
+        tool_json,
+        structured_format,
+      ))
+      Ok(json.to_string(encoded))
+    }
     types.AnthropicConfig(..) ->
       encode_anthropic_request(request, tool_json, structured_format)
     types.GoogleConfig(..) ->
@@ -525,6 +526,11 @@ pub fn prepare_continue(
             types.new_request(continuation.model, messages)
             |> types.with_tools(prepared.request.tools)
             |> copy_options(prepared.request)
+          let request = case continuation.provider_continuation {
+            Some(provider_continuation) ->
+              types.with_provider_continuation(request, provider_continuation)
+            None -> request
+          }
           prepare_with_format(
             prepared.config,
             request,
@@ -578,7 +584,12 @@ fn copy_options(
     Some(value) -> types.with_top_p(with_temperature, value)
     None -> with_temperature
   }
-  types.with_stop_sequences(with_top_p, original.stop_sequences)
+  let with_stops =
+    types.with_stop_sequences(with_top_p, original.stop_sequences)
+  case original.prompt_cache {
+    Some(cache) -> types.with_prompt_cache(with_stops, cache)
+    None -> with_stops
+  }
 }
 
 fn validate_tool_results(
@@ -661,6 +672,29 @@ pub fn collect_run(
               calls,
               prepared.request.messages,
               response_id,
+              None,
+              prepared.origin,
+            )
+          Ok(RunToolCalls(calls, continuation, usage))
+        }
+        types.StreamFinished(
+          types.CompletedToolCallsWithContinuation(
+            _text,
+            calls,
+            response_id,
+            provider_continuation,
+          ),
+          usage,
+        ) -> {
+          let continuation =
+            Continuation(
+              prepared.provider,
+              prepared.model,
+              list.map(calls, fn(call) { call.id }),
+              calls,
+              prepared.request.messages,
+              response_id,
+              Some(provider_continuation),
               prepared.origin,
             )
           Ok(RunToolCalls(calls, continuation, usage))
@@ -787,6 +821,28 @@ fn validate_headers(
 }
 
 fn validate_options(request: types.Request) -> Result(Nil, types.WireError) {
+  case request.prompt_cache {
+    Some(types.OpenAiPromptCacheKey(key)) ->
+      case string.trim(key) == "" {
+        True ->
+          Error(types.PreparationError(
+            "OpenAI prompt_cache_key cannot be empty",
+          ))
+        False -> validate_sampling_options(request)
+      }
+    Some(types.GoogleCachedContent(name)) ->
+      case string.trim(name) == "" {
+        True ->
+          Error(types.PreparationError("Google cachedContent cannot be empty"))
+        False -> validate_sampling_options(request)
+      }
+    None -> validate_sampling_options(request)
+  }
+}
+
+fn validate_sampling_options(
+  request: types.Request,
+) -> Result(Nil, types.WireError) {
   case request.max_tokens {
     Some(value) if value <= 0 ->
       Error(types.PreparationError("max_tokens must be positive"))
@@ -821,7 +877,14 @@ fn validate_provider_options(
   request: types.Request,
 ) -> Result(Nil, types.WireError) {
   case provider {
-    types.OpenAI ->
+    types.OpenAI -> {
+      use Nil <- result.try(case request.prompt_cache {
+        None | Some(types.OpenAiPromptCacheKey(_)) -> Ok(Nil)
+        Some(types.GoogleCachedContent(_)) ->
+          Error(types.PreparationError(
+            "Google cachedContent cannot be used with the OpenAI profile",
+          ))
+      })
       case list.is_empty(request.stop_sequences) {
         True -> Ok(Nil)
         False ->
@@ -829,15 +892,30 @@ fn validate_provider_options(
             "stop_sequences are not supported by the Responses profile",
           ))
       }
+    }
     types.Google ->
-      case list.length(request.stop_sequences) > 5 {
-        True ->
+      case request.prompt_cache {
+        None | Some(types.GoogleCachedContent(_)) ->
+          case list.length(request.stop_sequences) > 5 {
+            True ->
+              Error(types.PreparationError(
+                "Google GenerationConfig.stopSequences accepts at most 5 values",
+              ))
+            False -> Ok(Nil)
+          }
+        Some(types.OpenAiPromptCacheKey(_)) ->
           Error(types.PreparationError(
-            "Google GenerationConfig.stopSequences accepts at most 5 values",
+            "OpenAI prompt_cache_key cannot be used with the Google profile",
           ))
-        False -> Ok(Nil)
       }
-    types.Anthropic -> Ok(Nil)
+    types.Anthropic ->
+      case request.prompt_cache {
+        None -> Ok(Nil)
+        Some(_) ->
+          Error(types.PreparationError(
+            "prompt caching is not admitted by the Anthropic profile",
+          ))
+      }
   }
 }
 
@@ -894,16 +972,17 @@ fn encode_openai_request(
   request: types.Request,
   tools: List(json.Json),
   structured_format: Option(StructuredFormat),
-) -> json.Json {
+) -> Result(json.Json, types.WireError) {
+  let empty: Result(List(json.Json), types.WireError) = Ok([])
+  use input_items <- result.try(
+    list.fold(request.messages, empty, fn(acc, message) {
+      use prior <- result.try(acc)
+      Ok(list.append(prior, openai_message_items(message)))
+    }),
+  )
   let base = [
     #("model", json.string(types.model_id_to_string(request.model))),
-    #(
-      "input",
-      json.array(
-        list.flat_map(request.messages, openai_message_items),
-        fn(value) { value },
-      ),
-    ),
+    #("input", json.array(input_items, fn(value) { value })),
     #("stream", json.bool(True)),
   ]
   let options = request_option_fields(request, types.OpenAI)
@@ -912,10 +991,12 @@ fn encode_openai_request(
     _ -> [#("tools", json.array(tools, fn(value) { value }))]
   }
   let format_fields = openai_output_format(structured_format)
-  json.object(list.append(
-    base,
-    list.append(options, list.append(tool_fields, format_fields)),
-  ))
+  Ok(
+    json.object(list.append(
+      base,
+      list.append(options, list.append(tool_fields, format_fields)),
+    )),
+  )
 }
 
 fn encode_anthropic_request(
@@ -1018,9 +1099,16 @@ fn encode_google_request(
   use contents <- result.try(build_google_contents(
     request.messages,
     request.messages,
+    request.provider_continuation,
   ))
 
   let base = [#("contents", "[" <> string.join(contents, ",") <> "]")]
+  let cache_fields = case request.prompt_cache {
+    Some(types.GoogleCachedContent(name)) -> [
+      #("cachedContent", json.to_string(json.string(name))),
+    ]
+    _ -> []
+  }
 
   let tool_fields = case tools {
     [] -> []
@@ -1051,7 +1139,10 @@ fn encode_google_request(
   Ok(
     encode_object_text(list.append(
       base,
-      list.append(system_field, list.append(tool_fields, gen_config_field)),
+      list.append(
+        cache_fields,
+        list.append(system_field, list.append(tool_fields, gen_config_field)),
+      ),
     )),
   )
 }
@@ -1078,6 +1169,7 @@ fn google_generation_config(
 fn build_google_contents(
   messages: List(types.Message),
   all_messages: List(types.Message),
+  provider_continuation: Option(types.ProviderContinuation),
 ) -> Result(List(String), types.WireError) {
   let non_system =
     list.filter(messages, fn(m) {
@@ -1086,13 +1178,19 @@ fn build_google_contents(
         _ -> True
       }
     })
-  build_google_contents_loop(non_system, all_messages, [])
+  build_google_contents_loop(
+    non_system,
+    all_messages,
+    [],
+    provider_continuation,
+  )
 }
 
 fn build_google_contents_loop(
   remaining: List(types.Message),
   all_messages: List(types.Message),
   acc: List(String),
+  provider_continuation: Option(types.ProviderContinuation),
 ) -> Result(List(String), types.WireError) {
   case remaining {
     [] -> Ok(acc)
@@ -1137,11 +1235,35 @@ fn build_google_contents_loop(
         "{\"role\":\"user\",\"parts\":["
         <> string.join(response_parts, ",")
         <> "]}"
-      build_google_contents_loop(rest, all_messages, list.append(acc, [turn]))
+      build_google_contents_loop(
+        rest,
+        all_messages,
+        list.append(acc, [turn]),
+        provider_continuation,
+      )
     }
     [message, ..rest] -> {
-      use turn <- result.try(single_google_turn(message))
-      build_google_contents_loop(rest, all_messages, list.append(acc, [turn]))
+      let #(turn_result, remaining_continuation) = case
+        provider_continuation,
+        message
+      {
+        Some(types.GoogleProviderContinuation(parts)),
+          types.AssistantToolCalls(_)
+        -> #(
+          Ok(
+            "{\"role\":\"model\",\"parts\":[" <> string.join(parts, ",") <> "]}",
+          ),
+          None,
+        )
+        _, _ -> #(single_google_turn(message), provider_continuation)
+      }
+      use turn <- result.try(turn_result)
+      build_google_contents_loop(
+        rest,
+        all_messages,
+        list.append(acc, [turn]),
+        remaining_continuation,
+      )
     }
   }
 }
@@ -1168,12 +1290,20 @@ fn single_google_turn(
         <> json.to_string(json.string(content))
         <> "}]}",
       )
+    types.UserContent(parts) -> {
+      use encoded <- result.try(google_content_parts(parts))
+      Ok("{\"role\":\"user\",\"parts\":[" <> string.join(encoded, ",") <> "]}")
+    }
     types.AssistantMessage(content) ->
       Ok(
         "{\"role\":\"model\",\"parts\":[{\"text\":"
         <> json.to_string(json.string(content))
         <> "}]}",
       )
+    types.AssistantContent(parts) -> {
+      use encoded <- result.try(google_content_parts(parts))
+      Ok("{\"role\":\"model\",\"parts\":[" <> string.join(encoded, ",") <> "]}")
+    }
     types.AssistantToolCalls(calls) -> {
       let empty: Result(List(String), types.WireError) = Ok([])
       use parts <- result.try(
@@ -1185,6 +1315,11 @@ fn single_google_turn(
             Some(provider_id) ->
               ",\"id\":" <> json.to_string(json.string(provider_id))
           }
+          let thought_signature_part = case call.provider_state {
+            None -> ""
+            Some(signature) ->
+              ",\"thoughtSignature\":" <> json.to_string(json.string(signature))
+          }
           let fc =
             "{\"name\":"
             <> json.to_string(json.string(types.tool_name_to_string(call.name)))
@@ -1192,7 +1327,7 @@ fn single_google_turn(
             <> input
             <> id_part
             <> "}"
-          let part = "{\"functionCall\":" <> fc <> "}"
+          let part = "{\"functionCall\":" <> fc <> thought_signature_part <> "}"
           Ok(list.append(prior, [part]))
         }),
       )
@@ -1200,6 +1335,36 @@ fn single_google_turn(
     }
     types.ToolResultMessage(..) -> Ok("{}")
   }
+}
+
+fn google_content_parts(
+  parts: List(types.Content),
+) -> Result(List(String), types.WireError) {
+  list.fold(parts, Ok([]), fn(acc, part) {
+    use prior <- result.try(acc)
+    case part {
+      types.TextContent(text) ->
+        Ok(
+          list.append(prior, [
+            "{\"text\":" <> json.to_string(json.string(text)) <> "}",
+          ]),
+        )
+      types.InlineImageContent(mime_type, base64_data) ->
+        Ok(
+          list.append(prior, [
+            "{\"inlineData\":{\"mimeType\":"
+            <> json.to_string(json.string(mime_type))
+            <> ",\"data\":"
+            <> json.to_string(json.string(base64_data))
+            <> "}}",
+          ]),
+        )
+      types.ImageUrlContent(_) ->
+        Error(types.PreparationError(
+          "Google content does not support image URLs; use inline image data",
+        ))
+    }
+  })
 }
 
 fn find_tool_call_name(
@@ -1261,6 +1426,17 @@ fn anthropic_message_json(
           ]),
         ),
       )
+    types.UserContent(parts) -> {
+      use content <- result.try(anthropic_content_json(parts))
+      Ok(
+        json.to_string(
+          json.object([
+            #("role", json.string("user")),
+            #("content", content),
+          ]),
+        ),
+      )
+    }
     types.AssistantMessage(content) ->
       Ok(
         json.to_string(
@@ -1270,6 +1446,17 @@ fn anthropic_message_json(
           ]),
         ),
       )
+    types.AssistantContent(parts) -> {
+      use content <- result.try(anthropic_content_json(parts))
+      Ok(
+        json.to_string(
+          json.object([
+            #("role", json.string("assistant")),
+            #("content", content),
+          ]),
+        ),
+      )
+    }
     types.ToolResultMessage(call_id, content) ->
       Ok(
         json.to_string(
@@ -1318,6 +1505,49 @@ fn anthropic_message_json(
       )
     }
   }
+}
+
+fn anthropic_content_json(
+  parts: List(types.Content),
+) -> Result(json.Json, types.WireError) {
+  let empty: Result(List(json.Json), types.WireError) = Ok([])
+  use encoded <- result.try(
+    list.fold(parts, empty, fn(acc, part) {
+      use prior <- result.try(acc)
+      case part {
+        types.TextContent(text) ->
+          Ok(
+            list.append(prior, [
+              json.object([
+                #("type", json.string("text")),
+                #("text", json.string(text)),
+              ]),
+            ]),
+          )
+        types.InlineImageContent(mime_type, base64_data) ->
+          Ok(
+            list.append(prior, [
+              json.object([
+                #("type", json.string("image")),
+                #(
+                  "source",
+                  json.object([
+                    #("type", json.string("base64")),
+                    #("media_type", json.string(mime_type)),
+                    #("data", json.string(base64_data)),
+                  ]),
+                ),
+              ]),
+            ]),
+          )
+        types.ImageUrlContent(_) ->
+          Error(types.PreparationError(
+            "Anthropic image URL content is outside this adapter's admitted profile; use inline image data",
+          ))
+      }
+    }),
+  )
+  Ok(json.array(encoded, fn(value) { value }))
 }
 
 fn canonical_json(raw: String) -> Result(String, types.WireError) {
@@ -1411,7 +1641,16 @@ fn request_option_fields(
     ]
     _, _ -> []
   }
-  list.append(max_tokens, list.append(temperature, list.append(top_p, stop)))
+  let cache = case request.prompt_cache, provider {
+    Some(types.OpenAiPromptCacheKey(key)), types.OpenAI -> [
+      #("prompt_cache_key", json.string(key)),
+    ]
+    _, _ -> []
+  }
+  list.append(
+    max_tokens,
+    list.append(temperature, list.append(top_p, list.append(stop, cache))),
+  )
 }
 
 fn openai_message_items(message: types.Message) -> List(json.Json) {
@@ -1428,10 +1667,32 @@ fn openai_message_items(message: types.Message) -> List(json.Json) {
         #("content", json.string(content)),
       ]),
     ]
+    types.UserContent(parts) -> [
+      json.object([
+        #("role", json.string("user")),
+        #(
+          "content",
+          json.array(openai_content_parts(parts, "input_text"), fn(value) {
+            value
+          }),
+        ),
+      ]),
+    ]
     types.AssistantMessage(content) -> [
       json.object([
         #("role", json.string("assistant")),
         #("content", json.string(content)),
+      ]),
+    ]
+    types.AssistantContent(parts) -> [
+      json.object([
+        #("role", json.string("assistant")),
+        #(
+          "content",
+          json.array(openai_content_parts(parts, "output_text"), fn(value) {
+            value
+          }),
+        ),
       ]),
     ]
     types.AssistantToolCalls(calls) ->
@@ -1451,6 +1712,34 @@ fn openai_message_items(message: types.Message) -> List(json.Json) {
       ]),
     ]
   }
+}
+
+fn openai_content_parts(
+  parts: List(types.Content),
+  text_type: String,
+) -> List(json.Json) {
+  list.map(parts, fn(part) {
+    case part {
+      types.TextContent(text) ->
+        json.object([
+          #("type", json.string(text_type)),
+          #("text", json.string(text)),
+        ])
+      types.ImageUrlContent(url) ->
+        json.object([
+          #("type", json.string("input_image")),
+          #("image_url", json.string(url)),
+        ])
+      types.InlineImageContent(mime_type, base64_data) ->
+        json.object([
+          #("type", json.string("input_image")),
+          #(
+            "image_url",
+            json.string("data:" <> mime_type <> ";base64," <> base64_data),
+          ),
+        ])
+    }
+  })
 }
 
 fn parse_endpoint(
