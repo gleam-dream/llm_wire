@@ -8,8 +8,9 @@ import json/blueprint/codec
 import json/blueprint/number
 import json/blueprint/parser
 import json/blueprint/value
-import llm_wire/api
-import llm_wire/schema
+import llm_wire/internal/api
+import llm_wire/internal/provider_config
+import llm_wire/internal/schema
 import llm_wire/telemetry
 import llm_wire/types
 import sinal
@@ -19,7 +20,8 @@ pub fn prepare_openai_request_uses_responses_wire_test() {
   let assert Ok(key) = types.api_key("test-key")
   let assert Ok(endpoint) = types.endpoint("http://127.0.0.1:4321/v1/")
   let assert Ok(model) = types.model_id("gpt-test")
-  let config = types.openai_config(key, endpoint, None, Some("project-test"))
+  let config =
+    provider_config.OpenAIConfig(key, endpoint, None, Some("project-test"))
   let request =
     types.new_request(model, [types.UserMessage("hello")])
     |> types.with_tools([tool_fixtures.int_field_tool("sum", "value")])
@@ -131,7 +133,8 @@ pub fn prepare_anthropic_request_uses_messages_wire_test() {
   let assert Ok(key) = types.api_key("test-key")
   let assert Ok(endpoint) = types.endpoint("https://api.example.test/v1")
   let assert Ok(model) = types.model_id("claude-test")
-  let config = types.anthropic_config(key, endpoint, Some("2025-01-01"))
+  let config =
+    provider_config.AnthropicConfig(key, endpoint, Some("2025-01-01"))
   let request =
     types.new_request(model, [
       types.SystemMessage("be concise"),
@@ -153,7 +156,7 @@ pub fn prepare_openai_request_encodes_typed_multimodal_content_test() {
   let assert Ok(key) = types.api_key("test-key")
   let assert Ok(endpoint) = types.endpoint("https://api.example.test/v1")
   let assert Ok(model) = types.model_id("gpt-test")
-  let config = types.openai_config(key, endpoint, None, None)
+  let config = provider_config.OpenAIConfig(key, endpoint, None, None)
   let request =
     types.new_request(model, [
       types.UserContent([
@@ -183,7 +186,7 @@ pub fn prepare_anthropic_request_encodes_inline_image_content_test() {
   let assert Ok(key) = types.api_key("test-key")
   let assert Ok(endpoint) = types.endpoint("https://api.example.test/v1")
   let assert Ok(model) = types.model_id("claude-test")
-  let config = types.anthropic_config(key, endpoint, None)
+  let config = provider_config.AnthropicConfig(key, endpoint, None)
   let request =
     types.new_request(model, [
       types.UserContent([
@@ -208,7 +211,7 @@ pub fn prepare_google_request_encodes_inline_image_and_rejects_url_test() {
   let assert Ok(endpoint) =
     types.endpoint("https://generativelanguage.example.test")
   let assert Ok(model) = types.model_id("gemini-test")
-  let config = types.google_config(key, endpoint, None)
+  let config = provider_config.GoogleConfig(key, endpoint, None)
   let request =
     types.new_request(model, [
       types.UserContent([
@@ -244,7 +247,8 @@ pub fn provider_prompt_cache_references_are_encoded_and_scoped_test() {
   let assert Ok(key) = types.api_key("test-key")
   let assert Ok(model) = types.model_id("gpt-test")
   let assert Ok(openai_endpoint) = types.endpoint("https://api.example.test/v1")
-  let openai_config = types.openai_config(key, openai_endpoint, None, None)
+  let openai_config =
+    provider_config.OpenAIConfig(key, openai_endpoint, None, None)
   let openai_request =
     types.with_prompt_cache(
       types.new_request(model, [types.UserMessage("hello")]),
@@ -258,7 +262,7 @@ pub fn provider_prompt_cache_references_are_encoded_and_scoped_test() {
 
   let assert Ok(google_endpoint) =
     types.endpoint("https://generativelanguage.example.test")
-  let google_config = types.google_config(key, google_endpoint, None)
+  let google_config = provider_config.GoogleConfig(key, google_endpoint, None)
   let google_request =
     types.with_prompt_cache(
       types.new_request(model, [types.UserMessage("hello")]),
@@ -288,7 +292,7 @@ pub fn preparation_rejects_non_loopback_plain_http_test() {
   let assert Ok(key) = types.api_key("test-key")
   let assert Ok(endpoint) = types.endpoint("http://api.example.test/v1")
   let assert Ok(model) = types.model_id("gpt-test")
-  let config = types.openai_config(key, endpoint, None, None)
+  let config = provider_config.OpenAIConfig(key, endpoint, None, None)
   let request = types.new_request(model, [types.UserMessage("hello")])
   case api.prepare(config, request, types.default_limits()) {
     Error(types.ConfigurationError(_)) -> should.be_true(True)
@@ -300,7 +304,7 @@ pub fn preparation_rejects_unsupported_openai_stop_sequences_test() {
   let assert Ok(key) = types.api_key("test-key")
   let assert Ok(endpoint) = types.endpoint("https://api.example.test/v1")
   let assert Ok(model) = types.model_id("gpt-test")
-  let config = types.openai_config(key, endpoint, None, None)
+  let config = provider_config.OpenAIConfig(key, endpoint, None, None)
   let request =
     types.new_request(model, [types.UserMessage("hello")])
     |> types.with_stop_sequences(["stop"])
@@ -314,7 +318,7 @@ pub fn structured_output_is_admitted_and_decoded_with_native_codec_test() {
   let assert Ok(key) = types.api_key("test-key")
   let assert Ok(endpoint) = types.endpoint("https://api.example.test/v1")
   let assert Ok(model) = types.model_id("gpt-test")
-  let config = types.openai_config(key, endpoint, None, None)
+  let config = provider_config.OpenAIConfig(key, endpoint, None, None)
   let request = types.new_request(model, [types.UserMessage("return a count")])
   let output_codec = codec.object(codec.required("answer", codec.int()))
   let assert Ok(prepared) =
@@ -342,7 +346,7 @@ pub fn structured_output_rejects_optional_strict_schema_test() {
   let assert Ok(key) = types.api_key("test-key")
   let assert Ok(endpoint) = types.endpoint("https://api.example.test/v1")
   let assert Ok(model) = types.model_id("gpt-test")
-  let config = types.openai_config(key, endpoint, None, None)
+  let config = provider_config.OpenAIConfig(key, endpoint, None, None)
   let request = types.new_request(model, [types.UserMessage("hello")])
   let output_codec = codec.object(codec.optional("note", codec.string()))
   case
@@ -363,13 +367,10 @@ pub fn lifecycle_observation_contains_only_fixed_metadata_test() {
   let event = telemetry.observation_event()
   let assert Ok(handler_id) = sinal.handler_id("llm_wire_api_observation_test")
   let received = process.new_subject()
-  let handler =
-    sinal.handler(fn(_event, _measurements, metadata) {
-      process.send(received, metadata)
-      Ok(Nil)
-    })
   let assert Ok(attachment) =
-    sinal.attach(handler_id, event, handler, fn(_event, _failure) { Nil })
+    sinal.observe(handler_id, event, fn(_measurements, metadata) {
+      process.send(received, metadata)
+    })
 
   telemetry.observe(telemetry.Prepared, "openai", "accepted")
   let assert Ok(metadata) = process.receive(received, 1000)

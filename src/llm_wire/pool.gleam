@@ -80,6 +80,7 @@ pub fn info(pool: Pool) -> PoolInfo {
   )
 }
 
+@internal
 pub fn pool_pid(pool: Pool) -> process.Pid {
   pool.pid
 }

@@ -6,7 +6,8 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
-import llm_wire/sse
+import llm_wire/internal/sse
+import llm_wire/internal/stream_types
 import llm_wire/types
 
 pub opaque type Reducer {
@@ -30,7 +31,7 @@ pub opaque type Reducer {
     total_argument_bytes: Int,
     response_bytes_observed: Bool,
     semantic_progress_observed: Bool,
-    terminal_outcome: Option(types.TerminalOutcome),
+    terminal_outcome: Option(stream_types.TerminalOutcome),
   )
 }
 
@@ -78,7 +79,7 @@ pub fn new_with_tools(
   }
 }
 
-pub fn terminal(reducer: Reducer) -> Option(types.TerminalOutcome) {
+pub fn terminal(reducer: Reducer) -> Option(stream_types.TerminalOutcome) {
   reducer.terminal_outcome
 }
 
@@ -320,7 +321,10 @@ fn handle_output_item_added(
                             False -> {
                               case
                                 list.any(reducer.admitted_tools, fn(tool) {
-                                  types.tool_definition_name(tool) == nm
+                                  types.tool_name_to_string(types.tool_name_of(
+                                    tool,
+                                  ))
+                                  == nm
                                 })
                               {
                                 False ->
@@ -803,7 +807,8 @@ fn handle_output_item_done(
                   let tool_nm = types.tool_name_to_string(tool.name)
                   case
                     list.find(reducer.admitted_tools, fn(definition) {
-                      types.tool_definition_name(definition) == tool_nm
+                      types.tool_name_to_string(types.tool_name_of(definition))
+                      == tool_nm
                     })
                   {
                     Ok(admitted) -> {
@@ -947,23 +952,29 @@ fn handle_response_completed(
           let terminal = case completed.status {
             "completed" -> {
               let outcome = case refusal_text, all_calls {
-                refusal, _ if refusal != "" -> types.Refused(refusal)
-                _, [] -> types.CompletedText(all_text)
+                refusal, _ if refusal != "" -> stream_types.Refused(refusal)
+                _, [] -> stream_types.CompletedText(all_text)
                 _, _ ->
-                  types.CompletedToolCalls(
+                  stream_types.CompletedToolCalls(
                     all_text,
                     all_calls,
                     Some(completed.id),
                   )
               }
-              types.StreamFinished(outcome: outcome, usage: completed.usage)
+              stream_types.StreamFinished(
+                outcome: outcome,
+                usage: completed.usage,
+              )
             }
             "incomplete" -> {
-              let outcome = types.OutputLimited(all_text, all_calls)
-              types.StreamFinished(outcome: outcome, usage: completed.usage)
+              let outcome = stream_types.OutputLimited(all_text, all_calls)
+              stream_types.StreamFinished(
+                outcome: outcome,
+                usage: completed.usage,
+              )
             }
             "failed" -> {
-              types.StreamFailed(
+              stream_types.StreamFailed(
                 error: types.ProviderError(
                   code: None,
                   message: "Response completed with status failed",
@@ -972,7 +983,7 @@ fn handle_response_completed(
               )
             }
             "cancelled" ->
-              types.StreamFailed(
+              stream_types.StreamFailed(
                 error: types.ProviderError(
                   code: Some("cancelled"),
                   message: "Provider cancelled the response",
@@ -980,7 +991,7 @@ fn handle_response_completed(
                 retry: retry_evidence,
               )
             other -> {
-              types.StreamFailed(
+              stream_types.StreamFailed(
                 error: types.ProviderError(
                   code: None,
                   message: "Unknown response status: " <> other,
@@ -1039,7 +1050,7 @@ fn handle_error_event(
           semantic_progress_observed: reducer.semantic_progress_observed,
         )
       let terminal =
-        types.StreamFailed(
+        stream_types.StreamFailed(
           error: types.ProviderError(code: err.code, message: err.message),
           retry: retry_evidence,
         )

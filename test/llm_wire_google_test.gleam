@@ -7,10 +7,12 @@ import gleam/string
 import gleeunit/should
 import json/blueprint/codec
 import json/blueprint/number
-import llm_wire/api
-import llm_wire/google
-import llm_wire/runtime
-import llm_wire/sse
+import llm_wire/internal/api
+import llm_wire/internal/google
+import llm_wire/internal/provider_config
+import llm_wire/internal/runtime
+import llm_wire/internal/sse
+import llm_wire/internal/stream_types
 import llm_wire/types
 import tool_fixtures
 
@@ -48,8 +50,8 @@ pub fn google_text_streaming_and_stop_completion_test() {
   // Verify terminal outcome
   google.terminal(reducer)
   |> should.equal(
-    Some(types.StreamFinished(
-      outcome: types.CompletedText("Hello world!"),
+    Some(stream_types.StreamFinished(
+      outcome: stream_types.CompletedText("Hello world!"),
       usage: Some(types.Usage(5, 3, 8)),
     )),
   )
@@ -87,8 +89,8 @@ pub fn google_tool_call_buffering_and_completion_test() {
 
   google.terminal(reducer)
   |> should.equal(
-    Some(types.StreamFinished(
-      outcome: types.CompletedToolCalls(
+    Some(stream_types.StreamFinished(
+      outcome: stream_types.CompletedToolCalls(
         text: "",
         calls: [expected_call],
         response_id: Some("resp_tools"),
@@ -124,8 +126,8 @@ pub fn google_tool_call_without_id_synthesizes_deterministic_id_test() {
 
   google.terminal(reducer)
   |> should.equal(
-    Some(types.StreamFinished(
-      outcome: types.CompletedToolCalls(
+    Some(stream_types.StreamFinished(
+      outcome: stream_types.CompletedToolCalls(
         text: "",
         calls: [expected_call],
         response_id: None,
@@ -196,8 +198,8 @@ pub fn google_safety_prompt_feedback_refused_test() {
 
   google.terminal(reducer)
   |> should.equal(
-    Some(types.StreamFinished(
-      outcome: types.Refused("Prompt blocked by safety policy: SAFETY"),
+    Some(stream_types.StreamFinished(
+      outcome: stream_types.Refused("Prompt blocked by safety policy: SAFETY"),
       usage: None,
     )),
   )
@@ -225,8 +227,8 @@ pub fn google_finish_reason_refusal_test() {
     let assert Ok(#(reducer, [])) = google.step(reducer, event(chunk))
     google.terminal(reducer)
     |> should.equal(
-      Some(types.StreamFinished(
-        outcome: types.Refused(expected_refusal),
+      Some(stream_types.StreamFinished(
+        outcome: stream_types.Refused(expected_refusal),
         usage: None,
       )),
     )
@@ -245,8 +247,8 @@ pub fn google_finish_reason_max_tokens_output_limited_test() {
 
   google.terminal(reducer)
   |> should.equal(
-    Some(types.StreamFinished(
-      outcome: types.OutputLimited(
+    Some(stream_types.StreamFinished(
+      outcome: stream_types.OutputLimited(
         partial_text: "Partial output",
         partial_calls: [],
       ),
@@ -263,7 +265,7 @@ pub fn google_top_level_error_payload_fails_test() {
 
   google.terminal(reducer)
   |> should.equal(
-    Some(types.StreamFailed(
+    Some(stream_types.StreamFailed(
       error: types.ProviderError(
         code: Some("INVALID_ARGUMENT"),
         message: "API key not valid",
@@ -280,7 +282,7 @@ pub fn google_top_level_error_payload_fails_test() {
 pub fn google_request_encoding_messages_options_and_tools_test() {
   let assert Ok(api_key) = types.api_key("test-goog-key")
   let assert Ok(endpoint) = types.endpoint("http://127.0.0.1:8080/v1beta")
-  let config = types.google_config(api_key, endpoint, Some("v1beta"))
+  let config = provider_config.GoogleConfig(api_key, endpoint, Some("v1beta"))
   let assert Ok(model) = types.model_id("gemini-2.5-flash")
   let tool = tool_fixtures.int_field_tool("add", "amount")
 
@@ -331,7 +333,7 @@ pub fn google_request_encoding_messages_options_and_tools_test() {
 pub fn google_function_declaration_uses_json_schema_profile_and_stop_limit_test() {
   let assert Ok(api_key) = types.api_key("test-key")
   let assert Ok(endpoint) = types.endpoint("http://127.0.0.1:8080")
-  let config = types.google_config(api_key, endpoint, None)
+  let config = provider_config.GoogleConfig(api_key, endpoint, None)
   let assert Ok(model) = types.model_id("gemini-2.5-flash")
   let assert Ok(tool_name) = types.tool_name("shape")
   let assert Ok(tool) =
@@ -393,7 +395,7 @@ pub fn google_function_declaration_uses_json_schema_profile_and_stop_limit_test(
 pub fn google_structured_output_accepts_valid_schema_and_rejects_nullable_test() {
   let assert Ok(api_key) = types.api_key("test-key")
   let assert Ok(endpoint) = types.endpoint("http://127.0.0.1:8080")
-  let config = types.google_config(api_key, endpoint, None)
+  let config = provider_config.GoogleConfig(api_key, endpoint, None)
   let assert Ok(model) = types.model_id("gemini-2.5-flash")
   let request = types.new_request(model, [types.UserMessage("Extract")])
 
@@ -474,7 +476,7 @@ pub fn google_loopback_integration_text_stream_test() {
   let assert Ok(endpoint) =
     types.endpoint("http://127.0.0.1:" <> int.to_string(server.port))
   let assert Ok(model) = types.model_id("gemini-2.5-flash")
-  let config = types.google_config(key, endpoint, None)
+  let config = provider_config.GoogleConfig(key, endpoint, None)
   let request = types.new_request(model, [types.UserMessage("hi")])
   let assert Ok(prepared) = api.prepare(config, request, types.default_limits())
 
@@ -535,7 +537,7 @@ pub fn google_loopback_integration_tool_continuation_test() {
   let assert Ok(endpoint) =
     types.endpoint("http://127.0.0.1:" <> int.to_string(server.port))
   let assert Ok(model) = types.model_id("gemini-2.5-flash")
-  let config = types.google_config(key, endpoint, None)
+  let config = provider_config.GoogleConfig(key, endpoint, None)
   let tool = tool_fixtures.int_field_tool("calc", "x")
 
   let request =
@@ -608,7 +610,7 @@ pub fn google_loopback_integration_refusal_test() {
   let assert Ok(endpoint) =
     types.endpoint("http://127.0.0.1:" <> int.to_string(server.port))
   let assert Ok(model) = types.model_id("gemini-2.5-flash")
-  let config = types.google_config(key, endpoint, None)
+  let config = provider_config.GoogleConfig(key, endpoint, None)
   let request = types.new_request(model, [types.UserMessage("harmful query")])
   let assert Ok(prepared) = api.prepare(config, request, types.default_limits())
 
@@ -673,7 +675,7 @@ pub fn google_missing_provider_id_is_omitted_from_continuation_test() {
   let assert Ok(endpoint) =
     types.endpoint("http://127.0.0.1:" <> int.to_string(server.port))
   let assert Ok(model) = types.model_id("gemini-2.5-flash")
-  let config = types.google_config(key, endpoint, None)
+  let config = provider_config.GoogleConfig(key, endpoint, None)
   let tool = tool_fixtures.int_field_tool("calc", "x")
   let request =
     types.new_request(model, [types.UserMessage("double 7")])
@@ -727,8 +729,8 @@ pub fn google_gemini_thought_signature_is_preserved_for_continuation_test() {
   let assert Ok(tool_name) = types.tool_name("calc")
   google.terminal(reducer)
   |> should.equal(
-    Some(types.StreamFinished(
-      outcome: types.CompletedToolCallsWithContinuation(
+    Some(stream_types.StreamFinished(
+      outcome: stream_types.CompletedToolCallsWithContinuation(
         text: "",
         calls: [
           types.ToolCall(
@@ -740,7 +742,7 @@ pub fn google_gemini_thought_signature_is_preserved_for_continuation_test() {
           ),
         ],
         response_id: None,
-        provider_continuation: types.GoogleProviderContinuation([
+        provider_continuation: stream_types.GoogleProviderContinuation([
           "{\"functionCall\":{\"args\":{\"x\":1},\"id\":\"call_1\",\"name\":\"calc\"},\"thoughtSignature\":\"opaque\"}",
         ]),
       ),
@@ -756,12 +758,12 @@ pub fn google_signed_non_tool_parts_are_retained_in_order_test() {
     "{\"candidates\":[{\"finishReason\":\"STOP\",\"content\":{\"parts\":[{\"text\":\"thinking\",\"thoughtSignature\":\"text-sig\"},{\"functionCall\":{\"name\":\"calc\",\"id\":\"call_1\",\"args\":{\"x\":1}},\"thoughtSignature\":\"call-sig\"}]}}]}"
   let assert Ok(#(reducer, _)) = google.step(reducer, event(payload))
   case google.terminal(reducer) {
-    Some(types.StreamFinished(
-      types.CompletedToolCallsWithContinuation(
+    Some(stream_types.StreamFinished(
+      stream_types.CompletedToolCallsWithContinuation(
         _,
         _,
         _,
-        types.GoogleProviderContinuation(parts),
+        stream_types.GoogleProviderContinuation(parts),
       ),
       _,
     )) -> {

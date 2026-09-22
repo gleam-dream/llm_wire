@@ -5,25 +5,29 @@ import gleam/int
 import gleam/option.{None}
 import gleam/string
 import gleeunit/should
-import llm_wire
-import llm_wire/owner
+import llm_wire/config
+import llm_wire/internal/api
+import llm_wire/internal/owner
+import llm_wire/internal/provider_config
+import llm_wire/internal/runtime
+import llm_wire/internal/stream_types
+import llm_wire/internal/tcp
 import llm_wire/pool
-import llm_wire/tcp
+import llm_wire/session
 import llm_wire/types
 
 fn test_request(model_name: String) -> types.Request {
-  let assert Ok(model) = llm_wire.model_id(model_name)
-  llm_wire.new_request(model, [llm_wire.UserMessage("hello")])
+  let assert Ok(model) = types.model_id(model_name)
+  types.new_request(model, [types.UserMessage("hello")])
 }
 
-fn openai_prepared(port: Int, model_name: String) -> llm_wire.PreparedCall {
-  let assert Ok(key) = llm_wire.api_key("sk-test-key")
+fn openai_prepared(port: Int, model_name: String) -> api.PreparedCall {
+  let assert Ok(key) = types.api_key("sk-test-key")
   let assert Ok(ep) =
-    llm_wire.endpoint("http://127.0.0.1:" <> string.inspect(port) <> "/v1")
-  let config = llm_wire.openai_config(key, ep, None, None)
+    types.endpoint("http://127.0.0.1:" <> string.inspect(port) <> "/v1")
+  let config = provider_config.OpenAIConfig(key, ep, None, None)
   let request = test_request(model_name)
-  let assert Ok(prep) =
-    llm_wire.prepare(config, request, llm_wire.default_limits())
+  let assert Ok(prep) = api.prepare(config, request, types.default_limits())
   prep
 }
 
@@ -34,14 +38,14 @@ pub fn pool_lifecycle_starts_reports_info_and_stops_cleanly_test() {
       max_total_connections: 10,
       idle_timeout_ms: 10_000,
     )
-  let assert Ok(p) = llm_wire.start_pool(config)
-  let info0 = llm_wire.pool_info(p)
+  let assert Ok(p) = pool.start(config)
+  let info0 = pool.info(p)
   let assert True = info0.total_connections == 0
   let assert True = info0.idle_connections == 0
   let assert True = info0.leased_connections == 0
   let assert True = info0.waiting_requests == 0
 
-  let assert Ok(Nil) = llm_wire.stop_pool(p)
+  let assert Ok(Nil) = pool.stop(p)
 }
 
 pub fn pool_reuses_connection_for_sequential_requests_test() {
@@ -52,7 +56,7 @@ pub fn pool_reuses_connection_for_sequential_requests_test() {
       max_total_connections: 4,
       idle_timeout_ms: 10_000,
     )
-  let assert Ok(p) = llm_wire.start_pool(config)
+  let assert Ok(p) = pool.start(config)
 
   let sse_body =
     "event: response.output_item.added\ndata: {\"output_index\":0,\"item\":{\"id\":\"item-1\",\"type\":\"message\"}}\n\n"
@@ -76,38 +80,35 @@ pub fn pool_reuses_connection_for_sequential_requests_test() {
       Nil
     })
 
-  let prep = openai_prepared(server.port, "gpt-4o")
+  let assert Ok(key) = types.api_key("sk-test-key")
+  let assert Ok(endpoint) =
+    types.endpoint("http://127.0.0.1:" <> string.inspect(server.port) <> "/v1")
+  let assert Ok(model) = types.model_id("gpt-4o")
+  let settings =
+    config.openai(key)
+    |> config.with_endpoint(endpoint)
+    |> config.with_pool(p)
+  let request = types.new_request(model, [types.UserMessage("hello")])
+  let assert Ok(prep) = session.prepare(settings, request)
 
   // First run through pool
-  let assert Ok(llm_wire.RunText(text1, _)) =
-    llm_wire.run_with_pool(
-      p,
-      prep,
-      llm_wire.default_limits(),
-      llm_wire.default_deadlines(),
-    )
+  let assert Ok(session.RunText(text1, _)) = session.run(prep)
   let assert True = text1 == "hello"
 
-  let info_after_1 = llm_wire.pool_info(p)
+  let info_after_1 = pool.info(p)
   let assert True = info_after_1.total_connections == 1
   let assert True = info_after_1.idle_connections == 1
   let assert True = info_after_1.leased_connections == 0
 
   // Second run through pool: must reuse the connection and succeed on the same socket!
-  let assert Ok(llm_wire.RunText(text2, _)) =
-    llm_wire.run_with_pool(
-      p,
-      prep,
-      llm_wire.default_limits(),
-      llm_wire.default_deadlines(),
-    )
+  let assert Ok(session.RunText(text2, _)) = session.run(prep)
   let assert True = text2 == "hello"
 
-  let info_after_2 = llm_wire.pool_info(p)
+  let info_after_2 = pool.info(p)
   let assert True = info_after_2.total_connections == 1
   let assert True = info_after_2.idle_connections == 1
 
-  let assert Ok(Nil) = llm_wire.stop_pool(p)
+  let assert Ok(Nil) = pool.stop(p)
   fake_server.stop(server)
 }
 
@@ -119,7 +120,7 @@ pub fn pool_remote_connection_death_reclaims_entry_test() {
       max_total_connections: 1,
       idle_timeout_ms: 10_000,
     )
-  let assert Ok(p) = llm_wire.start_pool(config)
+  let assert Ok(p) = pool.start(config)
   let response =
     "event: response.output_item.added\ndata: {\"output_index\":0,\"item\":{\"id\":\"remote\",\"type\":\"message\"}}\n\n"
     <> "event: response.output_text.delta\ndata: {\"output_index\":0,\"item_id\":\"remote\",\"delta\":\"closed\"}\n\n"
@@ -147,27 +148,27 @@ pub fn pool_remote_connection_death_reclaims_entry_test() {
   })
 
   let prep = openai_prepared(server.port, "gpt-4o")
-  let assert Ok(llm_wire.RunText(text, _)) =
-    llm_wire.run_with_pool(
+  let assert Ok(api.RunText(text, _)) =
+    runtime.run_with_pool(
       p,
       prep,
-      llm_wire.default_limits(),
-      llm_wire.default_deadlines(),
+      types.default_limits(),
+      types.default_deadlines(),
     )
   let assert True = text == "closed"
 
   // The peer closes the socket after the response. The Gun DOWN path must
   // remove the pooled entry and stop the parked connection owner.
   let assert True = wait_for_pool_empty(p, 100)
-  let assert Ok(llm_wire.RunText(second_text, _)) =
-    llm_wire.run_with_pool(
+  let assert Ok(api.RunText(second_text, _)) =
+    runtime.run_with_pool(
       p,
       prep,
-      llm_wire.default_limits(),
-      llm_wire.default_deadlines(),
+      types.default_limits(),
+      types.default_deadlines(),
     )
   let assert True = second_text == "closed"
-  let assert Ok(Nil) = llm_wire.stop_pool(p)
+  let assert Ok(Nil) = pool.stop(p)
   fake_server.stop(server)
 }
 
@@ -179,7 +180,7 @@ pub fn pool_stream_isolation_cancelling_stream_a_does_not_affect_stream_b_test()
       max_total_connections: 8,
       idle_timeout_ms: 10_000,
     )
-  let assert Ok(p) = llm_wire.start_pool(config)
+  let assert Ok(p) = pool.start(config)
 
   let sse_chunk_a =
     "event: response.output_item.added\ndata: {\"output_index\":0,\"item\":{\"id\":\"item-a\",\"type\":\"message\"}}\n\n"
@@ -215,35 +216,35 @@ pub fn pool_stream_isolation_cancelling_stream_a_does_not_affect_stream_b_test()
   let prep_b = openai_prepared(server.port, "gpt-4o")
 
   let assert Ok(stream_a) =
-    llm_wire.stream_with_pool(
+    runtime.stream_with_pool(
       p,
       prep_a,
-      llm_wire.default_limits(),
-      llm_wire.default_deadlines(),
+      types.default_limits(),
+      types.default_deadlines(),
     )
 
   let assert Ok(stream_b) =
-    llm_wire.stream_with_pool(
+    runtime.stream_with_pool(
       p,
       prep_b,
-      llm_wire.default_limits(),
-      llm_wire.default_deadlines(),
+      types.default_limits(),
+      types.default_deadlines(),
     )
 
   // Verify stream A receives initial progress
-  let assert Ok(types.NextProgress(_)) = owner.next(stream_a, 2000)
+  let assert Ok(stream_types.NextProgress(_)) = owner.next(stream_a, 2000)
 
   // Explicitly close / cancel stream A!
   let assert Ok(types.ConsumerClosed) = owner.close(stream_a)
 
   // Verify stream B continues unaffected and completes with full text!
-  let assert Ok(types.NextProgress(_)) = owner.next(stream_b, 2000)
-  let assert Ok(types.StreamTerminal(types.StreamFinished(
-    types.CompletedText("fullB"),
+  let assert Ok(stream_types.NextProgress(_)) = owner.next(stream_b, 2000)
+  let assert Ok(stream_types.StreamTerminal(stream_types.StreamFinished(
+    stream_types.CompletedText("fullB"),
     _,
   ))) = owner.next(stream_b, 2000)
 
-  let assert Ok(Nil) = llm_wire.stop_pool(p)
+  let assert Ok(Nil) = pool.stop(p)
   fake_server.stop(server)
 }
 
@@ -256,7 +257,7 @@ pub fn pool_bounds_resources_and_enforces_waiter_timeout_test() {
       max_total_connections: 1,
       idle_timeout_ms: 10_000,
     )
-  let assert Ok(p) = llm_wire.start_pool(config)
+  let assert Ok(p) = pool.start(config)
 
   let sse_slow =
     "event: response.output_item.added\ndata: {\"output_index\":0,\"item\":{\"id\":\"slow\",\"type\":\"message\"}}\n\n"
@@ -273,14 +274,14 @@ pub fn pool_bounds_resources_and_enforces_waiter_timeout_test() {
 
   // Stream 1 takes the only available connection
   let assert Ok(stream1) =
-    llm_wire.stream_with_pool(
+    runtime.stream_with_pool(
       p,
       prep,
-      llm_wire.default_limits(),
-      llm_wire.default_deadlines(),
+      types.default_limits(),
+      types.default_deadlines(),
     )
 
-  let info_leased = llm_wire.pool_info(p)
+  let info_leased = pool.info(p)
   let assert True = info_leased.leased_connections == 1
 
   // Stream 2 attempts checkout while Stream 1 holds the connection, with a very tight deadline (60ms)
@@ -291,19 +292,14 @@ pub fn pool_bounds_resources_and_enforces_waiter_timeout_test() {
       idle_timeout_ms: 60,
     )
   let result2 =
-    llm_wire.stream_with_pool(
-      p,
-      prep,
-      llm_wire.default_limits(),
-      tight_deadlines,
-    )
+    runtime.stream_with_pool(p, prep, types.default_limits(), tight_deadlines)
 
   // Must fail due to pool timeout / limit!
   let assert Error(_) = result2
 
   // Clean up stream 1
   let _ = owner.close(stream1)
-  let assert Ok(Nil) = llm_wire.stop_pool(p)
+  let assert Ok(Nil) = pool.stop(p)
   fake_server.stop(server)
 }
 
@@ -315,7 +311,7 @@ pub fn pool_reclaims_connection_upon_client_owner_death_test() {
       max_total_connections: 1,
       idle_timeout_ms: 10_000,
     )
-  let assert Ok(p) = llm_wire.start_pool(config)
+  let assert Ok(p) = pool.start(config)
 
   let sse_data =
     "event: response.output_item.added\ndata: {\"output_index\":0,\"item\":{\"id\":\"it\",\"type\":\"message\"}}\n\n"
@@ -339,11 +335,11 @@ pub fn pool_reclaims_connection_upon_client_owner_death_test() {
   let client_worker =
     process.spawn_unlinked(fn() {
       let assert Ok(stream) =
-        llm_wire.stream_with_pool(
+        runtime.stream_with_pool(
           p,
           prep,
-          llm_wire.default_limits(),
-          llm_wire.default_deadlines(),
+          types.default_limits(),
+          types.default_deadlines(),
         )
       let assert Ok(stream_owner) = owner.owner_pid(stream)
       process.send(owner_subject, stream_owner)
@@ -353,7 +349,7 @@ pub fn pool_reclaims_connection_upon_client_owner_death_test() {
 
   let assert Ok(stream_owner) = process.receive(owner_subject, 3000)
   process.sleep(100)
-  let info_leased = llm_wire.pool_info(p)
+  let info_leased = pool.info(p)
   let lease_was_held = info_leased.leased_connections == 1
 
   // Kill the client abruptly
@@ -362,7 +358,7 @@ pub fn pool_reclaims_connection_upon_client_owner_death_test() {
   // Owner death must close its bridge and return the lease to the pool.
   let reclaimed = wait_for_pool_reclamation(p, stream_owner, 100)
 
-  let assert Ok(Nil) = llm_wire.stop_pool(p)
+  let assert Ok(Nil) = pool.stop(p)
   // This is a test-owned peer process. Stop it after the connection assertions.
   process.kill(server_worker)
   fake_server.stop(server)
@@ -380,7 +376,7 @@ pub fn pool_waiter_queue_serves_next_request_when_connection_checked_in_test() {
       max_total_connections: 1,
       idle_timeout_ms: 10_000,
     )
-  let assert Ok(p) = llm_wire.start_pool(config)
+  let assert Ok(p) = pool.start(config)
 
   let sse_body =
     "event: response.output_item.added\ndata: {\"output_index\":0,\"item\":{\"id\":\"item\",\"type\":\"message\"}}\n\n"
@@ -405,10 +401,10 @@ pub fn pool_waiter_queue_serves_next_request_when_connection_checked_in_test() {
   // Spawn second request in background waiting with a generous deadline (3000ms)
   process.spawn_unlinked(fn() {
     let res =
-      llm_wire.run_with_pool(
+      runtime.run_with_pool(
         p,
         prep,
-        llm_wire.default_limits(),
+        types.default_limits(),
         types.Deadlines(
           overall_timeout_ms: 3000,
           read_timeout_ms: 3000,
@@ -420,23 +416,23 @@ pub fn pool_waiter_queue_serves_next_request_when_connection_checked_in_test() {
 
   // Give background worker time to attempt checkout and become a waiter in the pool queue
   process.sleep(50)
-  let _info_waiting = llm_wire.pool_info(p)
+  let _info_waiting = pool.info(p)
   // Run request 1 on main process
-  let assert Ok(llm_wire.RunText(t1, _)) =
-    llm_wire.run_with_pool(
+  let assert Ok(api.RunText(t1, _)) =
+    runtime.run_with_pool(
       p,
       prep,
-      llm_wire.default_limits(),
-      llm_wire.default_deadlines(),
+      types.default_limits(),
+      types.default_deadlines(),
     )
   let assert True = t1 == "ok"
 
   // Now request 2 should have been served by the waiter queue!
   let assert Ok(result2) = process.receive(waiter_subject, 2000)
-  let assert Ok(llm_wire.RunText(t2, _)) = result2
+  let assert Ok(api.RunText(t2, _)) = result2
   let assert True = t2 == "ok"
 
-  let assert Ok(Nil) = llm_wire.stop_pool(p)
+  let assert Ok(Nil) = pool.stop(p)
   fake_server.stop(server)
 }
 
@@ -448,7 +444,7 @@ pub fn pool_waiter_is_restarted_after_client_cleanup_callback_test() {
       max_total_connections: 1,
       idle_timeout_ms: 10_000,
     )
-  let assert Ok(p) = llm_wire.start_pool(config)
+  let assert Ok(p) = pool.start(config)
 
   let first_response =
     "event: response.output_item.added\ndata: {\"output_index\":0,\"item\":{\"id\":\"first\",\"type\":\"message\"}}\n\n"
@@ -485,11 +481,11 @@ pub fn pool_waiter_is_restarted_after_client_cleanup_callback_test() {
   let first_client =
     process.spawn_unlinked(fn() {
       let assert Ok(stream) =
-        llm_wire.stream_with_pool(
+        runtime.stream_with_pool(
           p,
           prep,
-          llm_wire.default_limits(),
-          llm_wire.default_deadlines(),
+          types.default_limits(),
+          types.default_deadlines(),
         )
       let assert Ok(stream_owner) = owner.owner_pid(stream)
       process.send(owner_subject, stream_owner)
@@ -501,10 +497,10 @@ pub fn pool_waiter_is_restarted_after_client_cleanup_callback_test() {
   let waiter_subject = process.new_subject()
   process.spawn_unlinked(fn() {
     let result =
-      llm_wire.run_with_pool(
+      runtime.run_with_pool(
         p,
         prep,
-        llm_wire.default_limits(),
+        types.default_limits(),
         types.Deadlines(
           overall_timeout_ms: 3000,
           read_timeout_ms: 3000,
@@ -520,12 +516,12 @@ pub fn pool_waiter_is_restarted_after_client_cleanup_callback_test() {
   process.kill(stream_owner)
   process.kill(first_client)
 
-  let assert Ok(Ok(llm_wire.RunText(text, _))) =
+  let assert Ok(Ok(api.RunText(text, _))) =
     process.receive(waiter_subject, 3000)
   let assert True = text == "recovered"
-  let info = llm_wire.pool_info(p)
+  let info = pool.info(p)
   let assert True = info.waiting_requests == 0
-  let assert Ok(Nil) = llm_wire.stop_pool(p)
+  let assert Ok(Nil) = pool.stop(p)
   process.kill(server_worker)
   fake_server.stop(server)
 }
@@ -535,7 +531,7 @@ fn wait_for_pool_reclamation(
   stream_owner: process.Pid,
   attempts: Int,
 ) -> Bool {
-  let info = llm_wire.pool_info(p)
+  let info = pool.info(p)
   case info.total_connections == 0 && process.is_alive(stream_owner) == False {
     True -> True
     False ->
@@ -550,7 +546,7 @@ fn wait_for_pool_reclamation(
 }
 
 fn wait_for_pool_empty(p: pool.Pool, attempts: Int) -> Bool {
-  let info = llm_wire.pool_info(p)
+  let info = pool.info(p)
   case info.total_connections == 0 {
     True -> True
     False ->
@@ -565,7 +561,7 @@ fn wait_for_pool_empty(p: pool.Pool, attempts: Int) -> Bool {
 }
 
 fn wait_for_pool_leases(p: pool.Pool, expected: Int, attempts: Int) -> Bool {
-  let info = llm_wire.pool_info(p)
+  let info = pool.info(p)
   case info.leased_connections == expected {
     True -> True
     False ->
@@ -588,7 +584,7 @@ pub fn pool_caps_waiter_queue_and_rejects_invalid_limits_test() {
 
   let assert Ok(server) = fake_server.start()
   let config = pool.PoolConfig(1, 1, 10_000)
-  let assert Ok(p) = llm_wire.start_pool(config)
+  let assert Ok(p) = pool.start(config)
   let server_release_ready = process.new_subject()
   let second_result = process.new_subject()
   let first_events =
@@ -640,56 +636,56 @@ pub fn pool_caps_waiter_queue_and_rejects_invalid_limits_test() {
 
   let prep = openai_prepared(server.port, "gpt-4o")
   let assert Ok(first_stream) =
-    llm_wire.stream_with_pool(
+    runtime.stream_with_pool(
       p,
       prep,
-      llm_wire.default_limits(),
-      llm_wire.default_deadlines(),
+      types.default_limits(),
+      types.default_deadlines(),
     )
   let assert Ok(release_server) = process.receive(server_release_ready, 2000)
   process.spawn_unlinked(fn() {
     process.send(
       second_result,
-      llm_wire.run_with_pool(
+      runtime.run_with_pool(
         p,
         prep,
-        llm_wire.default_limits(),
-        llm_wire.default_deadlines(),
+        types.default_limits(),
+        types.default_deadlines(),
       ),
     )
   })
   let assert True = wait_for_pool_waiters(p, 1, 100)
   let over_capacity =
-    llm_wire.stream_with_pool(
+    runtime.stream_with_pool(
       p,
       prep,
-      llm_wire.default_limits(),
+      types.default_limits(),
       types.Deadlines(1000, 1000, 1000),
     )
   case over_capacity {
     Error(types.TransportError("pool_limit_reached")) -> Nil
     _ -> should.fail()
   }
-  let assert True = llm_wire.pool_info(p).waiting_requests == 1
+  let assert True = pool.info(p).waiting_requests == 1
 
   process.send(release_server, Nil)
-  let assert Ok(types.NextProgress(types.TextDelta(_, "first"))) =
+  let assert Ok(stream_types.NextProgress(types.TextDelta(_, "first"))) =
     owner.next(first_stream, 2000)
-  let assert Ok(types.StreamTerminal(types.StreamFinished(
-    types.CompletedText("first"),
+  let assert Ok(stream_types.StreamTerminal(stream_types.StreamFinished(
+    stream_types.CompletedText("first"),
     _,
   ))) = owner.next(first_stream, 2000)
-  let assert Ok(Ok(llm_wire.RunText("second", _))) =
+  let assert Ok(Ok(api.RunText("second", _))) =
     process.receive(second_result, 3000)
   let assert True = wait_for_pool_waiters(p, 0, 100)
 
-  let assert Ok(Nil) = llm_wire.stop_pool(p)
+  let assert Ok(Nil) = pool.stop(p)
   process.kill(server_worker)
   fake_server.stop(server)
 }
 
 fn wait_for_pool_waiters(p: pool.Pool, expected: Int, attempts: Int) -> Bool {
-  case llm_wire.pool_info(p).waiting_requests == expected {
+  case pool.info(p).waiting_requests == expected {
     True -> True
     False ->
       case attempts > 0 {
@@ -704,7 +700,7 @@ fn wait_for_pool_waiters(p: pool.Pool, expected: Int, attempts: Int) -> Bool {
 
 pub fn pool_shutdown_unblocks_waiters_and_closes_active_leases_test() {
   let assert Ok(server) = fake_server.start()
-  let assert Ok(p) = llm_wire.start_pool(pool.PoolConfig(1, 1, 10_000))
+  let assert Ok(p) = pool.start(pool.PoolConfig(1, 1, 10_000))
   let server_ready = process.new_subject()
   let waiter_result = process.new_subject()
   let server_worker =
@@ -725,26 +721,26 @@ pub fn pool_shutdown_unblocks_waiters_and_closes_active_leases_test() {
     })
   let prep = openai_prepared(server.port, "gpt-4o")
   let assert Ok(first_stream) =
-    llm_wire.stream_with_pool(
+    runtime.stream_with_pool(
       p,
       prep,
-      llm_wire.default_limits(),
-      llm_wire.default_deadlines(),
+      types.default_limits(),
+      types.default_deadlines(),
     )
   let assert Ok(release_server) = process.receive(server_ready, 2000)
   process.spawn_unlinked(fn() {
     process.send(
       waiter_result,
-      llm_wire.run_with_pool(
+      runtime.run_with_pool(
         p,
         prep,
-        llm_wire.default_limits(),
+        types.default_limits(),
         types.Deadlines(3000, 3000, 3000),
       ),
     )
   })
   let assert True = wait_for_pool_waiters(p, 1, 100)
-  let assert Ok(Nil) = llm_wire.stop_pool(p)
+  let assert Ok(Nil) = pool.stop(p)
   let assert Ok(Error(types.TransportError("pool_stopped"))) =
     process.receive(waiter_result, 2000)
   let _ = owner.close(first_stream)

@@ -3,10 +3,11 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
 import gleeunit/should
-import llm_wire/anthropic
-import llm_wire/google
-import llm_wire/openai
-import llm_wire/sse
+import llm_wire/internal/anthropic
+import llm_wire/internal/google
+import llm_wire/internal/openai
+import llm_wire/internal/sse
+import llm_wire/internal/stream_types
 import llm_wire/types
 
 pub fn complete_provider_interactions_survive_every_byte_split_test() {
@@ -32,7 +33,9 @@ fn openai_interaction_splits() {
         })
       })
     openai.terminal(reducer)
-    |> should.equal(Some(types.StreamFinished(types.CompletedText("ok"), None)))
+    |> should.equal(
+      Some(stream_types.StreamFinished(stream_types.CompletedText("ok"), None)),
+    )
   })
 }
 
@@ -60,8 +63,8 @@ fn anthropic_interaction_splits() {
       )
     anthropic.terminal(reducer)
     |> should.equal(
-      Some(types.StreamFinished(
-        types.CompletedText("ok"),
+      Some(stream_types.StreamFinished(
+        stream_types.CompletedText("ok"),
         Some(types.Usage(1, 1, 2)),
       )),
     )
@@ -83,7 +86,9 @@ fn google_interaction_splits() {
         })
       })
     google.terminal(reducer)
-    |> should.equal(Some(types.StreamFinished(types.CompletedText("ok"), None)))
+    |> should.equal(
+      Some(stream_types.StreamFinished(stream_types.CompletedText("ok"), None)),
+    )
   })
 }
 

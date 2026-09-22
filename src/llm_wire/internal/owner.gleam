@@ -5,10 +5,12 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/string
-import llm_wire/anthropic
-import llm_wire/google
-import llm_wire/openai
-import llm_wire/sse
+import llm_wire/internal/anthropic
+import llm_wire/internal/google
+import llm_wire/internal/openai
+import llm_wire/internal/sse
+import llm_wire/internal/stream_types
+import llm_wire/internal/transport_failure
 import llm_wire/telemetry
 import llm_wire/types
 
@@ -29,7 +31,7 @@ pub type ProviderAdapter {
 type Message {
   Next(
     read_id: reference.Reference,
-    reply_to: process.Subject(Result(types.ReadResult, types.ReadError)),
+    reply_to: process.Subject(Result(stream_types.ReadResult, types.ReadError)),
     consumer_pid: process.Pid,
   )
   Close(reply_to: process.Subject(types.CloseOutcome))
@@ -54,7 +56,7 @@ type State {
     deadlines: types.Deadlines,
     framer: sse.Framer,
     provider: ProviderAdapter,
-    queue: List(types.ReadResult),
+    queue: List(stream_types.ReadResult),
     queue_count: Int,
     queue_bytes: Int,
     pending_read: Option(PendingRead),
@@ -62,7 +64,7 @@ type State {
     transport_closed: Bool,
     overall_timer: Option(process.Timer),
     idle_timer: Option(process.Timer),
-    terminal_outcome: Option(types.TerminalOutcome),
+    terminal_outcome: Option(stream_types.TerminalOutcome),
     terminal_delivered: Bool,
     response_bytes_observed: Bool,
     response_bytes_received: Int,
@@ -76,7 +78,7 @@ type State {
 type PendingRead {
   PendingRead(
     read_id: reference.Reference,
-    caller: process.Subject(Result(types.ReadResult, types.ReadError)),
+    caller: process.Subject(Result(stream_types.ReadResult, types.ReadError)),
     consumer_pid: process.Pid,
     monitor: process.Monitor,
   )
@@ -249,7 +251,7 @@ fn start_stream(
 pub fn next(
   stream: Stream,
   timeout_ms: Int,
-) -> Result(types.ReadResult, types.ReadError) {
+) -> Result(stream_types.ReadResult, types.ReadError) {
   let Stream(subject) = stream
   case is_alive(stream) {
     False -> Error(types.StreamClosed)
@@ -382,7 +384,7 @@ fn handle_message(
 fn handle_next(
   state: State,
   read_id: reference.Reference,
-  reply_to: process.Subject(Result(types.ReadResult, types.ReadError)),
+  reply_to: process.Subject(Result(stream_types.ReadResult, types.ReadError)),
   caller_pid: process.Pid,
 ) -> actor.Next(State, Message) {
   let state = case state.pending_read {
@@ -415,8 +417,8 @@ fn handle_next(
               let updated_bytes = state.queue_bytes - item_size
 
               let was_terminal = case head {
-                types.StreamTerminal(_) -> True
-                types.NextProgress(_) -> False
+                stream_types.StreamTerminal(_) -> True
+                stream_types.NextProgress(_) -> False
               }
 
               process.send(reply_to, Ok(head))
@@ -441,7 +443,7 @@ fn handle_next(
             [] -> {
               case state.terminal_outcome {
                 Some(term) -> {
-                  process.send(reply_to, Ok(types.StreamTerminal(term)))
+                  process.send(reply_to, Ok(stream_types.StreamTerminal(term)))
                   let _ = perform_cleanup(state)
                   actor.stop()
                 }
@@ -488,13 +490,13 @@ fn handle_close(
           cleaned.response_bytes_observed,
           cleaned.semantic_progress_observed,
         )
-      let outcome = types.StreamCancelledLocally(retry_evidence)
+      let outcome = stream_types.StreamCancelledLocally(retry_evidence)
 
       // If a consumer read was pending, reply to it
       case cleaned.pending_read {
         Some(pending) -> {
           process.demonitor_process(pending.monitor)
-          process.send(pending.caller, Ok(types.StreamTerminal(outcome)))
+          process.send(pending.caller, Ok(stream_types.StreamTerminal(outcome)))
         }
         None -> Nil
       }
@@ -561,7 +563,7 @@ fn process_sse_events(
                     State(..cleaned, terminal_outcome: Some(terminal))
                   deliver_or_enqueue(
                     final_state,
-                    types.StreamTerminal(terminal),
+                    stream_types.StreamTerminal(terminal),
                   )
                 }
                 None -> fail_stream(state_with_provider, err)
@@ -575,7 +577,7 @@ fn process_sse_events(
                     State(..cleaned, terminal_outcome: Some(terminal))
                   deliver_or_enqueue(
                     final_state,
-                    types.StreamTerminal(terminal),
+                    stream_types.StreamTerminal(terminal),
                   )
                 }
                 None -> process_sse_events(after_progress_state, rest)
@@ -652,13 +654,13 @@ fn dispatch_or_queue_progress(
   case state.pending_read {
     Some(pending) if state.queue == [] -> {
       process.demonitor_process(pending.monitor)
-      process.send(pending.caller, Ok(types.NextProgress(progress)))
+      process.send(pending.caller, Ok(stream_types.NextProgress(progress)))
       State(..state, pending_read: None)
     }
     _ -> {
       State(
         ..state,
-        queue: list.append(state.queue, [types.NextProgress(progress)]),
+        queue: list.append(state.queue, [stream_types.NextProgress(progress)]),
         queue_count: state.queue_count + 1,
         queue_bytes: state.queue_bytes + size,
       )
@@ -668,10 +670,10 @@ fn dispatch_or_queue_progress(
 
 fn deliver_or_enqueue(
   state: State,
-  result: types.ReadResult,
+  result: stream_types.ReadResult,
 ) -> actor.Next(State, Message) {
   case result {
-    types.StreamTerminal(terminal) -> {
+    stream_types.StreamTerminal(terminal) -> {
       let _ =
         telemetry.observe(
           telemetry.Terminal,
@@ -690,7 +692,7 @@ fn deliver_or_enqueue(
         _ -> actor.continue(State(..state, terminal_outcome: Some(terminal)))
       }
     }
-    types.NextProgress(_) ->
+    stream_types.NextProgress(_) ->
       case state.pending_read {
         Some(pending) if state.queue == [] -> {
           process.demonitor_process(pending.monitor)
@@ -726,9 +728,9 @@ fn fail_stream(
       cleaned.response_bytes_observed,
       cleaned.semantic_progress_observed,
     )
-  let outcome = types.StreamFailed(error, retry_evidence)
+  let outcome = stream_types.StreamFailed(error, retry_evidence)
   let final_state = State(..cleaned, terminal_outcome: Some(outcome))
-  deliver_or_enqueue(final_state, types.StreamTerminal(outcome))
+  deliver_or_enqueue(final_state, stream_types.StreamTerminal(outcome))
 }
 
 fn handle_eof(state: State) -> actor.Next(State, Message) {
@@ -743,7 +745,10 @@ fn handle_eof(state: State) -> actor.Next(State, Message) {
               let cleaned = perform_cleanup(state)
               let final_state =
                 State(..cleaned, terminal_outcome: Some(outcome))
-              deliver_or_enqueue(final_state, types.StreamTerminal(outcome))
+              deliver_or_enqueue(
+                final_state,
+                stream_types.StreamTerminal(outcome),
+              )
             }
             None ->
               fail_stream(
@@ -758,7 +763,7 @@ fn handle_eof(state: State) -> actor.Next(State, Message) {
 }
 
 fn handle_error(state: State, reason: String) -> actor.Next(State, Message) {
-  fail_stream(state, types.TransportError(reason))
+  fail_stream(state, transport_failure.classify(reason))
 }
 
 fn handle_overall_deadline(state: State) -> actor.Next(State, Message) {
@@ -871,19 +876,21 @@ fn provider_name(provider: ProviderAdapter) -> String {
   }
 }
 
-fn terminal_name(terminal: types.TerminalOutcome) -> String {
+fn terminal_name(terminal: stream_types.TerminalOutcome) -> String {
   case terminal {
-    types.StreamFinished(types.CompletedText(_), _) -> "completed_text"
-    types.StreamFinished(types.Refused(_), _) -> "refused"
-    types.StreamFinished(types.CompletedToolCalls(_, _, _), _) ->
+    stream_types.StreamFinished(stream_types.CompletedText(_), _) ->
+      "completed_text"
+    stream_types.StreamFinished(stream_types.Refused(_), _) -> "refused"
+    stream_types.StreamFinished(stream_types.CompletedToolCalls(_, _, _), _) ->
       "completed_tools"
-    types.StreamFinished(
-      types.CompletedToolCallsWithContinuation(_, _, _, _),
+    stream_types.StreamFinished(
+      stream_types.CompletedToolCallsWithContinuation(_, _, _, _),
       _,
     ) -> "completed_tools"
-    types.StreamFinished(types.OutputLimited(_, _), _) -> "output_limited"
-    types.StreamFailed(_, _) -> "failed"
-    types.StreamCancelledLocally(_) -> "cancelled"
+    stream_types.StreamFinished(stream_types.OutputLimited(_, _), _) ->
+      "output_limited"
+    stream_types.StreamFailed(_, _) -> "failed"
+    stream_types.StreamCancelledLocally(_) -> "cancelled"
   }
 }
 
@@ -949,7 +956,7 @@ fn step_provider(
 
 fn terminal_provider(
   provider: ProviderAdapter,
-) -> Option(types.TerminalOutcome) {
+) -> Option(stream_types.TerminalOutcome) {
   case provider {
     OpenAIAdapter(r) -> openai.terminal(r)
     AnthropicAdapter(r) -> anthropic.terminal(r)
@@ -967,10 +974,10 @@ fn is_semantic_progress(progress: types.StreamProgress) -> Bool {
   }
 }
 
-fn size_of_result(result: types.ReadResult) -> Int {
+fn size_of_result(result: stream_types.ReadResult) -> Int {
   case result {
-    types.NextProgress(p) -> size_of_progress(p)
-    types.StreamTerminal(_) -> 64
+    stream_types.NextProgress(p) -> size_of_progress(p)
+    stream_types.StreamTerminal(_) -> 64
   }
 }
 

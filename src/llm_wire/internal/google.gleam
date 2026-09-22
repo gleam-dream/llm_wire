@@ -7,7 +7,8 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
-import llm_wire/sse
+import llm_wire/internal/sse
+import llm_wire/internal/stream_types
 import llm_wire/types
 
 pub opaque type Reducer {
@@ -22,7 +23,7 @@ pub opaque type Reducer {
     total_argument_bytes: Int,
     response_bytes_observed: Bool,
     semantic_progress_observed: Bool,
-    terminal_outcome: Option(types.TerminalOutcome),
+    terminal_outcome: Option(stream_types.TerminalOutcome),
     response_id: Option(String),
     usage: Option(types.Usage),
     provider_parts: List(String),
@@ -70,7 +71,7 @@ pub fn new_with_tools(
   }
 }
 
-pub fn terminal(reducer: Reducer) -> Option(types.TerminalOutcome) {
+pub fn terminal(reducer: Reducer) -> Option(stream_types.TerminalOutcome) {
   reducer.terminal_outcome
 }
 
@@ -139,7 +140,10 @@ fn process_google_payload(
       let evidence =
         retry_evidence(reducer, types.RequestMayHaveReachedProvider)
       let outcome =
-        types.StreamFailed(types.ProviderError(status, message), evidence)
+        stream_types.StreamFailed(
+          types.ProviderError(status, message),
+          evidence,
+        )
       Ok(#(Reducer(..reducer, terminal_outcome: Some(outcome)), []))
     }
     Error(Nil) -> {
@@ -149,8 +153,10 @@ fn process_google_payload(
           case get_field(feedback, "blockReason") |> result.try(get_string) {
             Ok(reason) -> {
               let outcome =
-                types.StreamFinished(
-                  types.Refused("Prompt blocked by safety policy: " <> reason),
+                stream_types.StreamFinished(
+                  stream_types.Refused(
+                    "Prompt blocked by safety policy: " <> reason,
+                  ),
                   reducer.usage,
                 )
               Ok(#(Reducer(..reducer, terminal_outcome: Some(outcome)), []))
@@ -492,8 +498,8 @@ fn apply_finish_reason(
       case reducer.tool_order {
         [] -> {
           let outcome =
-            types.StreamFinished(
-              types.CompletedText(reducer.text_buffer),
+            stream_types.StreamFinished(
+              stream_types.CompletedText(reducer.text_buffer),
               reducer.usage,
             )
           Ok(Reducer(..reducer, terminal_outcome: Some(outcome)))
@@ -503,20 +509,20 @@ fn apply_finish_reason(
           use calls <- result.try(validate_and_build_tool_calls(reducer))
           let outcome = case reducer.has_thought_signature {
             True ->
-              types.StreamFinished(
-                types.CompletedToolCallsWithContinuation(
+              stream_types.StreamFinished(
+                stream_types.CompletedToolCallsWithContinuation(
                   reducer.text_buffer,
                   calls,
                   reducer.response_id,
-                  types.GoogleProviderContinuation(list.reverse(
+                  stream_types.GoogleProviderContinuation(list.reverse(
                     reducer.provider_parts,
                   )),
                 ),
                 reducer.usage,
               )
             False ->
-              types.StreamFinished(
-                types.CompletedToolCalls(
+              stream_types.StreamFinished(
+                stream_types.CompletedToolCalls(
                   reducer.text_buffer,
                   calls,
                   reducer.response_id,
@@ -531,40 +537,44 @@ fn apply_finish_reason(
     "MAX_TOKENS" -> {
       let calls = build_unvalidated_tool_calls(reducer)
       let outcome =
-        types.StreamFinished(
-          types.OutputLimited(reducer.text_buffer, calls),
+        stream_types.StreamFinished(
+          stream_types.OutputLimited(reducer.text_buffer, calls),
           reducer.usage,
         )
       Ok(Reducer(..reducer, terminal_outcome: Some(outcome)))
     }
     "SAFETY" -> {
       let outcome =
-        types.StreamFinished(
-          types.Refused("Google refused generation with reason: SAFETY"),
+        stream_types.StreamFinished(
+          stream_types.Refused("Google refused generation with reason: SAFETY"),
           reducer.usage,
         )
       Ok(Reducer(..reducer, terminal_outcome: Some(outcome)))
     }
     "RECITATION" -> {
       let outcome =
-        types.StreamFinished(
-          types.Refused("Google refused generation with reason: RECITATION"),
+        stream_types.StreamFinished(
+          stream_types.Refused(
+            "Google refused generation with reason: RECITATION",
+          ),
           reducer.usage,
         )
       Ok(Reducer(..reducer, terminal_outcome: Some(outcome)))
     }
     "BLOCKLIST" -> {
       let outcome =
-        types.StreamFinished(
-          types.Refused("Google refused generation with reason: BLOCKLIST"),
+        stream_types.StreamFinished(
+          stream_types.Refused(
+            "Google refused generation with reason: BLOCKLIST",
+          ),
           reducer.usage,
         )
       Ok(Reducer(..reducer, terminal_outcome: Some(outcome)))
     }
     "PROHIBITED_CONTENT" -> {
       let outcome =
-        types.StreamFinished(
-          types.Refused(
+        stream_types.StreamFinished(
+          stream_types.Refused(
             "Google refused generation with reason: PROHIBITED_CONTENT",
           ),
           reducer.usage,
@@ -573,15 +583,15 @@ fn apply_finish_reason(
     }
     "SPII" -> {
       let outcome =
-        types.StreamFinished(
-          types.Refused("Google refused generation with reason: SPII"),
+        stream_types.StreamFinished(
+          stream_types.Refused("Google refused generation with reason: SPII"),
           reducer.usage,
         )
       Ok(Reducer(..reducer, terminal_outcome: Some(outcome)))
     }
     "OTHER" -> {
       let outcome =
-        types.StreamFailed(
+        stream_types.StreamFailed(
           types.ProviderError(
             Some("OTHER"),
             "Google generation stopped with reason: OTHER",
@@ -592,7 +602,7 @@ fn apply_finish_reason(
     }
     other -> {
       let outcome =
-        types.StreamFailed(
+        stream_types.StreamFailed(
           types.ProviderError(
             Some(other),
             "Unknown Google finish reason: " <> other,
@@ -617,7 +627,7 @@ fn validate_and_build_tool_calls(
         let name_str = types.tool_name_to_string(buf.name)
         case
           list.find(reducer.admitted_tools, fn(tool) {
-            types.tool_definition_name(tool) == name_str
+            types.tool_name_to_string(types.tool_name_of(tool)) == name_str
           })
         {
           Error(Nil) ->

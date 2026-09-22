@@ -1,9 +1,10 @@
 import gleam/option.{None, Some}
 import gleeunit/should
-import llm_wire/anthropic
-import llm_wire/openai
-import llm_wire/owner
-import llm_wire/sse
+import llm_wire/internal/anthropic
+import llm_wire/internal/openai
+import llm_wire/internal/owner
+import llm_wire/internal/sse
+import llm_wire/internal/stream_types
 import llm_wire/types
 import tool_fixtures
 
@@ -163,7 +164,7 @@ pub fn finding_8_anthropic_hosted_effect_is_unknown_after_failure_test() {
     )
   let assert Ok(#(reducer, _)) = anthropic.step(reducer, failure)
   case anthropic.terminal(reducer) {
-    Some(types.StreamFailed(_, evidence)) ->
+    Some(stream_types.StreamFailed(_, evidence)) ->
       evidence.classification |> should.equal(types.EffectUnknown)
     _ -> should.fail()
   }
@@ -227,10 +228,11 @@ pub fn finding_7_terminal_precedence_over_queue_failure_test() {
   >>)
 
   // Read until terminal:
-  let assert Ok(types.NextProgress(_)) = owner.next(stream, 1000)
+  let assert Ok(stream_types.NextProgress(_)) = owner.next(stream, 1000)
   let term_res = owner.next(stream, 1000)
   case term_res {
-    Ok(types.StreamTerminal(types.StreamFinished(..))) -> should.be_true(True)
+    Ok(stream_types.StreamTerminal(stream_types.StreamFinished(..))) ->
+      should.be_true(True)
     _ -> should.fail()
   }
 

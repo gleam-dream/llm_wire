@@ -5,7 +5,8 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
-import llm_wire/sse
+import llm_wire/internal/sse
+import llm_wire/internal/stream_types
 import llm_wire/types
 
 pub opaque type Reducer {
@@ -24,7 +25,7 @@ pub opaque type Reducer {
     response_bytes_observed: Bool,
     semantic_progress_observed: Bool,
     server_tool_observed: Bool,
-    terminal_outcome: Option(types.TerminalOutcome),
+    terminal_outcome: Option(stream_types.TerminalOutcome),
     admitted_tools: List(types.ToolDefinition),
     seen_call_ids: List(String),
   )
@@ -96,7 +97,7 @@ pub fn retry_evidence(
   )
 }
 
-pub fn terminal(reducer: Reducer) -> Option(types.TerminalOutcome) {
+pub fn terminal(reducer: Reducer) -> Option(stream_types.TerminalOutcome) {
   reducer.terminal_outcome
 }
 
@@ -295,7 +296,8 @@ fn handle_content_block_start(
                         False -> {
                           case
                             list.any(reducer.admitted_tools, fn(tool) {
-                              types.tool_definition_name(tool) == name_str
+                              types.tool_name_to_string(types.tool_name_of(tool))
+                              == name_str
                             })
                           {
                             False ->
@@ -671,7 +673,8 @@ fn handle_content_block_stop(
                   let tool_nm = types.tool_name_to_string(name)
                   case
                     list.find(reducer.admitted_tools, fn(definition) {
-                      types.tool_definition_name(definition) == tool_nm
+                      types.tool_name_to_string(types.tool_name_of(definition))
+                      == tool_nm
                     })
                   {
                     Ok(admitted) -> {
@@ -839,23 +842,33 @@ fn handle_message_stop(
         retry_evidence(reducer, types.RequestMayHaveReachedProvider)
       let terminal = case reducer.stop_reason {
         Some("max_tokens") ->
-          types.StreamFinished(
-            types.OutputLimited(all_text, all_calls),
+          stream_types.StreamFinished(
+            stream_types.OutputLimited(all_text, all_calls),
             final_usage,
           )
         Some("tool_use") ->
-          types.StreamFinished(
-            types.CompletedToolCalls(all_text, all_calls, reducer.response_id),
+          stream_types.StreamFinished(
+            stream_types.CompletedToolCalls(
+              all_text,
+              all_calls,
+              reducer.response_id,
+            ),
             final_usage,
           )
         Some("refusal") ->
-          types.StreamFinished(types.Refused(all_text), final_usage)
+          stream_types.StreamFinished(
+            stream_types.Refused(all_text),
+            final_usage,
+          )
         Some("end_turn") ->
           case all_calls {
             [] ->
-              types.StreamFinished(types.CompletedText(all_text), final_usage)
+              stream_types.StreamFinished(
+                stream_types.CompletedText(all_text),
+                final_usage,
+              )
             _ ->
-              types.StreamFailed(
+              stream_types.StreamFailed(
                 types.ProviderError(
                   code: Some("end_turn"),
                   message: "Tool calls ended without the provider tool_use stop reason",
@@ -864,7 +877,7 @@ fn handle_message_stop(
               )
           }
         Some("pause_turn") ->
-          types.StreamFailed(
+          stream_types.StreamFailed(
             types.ProviderError(
               code: Some("pause_turn"),
               message: "Provider paused for a hosted effect outside the application tool contract",
@@ -872,7 +885,7 @@ fn handle_message_stop(
             retry_evidence,
           )
         Some(other) ->
-          types.StreamFailed(
+          stream_types.StreamFailed(
             types.ProviderError(
               code: Some(other),
               message: "Unsupported Anthropic stop reason: " <> other,
@@ -880,7 +893,7 @@ fn handle_message_stop(
             retry_evidence,
           )
         None ->
-          types.StreamFailed(
+          stream_types.StreamFailed(
             types.ProviderError(
               code: None,
               message: "Anthropic message_stop arrived without a stop reason",
@@ -931,7 +944,7 @@ fn handle_error_event(
           semantic_progress_observed: reducer.semantic_progress_observed,
         )
       let terminal =
-        types.StreamFailed(
+        stream_types.StreamFailed(
           error: types.ProviderError(
             code: Some(err.error_type),
             message: err.message,

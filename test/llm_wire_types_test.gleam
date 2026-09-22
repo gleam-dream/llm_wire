@@ -1,3 +1,4 @@
+import gleam/option.{None, Some}
 import gleeunit/should
 import llm_wire/types
 
@@ -25,13 +26,20 @@ pub fn tool_name_validation_test() {
   |> should.be_error
 }
 
-pub fn api_key_redaction_test() {
+pub fn manual_tool_call_defaults_provider_metadata_test() {
+  let assert Ok(id) = types.call_id("call-1")
+  let assert Ok(name) = types.tool_name("lookup")
+  let call = types.tool_call(id, name, "{\"query\":\"gleam\"}")
+  call.provider_id |> should.equal(None)
+  call.provider_state |> should.equal(None)
+  let restored = types.ToolCall(..call, provider_id: Some("provider-1"))
+  restored.provider_id |> should.equal(Some("provider-1"))
+}
+
+pub fn api_key_validation_test() {
   let assert Ok(key) = types.api_key("sk-secret-12345")
   types.api_key_expose(key)
   |> should.equal("sk-secret-12345")
-
-  types.api_key_redacted(key)
-  |> should.equal("[REDACTED]")
 
   types.api_key("")
   |> should.be_error
@@ -56,36 +64,10 @@ pub fn limits_validation_test() {
   limits.chunk_bytes_limit
   |> should.equal(65_536)
 
-  types.new_limits(
-    chunk_bytes_limit: 1024,
-    line_bytes_limit: 512,
-    event_bytes_limit: 2048,
-    queue_count_limit: 100,
-    queue_bytes_limit: 10_000,
-    active_blocks_limit: 10,
-    text_bytes_per_block_limit: 10_000,
-    total_text_bytes_limit: 50_000,
-    argument_bytes_per_call_limit: 10_000,
-    total_argument_bytes_limit: 50_000,
-    extension_bytes_limit: 2048,
-    response_body_bytes_limit: 100_000,
-  )
+  types.validate_limits(types.Limits(..limits, chunk_bytes_limit: 1024))
   |> should.be_ok
 
-  types.new_limits(
-    chunk_bytes_limit: 0,
-    line_bytes_limit: 512,
-    event_bytes_limit: 2048,
-    queue_count_limit: 100,
-    queue_bytes_limit: 10_000,
-    active_blocks_limit: 10,
-    text_bytes_per_block_limit: 10_000,
-    total_text_bytes_limit: 50_000,
-    argument_bytes_per_call_limit: 10_000,
-    total_argument_bytes_limit: 50_000,
-    extension_bytes_limit: 2048,
-    response_body_bytes_limit: 100_000,
-  )
+  types.validate_limits(types.Limits(..limits, chunk_bytes_limit: 0))
   |> should.be_error
 }
 
@@ -94,17 +76,11 @@ pub fn deadlines_validation_test() {
   deadlines.overall_timeout_ms
   |> should.equal(60_000)
 
-  types.new_deadlines(
-    overall_timeout_ms: 30_000,
-    idle_timeout_ms: 5000,
-    read_timeout_ms: 1000,
+  types.validate_deadlines(
+    types.Deadlines(..deadlines, overall_timeout_ms: 30_000),
   )
   |> should.be_ok
 
-  types.new_deadlines(
-    overall_timeout_ms: -1,
-    idle_timeout_ms: 5000,
-    read_timeout_ms: 1000,
-  )
+  types.validate_deadlines(types.Deadlines(..deadlines, overall_timeout_ms: -1))
   |> should.be_error
 }

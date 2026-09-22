@@ -1,5 +1,3 @@
-import gleam/dynamic
-import gleam/dynamic/decode
 import gleam/erlang/atom
 import sinal
 import sinal/fields
@@ -20,6 +18,7 @@ pub type Metadata {
   Metadata(stage: String, provider: String, outcome: String)
 }
 
+@internal
 pub fn observe(stage: Stage, provider: String, outcome: String) -> Nil {
   let observation = observation_event()
   let _ =
@@ -28,9 +27,9 @@ pub fn observe(stage: Stage, provider: String, outcome: String) -> Nil {
 }
 
 pub fn observation_event() -> sinal.Event(Nil, Metadata) {
-  let stage = string_field("stage")
-  let provider = string_field("provider")
-  let outcome = string_field("outcome")
+  let stage = fields.string(atom.create("stage"))
+  let provider = fields.string(atom.create("provider"))
+  let outcome = fields.string(atom.create("outcome"))
   let assert Ok(first_two) = fields.pair(stage, provider)
   let assert Ok(all_fields) = fields.pair(first_two, outcome)
   let metadata_fields =
@@ -46,19 +45,6 @@ pub fn observation_event() -> sinal.Event(Nil, Metadata) {
       metadata_fields,
     )
   event
-}
-
-fn string_field(name: String) -> fields.Fields(String) {
-  fields.field(
-    atom.create(name),
-    fn(value) { Ok(dynamic.string(value)) },
-    fn(raw) {
-      case decode.run(raw, decode.string) {
-        Ok(value) -> Ok(value)
-        Error(_) -> Error(fields.FieldDecodeError("expected string metadata"))
-      }
-    },
-  )
 }
 
 fn stage_name(stage: Stage) -> String {

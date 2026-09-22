@@ -23,16 +23,17 @@ EOF
 positive="$scratch/positive"
 make_consumer "$positive"
 cat >"$positive/src/consumer.gleam" <<'EOF'
-import gleam/option.{None}
-import llm_wire
+import llm_wire/config
+import llm_wire/session
+import llm_wire/types
 
-pub fn prepares_through_the_root_facade() {
-  let assert Ok(key) = llm_wire.api_key("consumer-key")
-  let assert Ok(endpoint) = llm_wire.endpoint("https://api.example.test/v1")
-  let assert Ok(model) = llm_wire.model_id("consumer-model")
-  let config = llm_wire.openai_config(key, endpoint, None, None)
-  let request = llm_wire.new_request(model, [llm_wire.UserMessage("hello")])
-  llm_wire.prepare(config, request, llm_wire.default_limits())
+pub fn prepares_through_configured_session() {
+  let assert Ok(key) = types.api_key("consumer-key")
+  let assert Ok(endpoint) = types.endpoint("https://api.example.test/v1")
+  let assert Ok(model) = types.model_id("consumer-model")
+  let settings = config.openai(key) |> config.with_endpoint(endpoint)
+  let request = types.new_request(model, [types.UserMessage("hello")])
+  session.prepare(settings, request)
 }
 EOF
 (cd "$positive" && gleam check --target erlang)
@@ -42,10 +43,10 @@ make_consumer "$negative"
 cat >"$negative/src/consumer.gleam" <<'EOF'
 import gleam/erlang/process
 import gleam/option.{None}
-import llm_wire
-import llm_wire/api
+import llm_wire/internal/api
 import llm_wire/internal/client
 import llm_wire/internal/transport
+import llm_wire/types
 
 pub fn prepared_call_cannot_be_fabricated() {
   api.PreparedCall("{\"arbitrary\":true}")
@@ -54,8 +55,8 @@ pub fn prepared_call_cannot_be_fabricated() {
 pub fn arbitrary_string_cannot_be_sent_as_a_prepared_call() {
   client.open_prepared_stream(
     "{\"arbitrary\":true}",
-    llm_wire.default_limits(),
-    llm_wire.default_deadlines(),
+    types.default_limits(),
+    types.default_deadlines(),
     None,
   )
 }
@@ -66,8 +67,8 @@ pub fn old_raw_client_entry_is_absent() {
     443,
     "/v1/responses",
     "consumer-key",
-    llm_wire.default_limits(),
-    llm_wire.default_deadlines(),
+    types.default_limits(),
+    types.default_deadlines(),
     [],
     "{\"arbitrary\":true}",
   )
@@ -81,7 +82,7 @@ pub fn raw_transport_fields_cannot_be_supplied() {
     [],
     "{\"arbitrary\":true}",
     1000,
-    llm_wire.default_limits(),
+    types.default_limits(),
     65536,
     process.self(),
     fn(_) { Nil },
@@ -92,13 +93,7 @@ pub fn raw_transport_fields_cannot_be_supplied() {
 }
 
 pub fn credential_headers_cannot_be_inspected() {
-  let assert Ok(key) = llm_wire.api_key("consumer-key")
-  let assert Ok(endpoint) = llm_wire.endpoint("https://api.example.test/v1")
-  let assert Ok(model) = llm_wire.model_id("consumer-model")
-  let config = llm_wire.openai_config(key, endpoint, None, None)
-  let request = llm_wire.new_request(model, [llm_wire.UserMessage("hello")])
-  let assert Ok(prepared) = llm_wire.prepare(config, request, llm_wire.default_limits())
-  api.prepared_headers(prepared)
+  api.prepared_headers
 }
 EOF
 
@@ -110,17 +105,12 @@ fi
 
 if ! rg -q 'PreparedCall' "$scratch/negative.log" \
   || ! rg -q 'open_openai_stream' "$scratch/negative.log" \
-  || ! rg -q 'connect_and_stream' "$scratch/negative.log"; then
+  || ! rg -q 'connect_and_stream' "$scratch/negative.log" \
+  || ! rg -q 'prepared_headers' "$scratch/negative.log"; then
   cat "$scratch/negative.log" >&2
-  printf '%s\n' "The external probe failed before reaching the raw-call type boundary." >&2
-  exit 1
-fi
-
-if ! rg -q 'prepared_headers' "$scratch/negative.log"; then
-  cat "$scratch/negative.log" >&2
-  printf '%s\n' "The external probe did not enforce credential accessor privacy." >&2
+  printf '%s\n' "The external probe failed before reaching every raw-call boundary." >&2
   exit 1
 fi
 
 rg -n -A 3 -B 1 'error:' "$scratch/negative.log" || true
-printf '%s\n' "External root-facade consumer compiled; raw-call consumer failed at the prepared-call boundary."
+printf '%s\n' "Configured consumer compiled; raw-call consumer failed at the prepared-call boundary."

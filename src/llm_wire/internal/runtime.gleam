@@ -1,8 +1,8 @@
 import gleam/option.{None, Some}
 import gleam/result
-import llm_wire/api
+import llm_wire/internal/api
 import llm_wire/internal/client
-import llm_wire/owner
+import llm_wire/internal/owner
 import llm_wire/pool
 import llm_wire/types
 

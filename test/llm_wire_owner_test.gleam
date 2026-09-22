@@ -1,6 +1,7 @@
 import gleam/erlang/process
 import gleeunit/should
-import llm_wire/owner
+import llm_wire/internal/owner
+import llm_wire/internal/stream_types
 import llm_wire/types
 import tool_fixtures
 
@@ -21,7 +22,7 @@ pub fn owner_sequential_read_test() {
     "event: response.output_text.delta\ndata: {\"output_index\": 0, \"item_id\": \"item_1\", \"delta\": \"Hi!\"}\n\n":utf8,
   >>)
 
-  let assert Ok(types.NextProgress(types.TextDelta(block_id, text))) =
+  let assert Ok(stream_types.NextProgress(types.TextDelta(block_id, text))) =
     owner.next(stream, 1000)
   block_id |> should.equal("item_1")
   text |> should.equal("Hi!")
@@ -34,9 +35,11 @@ pub fn owner_sequential_read_test() {
     "event: response.completed\ndata: {\"response\": {\"id\": \"r1\", \"status\": \"completed\"}}\n\n":utf8,
   >>)
 
-  let assert Ok(types.StreamTerminal(types.StreamFinished(outcome, _))) =
-    owner.next(stream, 1000)
-  outcome |> should.equal(types.CompletedText("Hi!"))
+  let assert Ok(stream_types.StreamTerminal(stream_types.StreamFinished(
+    outcome,
+    _,
+  ))) = owner.next(stream, 1000)
+  outcome |> should.equal(stream_types.CompletedText("Hi!"))
 
   // Subsequent read returns StreamClosed
   owner.next(stream, 1000)
@@ -95,8 +98,8 @@ pub fn owner_concurrent_read_conflict_test() {
 pub fn owner_idle_deadline_test() {
   let limits = types.default_limits()
   // Set very short idle deadline: 50ms
-  let assert Ok(deadlines) =
-    types.new_deadlines(
+  let deadlines =
+    types.Deadlines(
       overall_timeout_ms: 10_000,
       idle_timeout_ms: 50,
       read_timeout_ms: 1000,
@@ -111,7 +114,7 @@ pub fn owner_idle_deadline_test() {
 
   let res = owner.next(stream, 1000)
   case res {
-    Ok(types.StreamTerminal(types.StreamFailed(
+    Ok(stream_types.StreamTerminal(stream_types.StreamFailed(
       types.DeadlineExceeded(types.IdleDeadline),
       _,
     ))) -> Nil
@@ -122,8 +125,8 @@ pub fn owner_idle_deadline_test() {
 pub fn owner_overall_deadline_test() {
   let limits = types.default_limits()
   // Set overall deadline to 50ms
-  let assert Ok(deadlines) =
-    types.new_deadlines(
+  let deadlines =
+    types.Deadlines(
       overall_timeout_ms: 50,
       idle_timeout_ms: 10_000,
       read_timeout_ms: 1000,
@@ -138,7 +141,7 @@ pub fn owner_overall_deadline_test() {
 
   let res = owner.next(stream, 1000)
   case res {
-    Ok(types.StreamTerminal(types.StreamFailed(
+    Ok(stream_types.StreamTerminal(stream_types.StreamFailed(
       types.DeadlineExceeded(types.OverallDeadline),
       _,
     ))) -> Nil
@@ -256,10 +259,10 @@ pub fn owner_read_timeout_delivery_race_never_loses_accepted_progress_test() {
   })
 
   case owner.next(stream, 10) {
-    Ok(types.NextProgress(types.TextDelta(_, text))) ->
+    Ok(stream_types.NextProgress(types.TextDelta(_, text))) ->
       text |> should.equal("kept")
     Error(types.ReadTimeout) -> {
-      let assert Ok(types.NextProgress(types.TextDelta(_, text))) =
+      let assert Ok(stream_types.NextProgress(types.TextDelta(_, text))) =
         owner.next(stream, 1000)
       text |> should.equal("kept")
     }
@@ -270,8 +273,8 @@ pub fn owner_read_timeout_delivery_race_never_loses_accepted_progress_test() {
 }
 
 pub fn owner_queue_limit_test() {
-  let assert Ok(limits) =
-    types.new_limits(
+  let limits =
+    types.Limits(
       chunk_bytes_limit: 10_000,
       line_bytes_limit: 10_000,
       event_bytes_limit: 10_000,
@@ -308,15 +311,15 @@ pub fn owner_queue_limit_test() {
     "event: response.output_text.delta\ndata: {\"output_index\": 0, \"item_id\": \"item_1\", \"delta\": \"3\"}\n\n":utf8,
   >>)
 
-  let assert Ok(types.NextProgress(types.TextDelta(_, "1"))) =
+  let assert Ok(stream_types.NextProgress(types.TextDelta(_, "1"))) =
     owner.next(stream, 1000)
-  let assert Ok(types.NextProgress(types.TextDelta(_, "2"))) =
+  let assert Ok(stream_types.NextProgress(types.TextDelta(_, "2"))) =
     owner.next(stream, 1000)
 
   // Next item must be the limit failure!
   let res = owner.next(stream, 1000)
   case res {
-    Ok(types.StreamTerminal(types.StreamFailed(
+    Ok(stream_types.StreamTerminal(stream_types.StreamFailed(
       types.ResourceLimitExceeded("queue_count_limit", 2, 3),
       _,
     ))) -> Nil
@@ -333,7 +336,7 @@ pub fn owner_response_body_limit_is_enforced_test() {
     owner.start_openai_stream(limits, types.default_deadlines(), transport)
   owner.feed_chunk(stream, <<"1234567890123":utf8>>)
   case owner.next(stream, 1000) {
-    Ok(types.StreamTerminal(types.StreamFailed(
+    Ok(stream_types.StreamTerminal(stream_types.StreamFailed(
       types.ResourceLimitExceeded("response_body_bytes_limit", 12, 13),
       _,
     ))) -> should.be_true(True)
@@ -362,7 +365,7 @@ pub fn owner_argument_disconnect_never_emits_partial_tool_call_test() {
     "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"x\\\":\"}}\n\n":utf8,
   >>)
   owner.feed_error(stream, "connection reset during tool arguments")
-  let assert Ok(types.StreamTerminal(types.StreamFailed(
+  let assert Ok(stream_types.StreamTerminal(stream_types.StreamFailed(
     types.TransportError("connection reset during tool arguments"),
     _,
   ))) = owner.next(stream, 1000)

@@ -7,11 +7,15 @@ import gleam/int
 import gleam/option.{None, Some}
 import gleam/string
 import gleeunit/should
-import llm_wire/api
+import llm_wire/config
+import llm_wire/internal/api
 import llm_wire/internal/client as prepared_client
-import llm_wire/owner
-import llm_wire/runtime
-import llm_wire/tcp
+import llm_wire/internal/owner
+import llm_wire/internal/provider_config
+import llm_wire/internal/runtime
+import llm_wire/internal/stream_types
+import llm_wire/internal/tcp
+import llm_wire/session
 import llm_wire/types
 import llm_wire_test_client as client
 import mist
@@ -20,7 +24,7 @@ import tool_fixtures
 pub fn api_rejects_remote_plaintext_before_transport_test() {
   let assert Ok(api_key) = types.api_key("sk-never-send")
   let assert Ok(endpoint) = types.endpoint("http://api.example.test/v1")
-  let config = types.openai_config(api_key, endpoint, None, None)
+  let config = provider_config.OpenAIConfig(api_key, endpoint, None, None)
   let assert Ok(model) = types.model_id("gpt-test")
   let request = types.new_request(model, [types.UserMessage("hello")])
   case api.prepare(config, request, types.default_limits()) {
@@ -37,7 +41,7 @@ pub fn prepared_client_rejects_caller_ca_for_remote_host_test() {
   let assert Ok(api_key) = types.api_key("sk-never-send")
   let assert Ok(endpoint) = types.endpoint("https://api.example.test/v1")
   let assert Ok(model) = types.model_id("gpt-test")
-  let config = types.openai_config(api_key, endpoint, None, None)
+  let config = provider_config.OpenAIConfig(api_key, endpoint, None, None)
   let request = types.new_request(model, [types.UserMessage("hello")])
   let assert Ok(prepared) = api.prepare(config, request, types.default_limits())
   case
@@ -45,7 +49,7 @@ pub fn prepared_client_rejects_caller_ca_for_remote_host_test() {
       prepared,
       types.default_limits(),
       types.default_deadlines(),
-      Some(types.VerifyCaFile("test/fixtures/llm-wire-test-ca.crt")),
+      Some(provider_config.VerifyCaFile("test/fixtures/llm-wire-test-ca.crt")),
     )
   {
     Error(types.ConfigurationError(reason)) ->
@@ -96,7 +100,7 @@ pub fn continuation_is_opaque_and_bound_to_its_prepared_interaction_test() {
   let assert Ok(endpoint) =
     types.endpoint("http://127.0.0.1:" <> int.to_string(server.port) <> "/v1")
   let assert Ok(model) = types.model_id("gpt-test")
-  let config = types.openai_config(key, endpoint, None, None)
+  let config = provider_config.OpenAIConfig(key, endpoint, None, None)
   let tool = tool_fixtures.int_field_tool("calc", "x")
   let request =
     types.new_request(model, [types.UserMessage("calculate")])
@@ -178,7 +182,7 @@ pub fn anthropic_continuation_restores_typed_tool_use_input_test() {
   let assert Ok(endpoint) =
     types.endpoint("http://127.0.0.1:" <> int.to_string(server.port) <> "/v1")
   let assert Ok(model) = types.model_id("claude-test")
-  let config = types.anthropic_config(key, endpoint, None)
+  let config = provider_config.AnthropicConfig(key, endpoint, None)
   let tool = tool_fixtures.int_field_tool("calc", "x")
   let request =
     types.new_request(model, [types.UserMessage("calculate")])
@@ -248,7 +252,7 @@ pub fn buffered_api_preserves_openai_refusal_outcome_test() {
   let assert Ok(endpoint) =
     types.endpoint("http://127.0.0.1:" <> int.to_string(server.port) <> "/v1")
   let assert Ok(model) = types.model_id("gpt-test")
-  let config = types.openai_config(key, endpoint, None, None)
+  let config = provider_config.OpenAIConfig(key, endpoint, None, None)
   let request = types.new_request(model, [types.UserMessage("help")])
   let assert Ok(prepared) = api.prepare(config, request, types.default_limits())
 
@@ -313,23 +317,25 @@ pub fn real_http_openai_streaming_test() {
       "{}",
     )
 
-  let assert Ok(types.NextProgress(types.TextDelta(b1, t1))) =
+  let assert Ok(stream_types.NextProgress(types.TextDelta(b1, t1))) =
     owner.next(stream, 2000)
   b1 |> should.equal("item_1")
   t1 |> should.equal("Hello via ")
 
-  let assert Ok(types.NextProgress(types.TextDelta(b2, t2))) =
+  let assert Ok(stream_types.NextProgress(types.TextDelta(b2, t2))) =
     owner.next(stream, 2000)
   b2 |> should.equal("item_1")
   t2 |> should.equal("real TCP!")
 
-  let assert Ok(types.NextProgress(types.UsageUpdate(usage))) =
+  let assert Ok(stream_types.NextProgress(types.UsageUpdate(usage))) =
     owner.next(stream, 2000)
   usage.total_tokens |> should.equal(9)
 
-  let assert Ok(types.StreamTerminal(types.StreamFinished(outcome, _))) =
-    owner.next(stream, 2000)
-  outcome |> should.equal(types.CompletedText("Hello via real TCP!"))
+  let assert Ok(stream_types.StreamTerminal(stream_types.StreamFinished(
+    outcome,
+    _,
+  ))) = owner.next(stream, 2000)
+  outcome |> should.equal(stream_types.CompletedText("Hello via real TCP!"))
 
   fake_server.stop(server)
 }
@@ -402,16 +408,18 @@ pub fn real_http_anthropic_streaming_test() {
       "{}",
     )
 
-  let assert Ok(types.NextProgress(types.UsageUpdate(usage))) =
+  let assert Ok(stream_types.NextProgress(types.UsageUpdate(usage))) =
     owner.next(stream, 2000)
   usage.output_tokens |> should.equal(15)
 
-  let assert Ok(types.StreamTerminal(types.StreamFinished(outcome, _))) =
-    owner.next(stream, 2000)
+  let assert Ok(stream_types.StreamTerminal(stream_types.StreamFinished(
+    outcome,
+    _,
+  ))) = owner.next(stream, 2000)
   let assert Ok(call_id) = types.call_id("call_99")
   let assert Ok(tool_name) = types.tool_name("calc")
   case outcome {
-    types.CompletedToolCalls(_, calls, _response_id) -> {
+    stream_types.CompletedToolCalls(_, calls, _response_id) -> {
       calls
       |> should.equal([
         types.ToolCall(call_id, tool_name, "{\"x\": 42}", Some("call_99"), None),
@@ -556,7 +564,7 @@ pub fn gun_enforces_total_response_body_limit_test() {
       "{}",
     )
   case owner.next(stream, 2000) {
-    Ok(types.StreamTerminal(types.StreamFailed(
+    Ok(stream_types.StreamTerminal(stream_types.StreamFailed(
       types.ResourceLimitExceeded("response_body_bytes_limit", 128, 129),
       _,
     ))) -> should.be_true(True)
@@ -596,11 +604,15 @@ pub fn gun_decodes_chunked_transfer_before_sse_framing_test() {
       [],
       "{}",
     )
-  let assert Ok(types.NextProgress(types.TextDelta("chunked-item", "chunked"))) =
-    owner.next(stream, 2000)
-  let assert Ok(types.StreamTerminal(types.StreamFinished(outcome, _))) =
-    owner.next(stream, 2000)
-  outcome |> should.equal(types.CompletedText("chunked"))
+  let assert Ok(stream_types.NextProgress(types.TextDelta(
+    "chunked-item",
+    "chunked",
+  ))) = owner.next(stream, 2000)
+  let assert Ok(stream_types.StreamTerminal(stream_types.StreamFinished(
+    outcome,
+    _,
+  ))) = owner.next(stream, 2000)
+  outcome |> should.equal(stream_types.CompletedText("chunked"))
   fake_server.stop(server)
 }
 
@@ -645,8 +657,8 @@ pub fn gun_setup_uses_remaining_overall_deadline_test() {
     Nil
   })
   let assert Ok(api_key) = types.api_key("sk-test")
-  let assert Ok(deadlines) =
-    types.new_deadlines(
+  let deadlines =
+    types.Deadlines(
       overall_timeout_ms: 75,
       idle_timeout_ms: 5000,
       read_timeout_ms: 100,
@@ -663,7 +675,7 @@ pub fn gun_setup_uses_remaining_overall_deadline_test() {
       "{}",
     )
   case result {
-    Error(types.TransportError(_)) -> should.be_true(True)
+    Error(types.DeadlineExceeded(types.OverallDeadline)) -> should.be_true(True)
     _ -> should.fail()
   }
   fake_server.stop(server)
@@ -712,13 +724,13 @@ pub fn real_http_disconnect_mid_stream_test() {
       "{}",
     )
 
-  let assert Ok(types.NextProgress(types.TextDelta(..))) =
+  let assert Ok(stream_types.NextProgress(types.TextDelta(..))) =
     owner.next(stream, 2000)
 
   // Next read should be terminal error due to unexpected EOF
   let res = owner.next(stream, 2000)
   case res {
-    Ok(types.StreamTerminal(types.StreamFailed(
+    Ok(stream_types.StreamTerminal(stream_types.StreamFailed(
       types.ProtocolError(_),
       retry_evidence,
     ))) -> {
@@ -758,26 +770,26 @@ pub fn gun_tls_stream_with_pinned_ca_test() {
     |> mist.start
   let assert Ok(port) = process.receive(port_subject, 2000)
   let assert Ok(api_key) = types.api_key("sk-local-tls-test")
+  let assert Ok(endpoint) =
+    types.endpoint("https://127.0.0.1:" <> int.to_string(port) <> "/v1")
+  let assert Ok(model) = types.model_id("gpt-test")
+  let settings =
+    config.openai(api_key)
+    |> config.with_endpoint(endpoint)
+    |> config.with_ca_cert_file("test/fixtures/llm-wire-test-ca.crt")
+  let request = types.new_request(model, [types.UserMessage("hello")])
+  let assert Ok(prepared) = session.prepare(settings, request)
+  let assert Ok(stream) = session.stream(prepared)
 
-  let assert Ok(stream) =
-    client.open_openai_stream_with_tls_mode(
-      "127.0.0.1",
-      port,
-      "/v1/responses",
-      api_key,
-      types.default_limits(),
-      types.default_deadlines(),
-      [],
-      "{}",
-      types.VerifyCaFile("test/fixtures/llm-wire-test-ca.crt"),
-    )
-
-  let assert Ok(types.NextProgress(types.TextDelta("tls-item", text))) =
-    owner.next(stream, 2000)
+  let assert Ok(session.NextProgress(types.TextDelta("tls-item", text))) =
+    session.next(stream)
   text |> should.equal("trusted TLS")
-  let assert Ok(types.StreamTerminal(types.StreamFinished(outcome, _))) =
-    owner.next(stream, 2000)
-  outcome |> should.equal(types.CompletedText("trusted TLS"))
+  let assert Ok(session.StreamTerminal(session.Finished(outcome))) =
+    session.next(stream)
+  case outcome {
+    session.RunText("trusted TLS", _) -> should.be_true(True)
+    _ -> should.fail()
+  }
   process.send_exit(server.pid)
 }
 
@@ -812,7 +824,7 @@ pub fn gun_tls_rejects_hostname_mismatch_test() {
       types.default_deadlines(),
       [],
       "{}",
-      types.VerifyCaFile("test/fixtures/llm-wire-test-ca.crt"),
+      provider_config.VerifyCaFile("test/fixtures/llm-wire-test-ca.crt"),
     )
   case result {
     Error(types.TransportError(_)) -> Nil
@@ -852,7 +864,7 @@ pub fn gun_tls_rejects_untrusted_ca_test() {
       types.default_deadlines(),
       [],
       "{}",
-      types.VerifySystem,
+      provider_config.VerifySystem,
     )
   case result {
     Error(types.TransportError(_)) -> should.be_true(True)

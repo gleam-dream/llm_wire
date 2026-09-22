@@ -1,7 +1,8 @@
 import gleam/option.{None, Some}
 import gleeunit/should
-import llm_wire/openai
-import llm_wire/sse
+import llm_wire/internal/openai
+import llm_wire/internal/sse
+import llm_wire/internal/stream_types
 import llm_wire/types
 import tool_fixtures
 
@@ -49,8 +50,8 @@ pub fn openai_refusal_delta_is_reduced_and_terminally_refused_test() {
     )
   openai.terminal(reducer)
   |> should.equal(
-    Some(types.StreamFinished(
-      outcome: types.Refused("I cannot help with that."),
+    Some(stream_types.StreamFinished(
+      outcome: stream_types.Refused("I cannot help with that."),
       usage: None,
     )),
   )
@@ -96,7 +97,10 @@ pub fn openai_reasoning_summary_delta_is_routed_and_completed_test() {
     )
   openai.terminal(reducer)
   |> should.equal(
-    Some(types.StreamFinished(outcome: types.CompletedText(""), usage: None)),
+    Some(stream_types.StreamFinished(
+      outcome: stream_types.CompletedText(""),
+      usage: None,
+    )),
   )
 }
 
@@ -257,8 +261,8 @@ pub fn openai_text_stream_test() {
 
   openai.terminal(reducer)
   |> should.equal(
-    Some(types.StreamFinished(
-      outcome: types.CompletedText("Hello world!"),
+    Some(stream_types.StreamFinished(
+      outcome: stream_types.CompletedText("Hello world!"),
       usage: Some(types.Usage(
         input_tokens: 10,
         output_tokens: 5,
@@ -347,9 +351,10 @@ pub fn openai_interleaved_tool_calls_test() {
     )
   let assert Ok(#(reducer, _)) = openai.step(reducer, ev7)
 
-  let assert Some(types.StreamFinished(outcome, _)) = openai.terminal(reducer)
+  let assert Some(stream_types.StreamFinished(outcome, _)) =
+    openai.terminal(reducer)
   case outcome {
-    types.CompletedToolCalls(_text, calls, response_id) -> {
+    stream_types.CompletedToolCalls(_text, calls, response_id) -> {
       response_id |> should.equal(Some("resp_1"))
       calls
       |> should.equal([
@@ -384,7 +389,7 @@ pub fn openai_provider_cancellation_is_not_attributed_to_local_owner_test() {
     )
   let assert Ok(#(reducer, _)) = openai.step(reducer, completed)
   case openai.terminal(reducer) {
-    Some(types.StreamFailed(types.ProviderError(Some("cancelled"), _), _)) ->
+    Some(stream_types.StreamFailed(types.ProviderError(Some("cancelled"), _), _)) ->
       should.be_true(True)
     _ -> should.fail()
   }
@@ -434,7 +439,7 @@ pub fn openai_provider_error_test() {
   let assert Ok(#(reducer, _)) = openai.step(reducer, ev)
   openai.terminal(reducer)
   |> should.equal(
-    Some(types.StreamFailed(
+    Some(stream_types.StreamFailed(
       error: types.ProviderError(
         code: Some("rate_limit"),
         message: "Too many requests",

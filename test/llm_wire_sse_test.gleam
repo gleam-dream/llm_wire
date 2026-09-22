@@ -2,7 +2,7 @@ import gleam/bit_array
 import gleam/list
 import gleam/option.{None, Some}
 import gleeunit/should
-import llm_wire/sse
+import llm_wire/internal/sse
 import llm_wire/types
 
 pub fn simple_event_test() {
@@ -161,8 +161,8 @@ pub fn split_utf8_multibyte_test() {
 }
 
 pub fn chunk_limit_test() {
-  let assert Ok(limits) =
-    types.new_limits(
+  let limits =
+    types.Limits(
       chunk_bytes_limit: 10,
       line_bytes_limit: 100,
       event_bytes_limit: 100,
@@ -183,8 +183,8 @@ pub fn chunk_limit_test() {
 }
 
 pub fn line_limit_test() {
-  let assert Ok(limits) =
-    types.new_limits(
+  let limits =
+    types.Limits(
       chunk_bytes_limit: 100,
       line_bytes_limit: 15,
       event_bytes_limit: 100,

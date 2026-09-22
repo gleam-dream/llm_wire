@@ -1,7 +1,8 @@
 import gleam/erlang/process
 import gleam/option.{type Option, None}
 import gleam/result
-import llm_wire/api
+import llm_wire/internal/api
+import llm_wire/internal/provider_config
 import llm_wire/types
 
 pub type TransportHandle {
@@ -22,7 +23,7 @@ pub fn monotonic_millis() -> Int
 pub fn connect_and_stream(
   prepared: api.PreparedCall,
   overall_timeout_ms: Int,
-  tls_mode: types.TlsMode,
+  tls_mode: provider_config.TlsMode,
   max_header_bytes: Int,
   max_chunk_bytes: Int,
   owner_pid: process.Pid,
@@ -50,7 +51,7 @@ pub fn connect_and_stream_with_pool(
   pool_pid: Option(process.Pid),
   prepared: api.PreparedCall,
   overall_timeout_ms: Int,
-  tls_mode: types.TlsMode,
+  tls_mode: provider_config.TlsMode,
   max_header_bytes: Int,
   max_chunk_bytes: Int,
   owner_pid: process.Pid,

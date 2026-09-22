@@ -1,7 +1,8 @@
 import gleam/option.{None, Some}
 import gleeunit/should
-import llm_wire/anthropic
-import llm_wire/sse
+import llm_wire/internal/anthropic
+import llm_wire/internal/sse
+import llm_wire/internal/stream_types
 import llm_wire/types
 import tool_fixtures
 
@@ -107,8 +108,8 @@ pub fn anthropic_text_stream_test() {
 
   anthropic.terminal(reducer)
   |> should.equal(
-    Some(types.StreamFinished(
-      outcome: types.CompletedText("Hello Claude!"),
+    Some(stream_types.StreamFinished(
+      outcome: stream_types.CompletedText("Hello Claude!"),
       usage: Some(types.Usage(
         input_tokens: 15,
         output_tokens: 10,
@@ -198,7 +199,7 @@ pub fn anthropic_tool_use_stream_test() {
     )
   let assert Ok(#(reducer, _)) = anthropic.step(reducer, ev7)
 
-  let assert Some(types.StreamFinished(outcome, usage)) =
+  let assert Some(stream_types.StreamFinished(outcome, usage)) =
     anthropic.terminal(reducer)
   usage
   |> should.equal(
@@ -206,7 +207,7 @@ pub fn anthropic_tool_use_stream_test() {
   )
 
   case outcome {
-    types.CompletedToolCalls(_text, calls, response_id) -> {
+    stream_types.CompletedToolCalls(_text, calls, response_id) -> {
       response_id |> should.equal(Some("msg_2"))
       calls
       |> should.equal([
@@ -358,11 +359,11 @@ pub fn anthropic_max_tokens_test() {
     )
   let assert Ok(#(reducer, _)) = anthropic.step(reducer, ev5)
 
-  let assert Some(types.StreamFinished(outcome, _)) =
+  let assert Some(stream_types.StreamFinished(outcome, _)) =
     anthropic.terminal(reducer)
   outcome
   |> should.equal(
-    types.OutputLimited(partial_text: "Cut off...", partial_calls: []),
+    stream_types.OutputLimited(partial_text: "Cut off...", partial_calls: []),
   )
 }
 
@@ -427,7 +428,7 @@ pub fn anthropic_error_test() {
   let assert Ok(#(reducer, _)) = anthropic.step(reducer, ev)
   anthropic.terminal(reducer)
   |> should.equal(
-    Some(types.StreamFailed(
+    Some(stream_types.StreamFailed(
       error: types.ProviderError(
         code: Some("overloaded_error"),
         message: "Service is temporarily overloaded",
@@ -485,8 +486,8 @@ pub fn anthropic_refusal_terminal_is_a_refusal_result_test() {
   let assert Ok(#(reducer, _)) = anthropic.step(reducer, message_stop)
   anthropic.terminal(reducer)
   |> should.equal(
-    Some(types.StreamFinished(
-      types.Refused("I cannot help with that request."),
+    Some(stream_types.StreamFinished(
+      stream_types.Refused("I cannot help with that request."),
       None,
     )),
   )
@@ -511,8 +512,10 @@ pub fn anthropic_unknown_stop_reason_is_not_reported_as_success_test() {
     )
   let assert Ok(#(reducer, _)) = anthropic.step(reducer, message_stop)
   case anthropic.terminal(reducer) {
-    Some(types.StreamFailed(types.ProviderError(Some("future_state"), _), _)) ->
-      should.be_true(True)
+    Some(stream_types.StreamFailed(
+      types.ProviderError(Some("future_state"), _),
+      _,
+    )) -> should.be_true(True)
     _ -> should.fail()
   }
 }
@@ -552,7 +555,7 @@ pub fn anthropic_successful_hosted_effect_remains_effect_unknown_test() {
     )
   let assert Ok(#(reducer, _)) = anthropic.step(reducer, message_stop)
   case anthropic.terminal(reducer) {
-    Some(types.StreamFailed(
+    Some(stream_types.StreamFailed(
       types.ProviderError(Some("pause_turn"), _),
       types.RetryEvidence(classification: types.EffectUnknown, ..),
     )) -> should.be_true(True)

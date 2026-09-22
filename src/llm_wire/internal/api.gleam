@@ -11,8 +11,11 @@ import gleam/result
 import gleam/string
 import json/blueprint/codec
 import json/blueprint/runtime
-import llm_wire/owner
-import llm_wire/schema
+import llm_wire/internal/owner
+import llm_wire/internal/provider_config
+import llm_wire/internal/schema
+import llm_wire/internal/stream_types
+import llm_wire/internal/transport_failure
 import llm_wire/telemetry
 import llm_wire/types
 
@@ -21,14 +24,14 @@ import llm_wire/types
 /// cannot switch providers while preparing a continuation.
 pub opaque type PreparedCall {
   PreparedCall(
-    config: types.ProviderConfig,
+    config: provider_config.ProviderConfig,
     provider: types.Provider,
     model: types.ModelId,
     request: types.Request,
     host: String,
     port: Int,
     path: String,
-    tls_mode: types.TlsMode,
+    tls_mode: provider_config.TlsMode,
     headers: List(#(String, String)),
     body: String,
     structured_format: Option(StructuredFormat),
@@ -44,7 +47,7 @@ pub opaque type Continuation {
     source_calls: List(types.ToolCall),
     conversation: List(types.Message),
     response_id: Option(String),
-    provider_continuation: Option(types.ProviderContinuation),
+    provider_continuation: Option(stream_types.ProviderContinuation),
     origin: reference.Reference,
   )
 }
@@ -109,7 +112,7 @@ pub fn prepared_path(prepared: PreparedCall) -> String {
   prepared.path
 }
 
-pub fn prepared_tls_mode(prepared: PreparedCall) -> types.TlsMode {
+pub fn prepared_tls_mode(prepared: PreparedCall) -> provider_config.TlsMode {
   prepared.tls_mode
 }
 
@@ -162,7 +165,7 @@ fn gun_handle_pid(handle: GunHandle) -> process.Pid
 pub fn connect_prepared_and_stream(
   prepared: PreparedCall,
   overall_timeout_ms: Int,
-  tls_mode: types.TlsMode,
+  tls_mode: provider_config.TlsMode,
   max_header_bytes: Int,
   max_chunk_bytes: Int,
   owner_pid: process.Pid,
@@ -190,7 +193,7 @@ pub fn connect_prepared_and_stream_with_pool(
   pool_pid: Option(process.Pid),
   prepared: PreparedCall,
   overall_timeout_ms: Int,
-  tls_mode: types.TlsMode,
+  tls_mode: provider_config.TlsMode,
   max_header_bytes: Int,
   max_chunk_bytes: Int,
   owner_pid: process.Pid,
@@ -201,9 +204,9 @@ pub fn connect_prepared_and_stream_with_pool(
 ) -> Result(#(owner.TransportPort, process.Pid), types.WireError) {
   use Nil <- result.try(validate_prepared_transport(prepared, tls_mode))
   let #(tls_name, ca_file) = case tls_mode {
-    types.Plaintext -> #("plaintext", "")
-    types.VerifySystem -> #("verify_system", "")
-    types.VerifyCaFile(path) -> #("verify_ca_file", path)
+    provider_config.Plaintext -> #("plaintext", "")
+    provider_config.VerifySystem -> #("verify_system", "")
+    provider_config.VerifyCaFile(path) -> #("verify_ca_file", path)
   }
   case
     gun_connect_and_stream_with_pool(
@@ -231,7 +234,7 @@ pub fn connect_prepared_and_stream_with_pool(
         response_body,
         parse_retry_hint(retry_after),
       ))
-    Error(GunFailure(reason)) -> Error(types.TransportError(reason))
+    Error(GunFailure(reason)) -> Error(transport_failure.classify(reason))
     Ok(handle) ->
       Ok(#(
         owner.TransportPort(
@@ -243,9 +246,9 @@ pub fn connect_prepared_and_stream_with_pool(
   }
 }
 
-fn validate_prepared_transport(
+pub fn validate_prepared_transport(
   prepared: PreparedCall,
-  tls_mode: types.TlsMode,
+  tls_mode: provider_config.TlsMode,
 ) -> Result(Nil, types.WireError) {
   let host = prepared.host
   let path = prepared.path
@@ -263,8 +266,8 @@ fn validate_prepared_transport(
   let host_is_local =
     host == "localhost" || host == "127.0.0.1" || host == "::1"
   let tls_policy_is_valid = case tls_mode {
-    types.Plaintext | types.VerifyCaFile(_) -> host_is_local
-    types.VerifySystem -> True
+    provider_config.Plaintext | provider_config.VerifyCaFile(_) -> host_is_local
+    provider_config.VerifySystem -> True
   }
   use Nil <- result.try(
     case
@@ -297,15 +300,15 @@ fn parse_retry_hint(value: String) -> Option(types.RetryHint) {
 }
 
 pub fn prepare(
-  config: types.ProviderConfig,
+  config: provider_config.ProviderConfig,
   request: types.Request,
   limits: types.Limits,
 ) -> Result(PreparedCall, types.WireError) {
-  prepare_with_format(config, request, limits, None)
+  prepare_with_format(config, request, limits, None, None)
 }
 
 pub fn prepare_structured(
-  config: types.ProviderConfig,
+  config: provider_config.ProviderConfig,
   request: types.Request,
   limits: types.Limits,
   output_name: String,
@@ -338,6 +341,7 @@ pub fn prepare_structured(
             request,
             limits,
             Some(format),
+            None,
           ))
           Ok(PreparedStructuredCall(prepared, contract, output_codec))
         }
@@ -378,10 +382,11 @@ pub fn decode_structured_output(
 }
 
 fn prepare_with_format(
-  config: types.ProviderConfig,
+  config: provider_config.ProviderConfig,
   request: types.Request,
   limits: types.Limits,
   structured_format: Option(StructuredFormat),
+  provider_continuation: Option(stream_types.ProviderContinuation),
 ) -> Result(PreparedCall, types.WireError) {
   use admitted_tools <- result.try(types.admit_tool_catalog(request.tools))
   use endpoint_parts <- result.try(parse_endpoint(config_endpoint(config)))
@@ -390,7 +395,7 @@ fn prepare_with_format(
   use Nil <- result.try(validate_provider_options(provider, request))
   use tool_json <- result.try(encode_tools(provider, admitted_tools))
   let body = case config {
-    types.OpenAIConfig(..) -> {
+    provider_config.OpenAIConfig(..) -> {
       use encoded <- result.try(encode_openai_request(
         request,
         tool_json,
@@ -398,10 +403,15 @@ fn prepare_with_format(
       ))
       Ok(json.to_string(encoded))
     }
-    types.AnthropicConfig(..) ->
+    provider_config.AnthropicConfig(..) ->
       encode_anthropic_request(request, tool_json, structured_format)
-    types.GoogleConfig(..) ->
-      encode_google_request(request, tool_json, structured_format)
+    provider_config.GoogleConfig(..) ->
+      encode_google_request(
+        request,
+        tool_json,
+        structured_format,
+        provider_continuation,
+      )
   }
   use body_text <- result.try(body)
   let #(host, port, base_path, tls_mode) = endpoint_parts
@@ -463,7 +473,7 @@ fn prepare_with_format(
 pub fn next(
   stream: owner.Stream,
   timeout_ms: Int,
-) -> Result(types.ReadResult, types.ReadError) {
+) -> Result(stream_types.ReadResult, types.ReadError) {
   owner.next(stream, timeout_ms)
 }
 
@@ -526,16 +536,12 @@ pub fn prepare_continue(
             types.new_request(continuation.model, messages)
             |> types.with_tools(prepared.request.tools)
             |> copy_options(prepared.request)
-          let request = case continuation.provider_continuation {
-            Some(provider_continuation) ->
-              types.with_provider_continuation(request, provider_continuation)
-            None -> request
-          }
           prepare_with_format(
             prepared.config,
             request,
             limits,
             prepared.structured_format,
+            continuation.provider_continuation,
           )
         }
       }
@@ -552,7 +558,9 @@ fn validate_continuation_calls(
     use Nil <- result.try(acc)
     let name = types.tool_name_to_string(call.name)
     case
-      list.find(tools, fn(tool) { types.tool_definition_name(tool) == name })
+      list.find(tools, fn(tool) {
+        types.tool_name_to_string(types.tool_name_of(tool)) == name
+      })
     {
       Error(Nil) ->
         Error(types.PreparationError(
@@ -654,66 +662,76 @@ pub fn collect_run(
       ))
     Error(types.OwnerUnavailable) ->
       Error(types.TransportError("Stream owner unavailable"))
-    Ok(types.NextProgress(_progress)) ->
+    Ok(stream_types.NextProgress(_progress)) ->
       collect_run(stream, prepared, read_timeout_ms)
-    Ok(types.StreamTerminal(terminal)) ->
-      case terminal {
-        types.StreamFinished(types.CompletedText(text), usage) ->
-          Ok(RunText(text, usage))
-        types.StreamFinished(
-          types.CompletedToolCalls(_text, calls, response_id),
-          usage,
-        ) -> {
-          let continuation =
-            Continuation(
-              prepared.provider,
-              prepared.model,
-              list.map(calls, fn(call) { call.id }),
-              calls,
-              prepared.request.messages,
-              response_id,
-              None,
-              prepared.origin,
-            )
-          Ok(RunToolCalls(calls, continuation, usage))
-        }
-        types.StreamFinished(
-          types.CompletedToolCallsWithContinuation(
-            _text,
-            calls,
-            response_id,
-            provider_continuation,
-          ),
-          usage,
-        ) -> {
-          let continuation =
-            Continuation(
-              prepared.provider,
-              prepared.model,
-              list.map(calls, fn(call) { call.id }),
-              calls,
-              prepared.request.messages,
-              response_id,
-              Some(provider_continuation),
-              prepared.origin,
-            )
-          Ok(RunToolCalls(calls, continuation, usage))
-        }
-        types.StreamFinished(types.OutputLimited(text, calls), usage) ->
-          Ok(RunOutputLimited(text, calls, usage))
-        types.StreamFinished(types.Refused(reason), _usage) ->
-          Ok(RunRefusal(reason))
-        types.StreamFailed(error, _retry) -> Error(error)
-        types.StreamCancelledLocally(_) -> Error(types.CancelledLocally)
-      }
+    Ok(stream_types.StreamTerminal(terminal)) ->
+      terminal_result(prepared, terminal)
   }
 }
 
-fn config_provider(config: types.ProviderConfig) -> types.Provider {
+/// Session implementation helper. Callers must pair a terminal with the
+/// prepared interaction that opened its stream.
+@internal
+pub fn terminal_result(
+  prepared: PreparedCall,
+  terminal: stream_types.TerminalOutcome,
+) -> Result(RunResult, types.WireError) {
+  case terminal {
+    stream_types.StreamFinished(stream_types.CompletedText(text), usage) ->
+      Ok(RunText(text, usage))
+    stream_types.StreamFinished(
+      stream_types.CompletedToolCalls(_text, calls, response_id),
+      usage,
+    ) -> {
+      let continuation =
+        Continuation(
+          prepared.provider,
+          prepared.model,
+          list.map(calls, fn(call) { call.id }),
+          calls,
+          prepared.request.messages,
+          response_id,
+          None,
+          prepared.origin,
+        )
+      Ok(RunToolCalls(calls, continuation, usage))
+    }
+    stream_types.StreamFinished(
+      stream_types.CompletedToolCallsWithContinuation(
+        _text,
+        calls,
+        response_id,
+        provider_continuation,
+      ),
+      usage,
+    ) -> {
+      let continuation =
+        Continuation(
+          prepared.provider,
+          prepared.model,
+          list.map(calls, fn(call) { call.id }),
+          calls,
+          prepared.request.messages,
+          response_id,
+          Some(provider_continuation),
+          prepared.origin,
+        )
+      Ok(RunToolCalls(calls, continuation, usage))
+    }
+    stream_types.StreamFinished(stream_types.OutputLimited(text, calls), usage) ->
+      Ok(RunOutputLimited(text, calls, usage))
+    stream_types.StreamFinished(stream_types.Refused(reason), _usage) ->
+      Ok(RunRefusal(reason))
+    stream_types.StreamFailed(error, _retry) -> Error(error)
+    stream_types.StreamCancelledLocally(_) -> Error(types.CancelledLocally)
+  }
+}
+
+fn config_provider(config: provider_config.ProviderConfig) -> types.Provider {
   case config {
-    types.OpenAIConfig(..) -> types.OpenAI
-    types.AnthropicConfig(..) -> types.Anthropic
-    types.GoogleConfig(..) -> types.Google
+    provider_config.OpenAIConfig(..) -> types.OpenAI
+    provider_config.AnthropicConfig(..) -> types.Anthropic
+    provider_config.GoogleConfig(..) -> types.Google
   }
 }
 
@@ -725,25 +743,27 @@ fn provider_name(provider: types.Provider) -> String {
   }
 }
 
-fn config_endpoint(config: types.ProviderConfig) -> types.Endpoint {
+fn config_endpoint(config: provider_config.ProviderConfig) -> types.Endpoint {
   case config {
-    types.OpenAIConfig(endpoint:, ..) -> endpoint
-    types.AnthropicConfig(endpoint:, ..) -> endpoint
-    types.GoogleConfig(endpoint:, ..) -> endpoint
+    provider_config.OpenAIConfig(endpoint:, ..) -> endpoint
+    provider_config.AnthropicConfig(endpoint:, ..) -> endpoint
+    provider_config.GoogleConfig(endpoint:, ..) -> endpoint
   }
 }
 
-fn config_api_key(config: types.ProviderConfig) -> types.ApiKey {
+fn config_api_key(config: provider_config.ProviderConfig) -> types.ApiKey {
   case config {
-    types.OpenAIConfig(api_key:, ..) -> api_key
-    types.AnthropicConfig(api_key:, ..) -> api_key
-    types.GoogleConfig(api_key:, ..) -> api_key
+    provider_config.OpenAIConfig(api_key:, ..) -> api_key
+    provider_config.AnthropicConfig(api_key:, ..) -> api_key
+    provider_config.GoogleConfig(api_key:, ..) -> api_key
   }
 }
 
-fn config_headers(config: types.ProviderConfig) -> List(#(String, String)) {
+fn config_headers(
+  config: provider_config.ProviderConfig,
+) -> List(#(String, String)) {
   case config {
-    types.OpenAIConfig(organization:, project:, ..) -> {
+    provider_config.OpenAIConfig(organization:, project:, ..) -> {
       let org = case organization {
         Some(value) -> [#("OpenAI-Organization", value)]
         None -> []
@@ -754,12 +774,12 @@ fn config_headers(config: types.ProviderConfig) -> List(#(String, String)) {
       }
       list.append(org, proj)
     }
-    types.AnthropicConfig(version:, ..) ->
+    provider_config.AnthropicConfig(version:, ..) ->
       case version {
         Some(value) -> [#("anthropic-version", value)]
         None -> []
       }
-    types.GoogleConfig(api_version:, ..) ->
+    provider_config.GoogleConfig(api_version:, ..) ->
       case api_version {
         Some(value) -> [#("x-goog-api-version", value)]
         None -> []
@@ -935,7 +955,7 @@ fn encode_tools(
         schema.google_function_parameters_schema(types.tool_schema(tool))
       _ -> schema.provider_schema(types.tool_schema(tool))
     })
-    let name = json.string(types.tool_definition_name(tool))
+    let name = json.string(types.tool_name_to_string(types.tool_name_of(tool)))
     let description = json.string(types.tool_description(tool))
     use encoded <- result.try(case provider {
       types.OpenAI ->
@@ -1080,6 +1100,7 @@ fn encode_google_request(
   request: types.Request,
   tools: List(json.Json),
   structured_format: Option(StructuredFormat),
+  provider_continuation: Option(stream_types.ProviderContinuation),
 ) -> Result(String, types.WireError) {
   let system_parts =
     list.filter_map(request.messages, fn(message) {
@@ -1099,7 +1120,7 @@ fn encode_google_request(
   use contents <- result.try(build_google_contents(
     request.messages,
     request.messages,
-    request.provider_continuation,
+    provider_continuation,
   ))
 
   let base = [#("contents", "[" <> string.join(contents, ",") <> "]")]
@@ -1169,7 +1190,7 @@ fn google_generation_config(
 fn build_google_contents(
   messages: List(types.Message),
   all_messages: List(types.Message),
-  provider_continuation: Option(types.ProviderContinuation),
+  provider_continuation: Option(stream_types.ProviderContinuation),
 ) -> Result(List(String), types.WireError) {
   let non_system =
     list.filter(messages, fn(m) {
@@ -1190,7 +1211,7 @@ fn build_google_contents_loop(
   remaining: List(types.Message),
   all_messages: List(types.Message),
   acc: List(String),
-  provider_continuation: Option(types.ProviderContinuation),
+  provider_continuation: Option(stream_types.ProviderContinuation),
 ) -> Result(List(String), types.WireError) {
   case remaining {
     [] -> Ok(acc)
@@ -1247,7 +1268,7 @@ fn build_google_contents_loop(
         provider_continuation,
         message
       {
-        Some(types.GoogleProviderContinuation(parts)),
+        Some(stream_types.GoogleProviderContinuation(parts)),
           types.AssistantToolCalls(_)
         -> #(
           Ok(
@@ -1744,7 +1765,7 @@ fn openai_content_parts(
 
 fn parse_endpoint(
   endpoint: types.Endpoint,
-) -> Result(#(String, Int, String, types.TlsMode), types.WireError) {
+) -> Result(#(String, Int, String, provider_config.TlsMode), types.WireError) {
   let raw = types.endpoint_to_string(endpoint)
   use #(scheme, after_scheme) <- result.try(
     string.split_once(raw, "://")
@@ -1796,8 +1817,8 @@ fn parse_endpoint(
             value -> "/" <> trim_trailing_slashes(value)
           }
           let tls_mode = case scheme {
-            "https" -> types.VerifySystem
-            _ -> types.Plaintext
+            "https" -> provider_config.VerifySystem
+            _ -> provider_config.Plaintext
           }
           Ok(#(host, port, base_path, tls_mode))
         }

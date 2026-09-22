@@ -1,8 +1,9 @@
 import gleam/erlang/process
 import gleam/option.{type Option, None, unwrap}
-import llm_wire/api
+import llm_wire/internal/api
+import llm_wire/internal/owner
+import llm_wire/internal/provider_config
 import llm_wire/internal/transport
-import llm_wire/owner
 import llm_wire/types
 
 /// Opens only a request that passed the API's local admission path.
@@ -12,7 +13,7 @@ pub fn open_prepared_stream(
   prepared: api.PreparedCall,
   limits: types.Limits,
   deadlines: types.Deadlines,
-  tls_override: Option(types.TlsMode),
+  tls_override: Option(provider_config.TlsMode),
 ) -> Result(owner.Stream, types.WireError) {
   open_prepared_stream_with_pool(
     prepared,
@@ -27,7 +28,7 @@ pub fn open_prepared_stream_with_pool(
   prepared: api.PreparedCall,
   limits: types.Limits,
   deadlines: types.Deadlines,
-  tls_override: Option(types.TlsMode),
+  tls_override: Option(provider_config.TlsMode),
   pool_pid: Option(process.Pid),
 ) -> Result(owner.Stream, types.WireError) {
   let provider = api.prepared_provider(prepared)
@@ -43,7 +44,7 @@ fn open_stream(
   limits: types.Limits,
   deadlines: types.Deadlines,
   tools: List(types.ToolDefinition),
-  tls_mode: types.TlsMode,
+  tls_mode: provider_config.TlsMode,
   pool_pid: Option(process.Pid),
 ) -> Result(owner.Stream, types.WireError) {
   let overall_started_ms = transport.monotonic_millis()

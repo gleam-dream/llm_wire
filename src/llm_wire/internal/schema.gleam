@@ -154,12 +154,39 @@ fn provider_schema_supported(schema: codec.Schema) -> Bool {
 pub fn strict_output_schema(
   schema: codec.Schema,
 ) -> Result(json.Json, types.WireError) {
-  case schema {
-    codec.ObjectSchema(_) -> strict_schema(schema)
+  let normalized = normalize_object_equivalence(schema)
+  case normalized {
+    codec.ObjectSchema(_) -> strict_schema(normalized)
     _ ->
       Error(types.PreparationError(
         "Structured output requires an object root schema",
       ))
+  }
+}
+
+/// Blueprint's field codec describes the same closed, required object as a
+/// one-property object codec. Normalize that equivalence before provider
+/// admission, including inside arrays and other objects.
+fn normalize_object_equivalence(schema: codec.Schema) -> codec.Schema {
+  case schema {
+    codec.FieldSchema(name, inner) ->
+      codec.ObjectSchema([
+        codec.PropertySchema(name, True, normalize_object_equivalence(inner)),
+      ])
+    codec.ObjectSchema(properties) ->
+      codec.ObjectSchema(
+        list.map(properties, fn(property) {
+          codec.PropertySchema(
+            ..property,
+            schema: normalize_object_equivalence(property.schema),
+          )
+        }),
+      )
+    codec.ListSchema(inner) ->
+      codec.ListSchema(normalize_object_equivalence(inner))
+    codec.NullableSchema(inner) ->
+      codec.NullableSchema(normalize_object_equivalence(inner))
+    _ -> schema
   }
 }
 
@@ -206,8 +233,9 @@ fn validate_strict_schema(
 pub fn google_strict_output_schema(
   schema: codec.Schema,
 ) -> Result(json.Json, types.WireError) {
-  case schema {
-    codec.ObjectSchema(_) -> google_strict_schema(schema)
+  let normalized = normalize_object_equivalence(schema)
+  case normalized {
+    codec.ObjectSchema(_) -> google_strict_schema(normalized)
     _ ->
       Error(types.PreparationError(
         "Structured output requires an object root schema",

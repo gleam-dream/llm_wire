@@ -68,13 +68,10 @@ pub fn api_key(raw: String) -> Result(ApiKey, WireError) {
   }
 }
 
+@internal
 pub fn api_key_expose(key: ApiKey) -> String {
   let ApiKey(raw) = key
   raw
-}
-
-pub fn api_key_redacted(_key: ApiKey) -> String {
-  "[REDACTED]"
 }
 
 pub opaque type Endpoint {
@@ -102,24 +99,6 @@ pub type Provider {
   OpenAI
   Anthropic
   Google
-}
-
-/// Transport security selected while admitting an endpoint.
-pub type TlsMode {
-  Plaintext
-  VerifySystem
-  VerifyCaFile(path: String)
-}
-
-pub type ProviderConfig {
-  OpenAIConfig(
-    api_key: ApiKey,
-    endpoint: Endpoint,
-    organization: Option(String),
-    project: Option(String),
-  )
-  AnthropicConfig(api_key: ApiKey, endpoint: Endpoint, version: Option(String))
-  GoogleConfig(api_key: ApiKey, endpoint: Endpoint, api_version: Option(String))
 }
 
 pub type Limits {
@@ -156,49 +135,23 @@ pub fn default_limits() -> Limits {
   )
 }
 
-pub fn new_limits(
-  chunk_bytes_limit chunk_bytes_limit: Int,
-  line_bytes_limit line_bytes_limit: Int,
-  event_bytes_limit event_bytes_limit: Int,
-  queue_count_limit queue_count_limit: Int,
-  queue_bytes_limit queue_bytes_limit: Int,
-  active_blocks_limit active_blocks_limit: Int,
-  text_bytes_per_block_limit text_bytes_per_block_limit: Int,
-  total_text_bytes_limit total_text_bytes_limit: Int,
-  argument_bytes_per_call_limit argument_bytes_per_call_limit: Int,
-  total_argument_bytes_limit total_argument_bytes_limit: Int,
-  extension_bytes_limit extension_bytes_limit: Int,
-  response_body_bytes_limit response_body_bytes_limit: Int,
-) -> Result(Limits, WireError) {
+@internal
+pub fn validate_limits(limits: Limits) -> Result(Nil, WireError) {
   case
-    chunk_bytes_limit > 0
-    && line_bytes_limit > 0
-    && event_bytes_limit > 0
-    && queue_count_limit > 0
-    && queue_bytes_limit > 0
-    && active_blocks_limit > 0
-    && text_bytes_per_block_limit > 0
-    && total_text_bytes_limit > 0
-    && argument_bytes_per_call_limit > 0
-    && total_argument_bytes_limit > 0
-    && extension_bytes_limit > 0
-    && response_body_bytes_limit > 0
+    limits.chunk_bytes_limit > 0
+    && limits.line_bytes_limit > 0
+    && limits.event_bytes_limit > 0
+    && limits.queue_count_limit > 0
+    && limits.queue_bytes_limit > 0
+    && limits.active_blocks_limit > 0
+    && limits.text_bytes_per_block_limit > 0
+    && limits.total_text_bytes_limit > 0
+    && limits.argument_bytes_per_call_limit > 0
+    && limits.total_argument_bytes_limit > 0
+    && limits.extension_bytes_limit > 0
+    && limits.response_body_bytes_limit > 0
   {
-    True ->
-      Ok(Limits(
-        chunk_bytes_limit: chunk_bytes_limit,
-        line_bytes_limit: line_bytes_limit,
-        event_bytes_limit: event_bytes_limit,
-        queue_count_limit: queue_count_limit,
-        queue_bytes_limit: queue_bytes_limit,
-        active_blocks_limit: active_blocks_limit,
-        text_bytes_per_block_limit: text_bytes_per_block_limit,
-        total_text_bytes_limit: total_text_bytes_limit,
-        argument_bytes_per_call_limit: argument_bytes_per_call_limit,
-        total_argument_bytes_limit: total_argument_bytes_limit,
-        extension_bytes_limit: extension_bytes_limit,
-        response_body_bytes_limit: response_body_bytes_limit,
-      ))
+    True -> Ok(Nil)
     False ->
       Error(ConfigurationError("all limits must be positive integers (> 0)"))
   }
@@ -222,46 +175,17 @@ pub fn default_deadlines() -> Deadlines {
   )
 }
 
-pub fn new_deadlines(
-  overall_timeout_ms overall_timeout_ms: Int,
-  idle_timeout_ms idle_timeout_ms: Int,
-  read_timeout_ms read_timeout_ms: Int,
-) -> Result(Deadlines, WireError) {
-  case overall_timeout_ms > 0 && idle_timeout_ms > 0 && read_timeout_ms > 0 {
-    True ->
-      Ok(Deadlines(
-        overall_timeout_ms: overall_timeout_ms,
-        idle_timeout_ms: idle_timeout_ms,
-        read_timeout_ms: read_timeout_ms,
-      ))
+@internal
+pub fn validate_deadlines(deadlines: Deadlines) -> Result(Nil, WireError) {
+  case
+    deadlines.overall_timeout_ms > 0
+    && deadlines.idle_timeout_ms > 0
+    && deadlines.read_timeout_ms > 0
+  {
+    True -> Ok(Nil)
     False ->
       Error(ConfigurationError("all deadline timeouts must be positive (> 0)"))
   }
-}
-
-pub fn openai_config(
-  api_key: ApiKey,
-  endpoint: Endpoint,
-  organization: Option(String),
-  project: Option(String),
-) -> ProviderConfig {
-  OpenAIConfig(api_key, endpoint, organization, project)
-}
-
-pub fn anthropic_config(
-  api_key: ApiKey,
-  endpoint: Endpoint,
-  version: Option(String),
-) -> ProviderConfig {
-  AnthropicConfig(api_key, endpoint, version)
-}
-
-pub fn google_config(
-  api_key: ApiKey,
-  endpoint: Endpoint,
-  api_version: Option(String),
-) -> ProviderConfig {
-  GoogleConfig(api_key, endpoint, api_version)
 }
 
 pub type ToolCall {
@@ -274,11 +198,14 @@ pub type ToolCall {
   )
 }
 
-/// Provider-owned state needed to replay a model turn exactly during a
-/// continuation. The payload is opaque provider JSON, never credentials or a
-/// live transport handle.
-pub type ProviderContinuation {
-  GoogleProviderContinuation(parts: List(String))
+/// Constructs an application-authored call without provider replay metadata.
+/// Provider-originated calls retain their metadata in the full ToolCall record.
+pub fn tool_call(
+  id: CallId,
+  name: ToolName,
+  arguments_json: String,
+) -> ToolCall {
+  ToolCall(id, name, arguments_json, None, None)
 }
 
 pub type Content {
@@ -349,10 +276,7 @@ pub fn tool_schema(definition: ToolDefinition) -> codec.Schema {
   definition.schema
 }
 
-pub fn tool_definition_name(definition: ToolDefinition) -> String {
-  tool_name_to_string(definition.name)
-}
-
+@internal
 pub fn validate_tool_arguments(
   definition: ToolDefinition,
   max_bytes: Int,
@@ -382,6 +306,7 @@ pub fn validate_tool_arguments(
   }
 }
 
+@internal
 pub fn admit_tool_catalog(
   tools: List(ToolDefinition),
 ) -> Result(List(ToolDefinition), WireError) {
@@ -389,9 +314,11 @@ pub fn admit_tool_catalog(
     case acc {
       Error(error) -> Error(error)
       Ok(admitted) -> {
-        let name = tool_definition_name(tool)
+        let name = tool_name_to_string(tool_name_of(tool))
         case
-          list.any(admitted, fn(item) { tool_definition_name(item) == name })
+          list.any(admitted, fn(item) {
+            tool_name_to_string(tool_name_of(item)) == name
+          })
         {
           True -> Error(PreparationError("Duplicate tool name: " <> name))
           False -> Ok(list.append(admitted, [tool]))
@@ -420,7 +347,6 @@ pub type Request {
     top_p: Option(Float),
     stop_sequences: List(String),
     prompt_cache: Option(PromptCache),
-    provider_continuation: Option(ProviderContinuation),
   )
 }
 
@@ -434,7 +360,6 @@ pub fn new_request(model: ModelId, messages: List(Message)) -> Request {
     top_p: None,
     stop_sequences: [],
     prompt_cache: None,
-    provider_continuation: None,
   )
 }
 
@@ -462,13 +387,6 @@ pub fn with_prompt_cache(req: Request, cache: PromptCache) -> Request {
   Request(..req, prompt_cache: Some(cache))
 }
 
-pub fn with_provider_continuation(
-  req: Request,
-  continuation: ProviderContinuation,
-) -> Request {
-  Request(..req, provider_continuation: Some(continuation))
-}
-
 pub type Usage {
   Usage(input_tokens: Int, output_tokens: Int, total_tokens: Int)
 }
@@ -479,23 +397,6 @@ pub type StreamProgress {
   ReasoningDelta(block_id: String, text: String)
   ProviderExtension(provider: String, event_name: String)
   UsageUpdate(usage: Usage)
-}
-
-pub type Outcome {
-  CompletedText(text: String)
-  Refused(reason: String)
-  CompletedToolCalls(
-    text: String,
-    calls: List(ToolCall),
-    response_id: Option(String),
-  )
-  CompletedToolCallsWithContinuation(
-    text: String,
-    calls: List(ToolCall),
-    response_id: Option(String),
-    provider_continuation: ProviderContinuation,
-  )
-  OutputLimited(partial_text: String, partial_calls: List(ToolCall))
 }
 
 pub type RetryClassification {
@@ -512,6 +413,7 @@ pub type RetryEvidence {
   )
 }
 
+@internal
 pub fn initial_retry_evidence() -> RetryEvidence {
   RetryEvidence(
     classification: NoRequestSent,
@@ -541,17 +443,6 @@ pub type RetryHint {
   RetryDelaySeconds(seconds: Int)
   /// Preserves an HTTP-date or unknown Retry-After value for caller parsing.
   RetryHeaderValue(value: String)
-}
-
-pub type TerminalOutcome {
-  StreamFinished(outcome: Outcome, usage: Option(Usage))
-  StreamFailed(error: WireError, retry: RetryEvidence)
-  StreamCancelledLocally(retry: RetryEvidence)
-}
-
-pub type ReadResult {
-  NextProgress(StreamProgress)
-  StreamTerminal(TerminalOutcome)
 }
 
 pub type ReadError {

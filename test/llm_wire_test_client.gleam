@@ -2,9 +2,10 @@ import gleam/int
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
-import llm_wire/api
+import llm_wire/internal/api
 import llm_wire/internal/client
-import llm_wire/owner
+import llm_wire/internal/owner
+import llm_wire/internal/provider_config
 import llm_wire/types
 
 pub fn open_openai_stream(
@@ -62,7 +63,7 @@ pub fn open_openai_stream_with_tls_mode(
   deadlines: types.Deadlines,
   tools: List(types.ToolDefinition),
   _body: String,
-  tls_mode: types.TlsMode,
+  tls_mode: provider_config.TlsMode,
 ) -> Result(owner.Stream, types.WireError) {
   open_stream(
     types.OpenAI,
@@ -86,7 +87,7 @@ fn open_stream(
   limits: types.Limits,
   deadlines: types.Deadlines,
   tools: List(types.ToolDefinition),
-  tls_override: Option(types.TlsMode),
+  tls_override: Option(provider_config.TlsMode),
 ) -> Result(owner.Stream, types.WireError) {
   let suffix = case provider {
     types.OpenAI -> "/responses"
@@ -95,15 +96,16 @@ fn open_stream(
   }
   let base_path = string.drop_end(path, string.byte_size(suffix))
   let scheme = case tls_override {
-    Some(types.VerifySystem) | Some(types.VerifyCaFile(_)) -> "https"
-    Some(types.Plaintext) | None -> "http"
+    Some(provider_config.VerifySystem)
+    | Some(provider_config.VerifyCaFile(_)) -> "https"
+    Some(provider_config.Plaintext) | None -> "http"
   }
   let endpoint_text =
     scheme <> "://" <> host <> ":" <> int.to_string(port) <> base_path
   use endpoint <- result.try(types.endpoint(endpoint_text))
   let config = case provider {
-    types.OpenAI -> types.openai_config(api_key, endpoint, None, None)
-    types.Anthropic -> types.anthropic_config(api_key, endpoint, None)
+    types.OpenAI -> provider_config.OpenAIConfig(api_key, endpoint, None, None)
+    types.Anthropic -> provider_config.AnthropicConfig(api_key, endpoint, None)
     types.Google -> panic as "Google test client is unsupported"
   }
   use model <- result.try(types.model_id("test-model"))

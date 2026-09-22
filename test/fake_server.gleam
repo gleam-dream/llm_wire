@@ -3,7 +3,7 @@ import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/string
-import llm_wire/tcp
+import llm_wire/internal/tcp
 
 pub type FakeServer {
   FakeServer(port: Int, listener: tcp.ListenSocket)
