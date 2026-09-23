@@ -9,7 +9,6 @@ import json/blueprint/codec
 import json/blueprint/number
 import llm_wire/internal/api
 import llm_wire/internal/google
-import llm_wire/internal/provider_config
 import llm_wire/internal/runtime
 import llm_wire/internal/sse
 import llm_wire/internal/stream_types
@@ -282,7 +281,7 @@ pub fn google_top_level_error_payload_fails_test() {
 pub fn google_request_encoding_messages_options_and_tools_test() {
   let assert Ok(api_key) = types.api_key("test-goog-key")
   let assert Ok(endpoint) = types.endpoint("http://127.0.0.1:8080/v1beta")
-  let config = provider_config.GoogleConfig(api_key, endpoint, Some("v1beta"))
+  let config = api.google_adapter(api_key, endpoint, Some("v1beta"))
   let assert Ok(model) = types.model_id("gemini-2.5-flash")
   let tool = tool_fixtures.int_field_tool("add", "amount")
 
@@ -333,7 +332,7 @@ pub fn google_request_encoding_messages_options_and_tools_test() {
 pub fn google_function_declaration_uses_json_schema_profile_and_stop_limit_test() {
   let assert Ok(api_key) = types.api_key("test-key")
   let assert Ok(endpoint) = types.endpoint("http://127.0.0.1:8080")
-  let config = provider_config.GoogleConfig(api_key, endpoint, None)
+  let config = api.google_adapter(api_key, endpoint, None)
   let assert Ok(model) = types.model_id("gemini-2.5-flash")
   let assert Ok(tool_name) = types.tool_name("shape")
   let assert Ok(tool) =
@@ -395,7 +394,7 @@ pub fn google_function_declaration_uses_json_schema_profile_and_stop_limit_test(
 pub fn google_structured_output_accepts_valid_schema_and_rejects_nullable_test() {
   let assert Ok(api_key) = types.api_key("test-key")
   let assert Ok(endpoint) = types.endpoint("http://127.0.0.1:8080")
-  let config = provider_config.GoogleConfig(api_key, endpoint, None)
+  let config = api.google_adapter(api_key, endpoint, None)
   let assert Ok(model) = types.model_id("gemini-2.5-flash")
   let request = types.new_request(model, [types.UserMessage("Extract")])
 
@@ -476,7 +475,7 @@ pub fn google_loopback_integration_text_stream_test() {
   let assert Ok(endpoint) =
     types.endpoint("http://127.0.0.1:" <> int.to_string(server.port))
   let assert Ok(model) = types.model_id("gemini-2.5-flash")
-  let config = provider_config.GoogleConfig(key, endpoint, None)
+  let config = api.google_adapter(key, endpoint, None)
   let request = types.new_request(model, [types.UserMessage("hi")])
   let assert Ok(prepared) = api.prepare(config, request, types.default_limits())
 
@@ -537,7 +536,7 @@ pub fn google_loopback_integration_tool_continuation_test() {
   let assert Ok(endpoint) =
     types.endpoint("http://127.0.0.1:" <> int.to_string(server.port))
   let assert Ok(model) = types.model_id("gemini-2.5-flash")
-  let config = provider_config.GoogleConfig(key, endpoint, None)
+  let config = api.google_adapter(key, endpoint, None)
   let tool = tool_fixtures.int_field_tool("calc", "x")
 
   let request =
@@ -547,7 +546,7 @@ pub fn google_loopback_integration_tool_continuation_test() {
   let assert Ok(prepared) = api.prepare(config, request, types.default_limits())
 
   // Run 1: returns tool call
-  let assert Ok(api.RunToolCalls(calls, continuation, _)) =
+  let assert Ok(api.RunToolCalls(_, calls, continuation, _)) =
     runtime.run(prepared, types.default_limits(), types.default_deadlines())
 
   let assert [call] = calls
@@ -610,11 +609,11 @@ pub fn google_loopback_integration_refusal_test() {
   let assert Ok(endpoint) =
     types.endpoint("http://127.0.0.1:" <> int.to_string(server.port))
   let assert Ok(model) = types.model_id("gemini-2.5-flash")
-  let config = provider_config.GoogleConfig(key, endpoint, None)
+  let config = api.google_adapter(key, endpoint, None)
   let request = types.new_request(model, [types.UserMessage("harmful query")])
   let assert Ok(prepared) = api.prepare(config, request, types.default_limits())
 
-  let assert Ok(api.RunRefusal(reason)) =
+  let assert Ok(api.RunRefusal(reason, _)) =
     runtime.run(prepared, types.default_limits(), types.default_deadlines())
 
   reason |> should.equal("Prompt blocked by safety policy: SAFETY")
@@ -675,13 +674,13 @@ pub fn google_missing_provider_id_is_omitted_from_continuation_test() {
   let assert Ok(endpoint) =
     types.endpoint("http://127.0.0.1:" <> int.to_string(server.port))
   let assert Ok(model) = types.model_id("gemini-2.5-flash")
-  let config = provider_config.GoogleConfig(key, endpoint, None)
+  let config = api.google_adapter(key, endpoint, None)
   let tool = tool_fixtures.int_field_tool("calc", "x")
   let request =
     types.new_request(model, [types.UserMessage("double 7")])
     |> types.with_tools([tool])
   let assert Ok(prepared) = api.prepare(config, request, types.default_limits())
-  let assert Ok(api.RunToolCalls([call], continuation, _)) =
+  let assert Ok(api.RunToolCalls(_, [call], continuation, _)) =
     runtime.run(prepared, types.default_limits(), types.default_deadlines())
   call.id |> types.call_id_to_string |> should.equal("call_0")
   let assert Ok(next) =

@@ -4,6 +4,9 @@ import gleeunit/should
 import json/blueprint/codec
 import llm_wire/config
 import llm_wire/internal/schema
+import llm_wire/provider/anthropic as anthropic_provider
+import llm_wire/provider/google as google_provider
+import llm_wire/provider/openai as openai_provider
 import llm_wire/session
 import llm_wire/types
 
@@ -49,21 +52,21 @@ pub fn configured_structured_prepare_accepts_field_codec_for_all_providers_test(
 
   let assert Ok(openai) =
     session.prepare_structured(
-      config.openai(key),
+      config.openai(openai_provider.options(key)),
       request,
       "answer_shape",
       output_codec,
     )
   let assert Ok(anthropic) =
     session.prepare_structured(
-      config.anthropic(key),
+      config.anthropic(anthropic_provider.options(key)),
       request,
       "answer_shape",
       output_codec,
     )
   let assert Ok(google) =
     session.prepare_structured(
-      config.google(key),
+      config.google(google_provider.options(key)),
       request,
       "answer_shape",
       output_codec,

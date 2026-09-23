@@ -12,6 +12,7 @@ pub fn stream(
   deadlines: types.Deadlines,
 ) -> Result(owner.Stream, types.WireError) {
   client.open_prepared_stream(prepared, limits, deadlines, None)
+  |> result.map_error(fn(failure) { failure.error })
 }
 
 pub fn stream_with_pool(
@@ -27,6 +28,7 @@ pub fn stream_with_pool(
     None,
     Some(pool.pool_pid(pool)),
   )
+  |> result.map_error(fn(failure) { failure.error })
 }
 
 pub fn run(
@@ -85,11 +87,11 @@ pub fn run_structured(
       use output <- result.try(api.decode_structured_output(prepared, text))
       Ok(api.StructuredValue(output, text, usage))
     }
-    api.RunToolCalls(calls, continuation, usage) ->
+    api.RunToolCalls(_, calls, continuation, usage) ->
       Ok(api.StructuredNeedsTools(calls, continuation, usage))
     api.RunOutputLimited(text, calls, usage) ->
       Ok(api.StructuredOutputLimited(text, calls, usage))
-    api.RunRefusal(reason) -> Ok(api.StructuredRefusal(reason))
+    api.RunRefusal(reason, _) -> Ok(api.StructuredRefusal(reason))
   }
 }
 
@@ -110,10 +112,10 @@ pub fn run_structured_with_pool(
       use output <- result.try(api.decode_structured_output(prepared, text))
       Ok(api.StructuredValue(output, text, usage))
     }
-    api.RunToolCalls(calls, continuation, usage) ->
+    api.RunToolCalls(_, calls, continuation, usage) ->
       Ok(api.StructuredNeedsTools(calls, continuation, usage))
     api.RunOutputLimited(text, calls, usage) ->
       Ok(api.StructuredOutputLimited(text, calls, usage))
-    api.RunRefusal(reason) -> Ok(api.StructuredRefusal(reason))
+    api.RunRefusal(reason, _) -> Ok(api.StructuredRefusal(reason))
   }
 }

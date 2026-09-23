@@ -11,11 +11,16 @@ import gleam/result
 import gleam/string
 import json/blueprint/codec
 import json/blueprint/runtime
+import llm_wire/internal/anthropic
+import llm_wire/internal/google
+import llm_wire/internal/openai
 import llm_wire/internal/owner
-import llm_wire/internal/provider_config
 import llm_wire/internal/schema
+import llm_wire/internal/sse
 import llm_wire/internal/stream_types
+import llm_wire/internal/tls
 import llm_wire/internal/transport_failure
+import llm_wire/provider
 import llm_wire/telemetry
 import llm_wire/types
 
@@ -24,14 +29,14 @@ import llm_wire/types
 /// cannot switch providers while preparing a continuation.
 pub opaque type PreparedCall {
   PreparedCall(
-    config: provider_config.ProviderConfig,
+    config: provider.Adapter,
     provider: types.Provider,
     model: types.ModelId,
     request: types.Request,
     host: String,
     port: Int,
     path: String,
-    tls_mode: provider_config.TlsMode,
+    tls_mode: tls.TlsMode,
     headers: List(#(String, String)),
     body: String,
     structured_format: Option(StructuredFormat),
@@ -45,6 +50,7 @@ pub opaque type Continuation {
     model: types.ModelId,
     expected_calls: List(types.CallId),
     source_calls: List(types.ToolCall),
+    assistant_text: String,
     conversation: List(types.Message),
     response_id: Option(String),
     provider_continuation: Option(stream_types.ProviderContinuation),
@@ -59,6 +65,7 @@ pub fn continuation_response_id(continuation: Continuation) -> Option(String) {
 pub type RunResult {
   RunText(text: String, usage: Option(types.Usage))
   RunToolCalls(
+    text: String,
     calls: List(types.ToolCall),
     continuation: Continuation,
     usage: Option(types.Usage),
@@ -68,7 +75,7 @@ pub type RunResult {
     partial_calls: List(types.ToolCall),
     usage: Option(types.Usage),
   )
-  RunRefusal(reason: String)
+  RunRefusal(reason: String, usage: Option(types.Usage))
 }
 
 type StructuredFormat {
@@ -80,6 +87,7 @@ pub opaque type PreparedStructuredCall(output) {
     prepared: PreparedCall,
     contract: runtime.RuntimeContract,
     output_codec: codec.Codec(output),
+    limits: types.Limits,
   )
 }
 
@@ -112,7 +120,7 @@ pub fn prepared_path(prepared: PreparedCall) -> String {
   prepared.path
 }
 
-pub fn prepared_tls_mode(prepared: PreparedCall) -> provider_config.TlsMode {
+pub fn prepared_tls_mode(prepared: PreparedCall) -> tls.TlsMode {
   prepared.tls_mode
 }
 
@@ -124,8 +132,14 @@ pub fn prepared_tools(prepared: PreparedCall) -> List(types.ToolDefinition) {
   prepared.request.tools
 }
 
+pub fn prepared_adapter(
+  prepared: PreparedCall,
+) -> Result(provider.Adapter, types.WireError) {
+  Ok(prepared.config)
+}
+
 type GunSetupError {
-  GunFailure(String)
+  GunFailure(transport_failure.Failure)
   GunStatus(Int, String, String)
 }
 
@@ -147,7 +161,7 @@ fn gun_connect_and_stream_with_pool(
   owner_pid: process.Pid,
   on_chunk: fn(BitArray) -> Nil,
   on_eof: fn() -> Nil,
-  on_error: fn(String) -> Nil,
+  on_error: fn(transport_failure.Failure) -> Nil,
   on_request_sent: fn() -> Nil,
 ) -> Result(GunHandle, GunSetupError)
 
@@ -165,13 +179,13 @@ fn gun_handle_pid(handle: GunHandle) -> process.Pid
 pub fn connect_prepared_and_stream(
   prepared: PreparedCall,
   overall_timeout_ms: Int,
-  tls_mode: provider_config.TlsMode,
+  tls_mode: tls.TlsMode,
   max_header_bytes: Int,
   max_chunk_bytes: Int,
   owner_pid: process.Pid,
   on_chunk: fn(BitArray) -> Nil,
   on_eof: fn() -> Nil,
-  on_error: fn(String) -> Nil,
+  on_error: fn(transport_failure.Failure) -> Nil,
   on_request_sent: fn() -> Nil,
 ) -> Result(#(owner.TransportPort, process.Pid), types.WireError) {
   connect_prepared_and_stream_with_pool(
@@ -193,20 +207,20 @@ pub fn connect_prepared_and_stream_with_pool(
   pool_pid: Option(process.Pid),
   prepared: PreparedCall,
   overall_timeout_ms: Int,
-  tls_mode: provider_config.TlsMode,
+  tls_mode: tls.TlsMode,
   max_header_bytes: Int,
   max_chunk_bytes: Int,
   owner_pid: process.Pid,
   on_chunk: fn(BitArray) -> Nil,
   on_eof: fn() -> Nil,
-  on_error: fn(String) -> Nil,
+  on_error: fn(transport_failure.Failure) -> Nil,
   on_request_sent: fn() -> Nil,
 ) -> Result(#(owner.TransportPort, process.Pid), types.WireError) {
   use Nil <- result.try(validate_prepared_transport(prepared, tls_mode))
   let #(tls_name, ca_file) = case tls_mode {
-    provider_config.Plaintext -> #("plaintext", "")
-    provider_config.VerifySystem -> #("verify_system", "")
-    provider_config.VerifyCaFile(path) -> #("verify_ca_file", path)
+    tls.Plaintext -> #("plaintext", "")
+    tls.VerifySystem -> #("verify_system", "")
+    tls.VerifyCaFile(path) -> #("verify_ca_file", path)
   }
   case
     gun_connect_and_stream_with_pool(
@@ -234,7 +248,8 @@ pub fn connect_prepared_and_stream_with_pool(
         response_body,
         parse_retry_hint(retry_after),
       ))
-    Error(GunFailure(reason)) -> Error(transport_failure.classify(reason))
+    Error(GunFailure(failure)) ->
+      Error(transport_failure.to_wire_error(failure))
     Ok(handle) ->
       Ok(#(
         owner.TransportPort(
@@ -248,7 +263,7 @@ pub fn connect_prepared_and_stream_with_pool(
 
 pub fn validate_prepared_transport(
   prepared: PreparedCall,
-  tls_mode: provider_config.TlsMode,
+  tls_mode: tls.TlsMode,
 ) -> Result(Nil, types.WireError) {
   let host = prepared.host
   let path = prepared.path
@@ -266,8 +281,8 @@ pub fn validate_prepared_transport(
   let host_is_local =
     host == "localhost" || host == "127.0.0.1" || host == "::1"
   let tls_policy_is_valid = case tls_mode {
-    provider_config.Plaintext | provider_config.VerifyCaFile(_) -> host_is_local
-    provider_config.VerifySystem -> True
+    tls.Plaintext | tls.VerifyCaFile(_) -> host_is_local
+    tls.VerifySystem -> True
   }
   use Nil <- result.try(
     case
@@ -284,7 +299,9 @@ pub fn validate_prepared_transport(
         ))
     },
   )
-  validate_headers(prepared.headers)
+  // Provider headers were admitted before the fixed HTTP/SSE headers were
+  // appended. The prepared request is opaque and cannot add headers later.
+  Ok(Nil)
 }
 
 fn parse_retry_hint(value: String) -> Option(types.RetryHint) {
@@ -300,7 +317,7 @@ fn parse_retry_hint(value: String) -> Option(types.RetryHint) {
 }
 
 pub fn prepare(
-  config: provider_config.ProviderConfig,
+  config: provider.Adapter,
   request: types.Request,
   limits: types.Limits,
 ) -> Result(PreparedCall, types.WireError) {
@@ -308,7 +325,7 @@ pub fn prepare(
 }
 
 pub fn prepare_structured(
-  config: provider_config.ProviderConfig,
+  config: provider.Adapter,
   request: types.Request,
   limits: types.Limits,
   output_name: String,
@@ -323,10 +340,10 @@ pub fn prepare_structured(
         Error(_) ->
           Error(types.PreparationError("Structured output codec has no schema"))
         Ok(output_schema) -> {
-          use schema_json <- result.try(case config_provider(config) {
-            types.Google -> schema.google_strict_output_schema(output_schema)
-            _ -> schema.strict_output_schema(output_schema)
-          })
+          use schema_json <- result.try(provider.project_output_schema(
+            config,
+            output_schema,
+          ))
           use contract <- result.try(case runtime.from_schema(output_schema) {
             Ok(value) -> Ok(value)
             Error(error) ->
@@ -343,7 +360,7 @@ pub fn prepare_structured(
             Some(format),
             None,
           ))
-          Ok(PreparedStructuredCall(prepared, contract, output_codec))
+          Ok(PreparedStructuredCall(prepared, contract, output_codec, limits))
         }
       }
   }
@@ -361,7 +378,12 @@ pub fn prepare_structured_continue(
     results,
     limits,
   ))
-  Ok(PreparedStructuredCall(next_call, prepared.contract, prepared.output_codec))
+  Ok(PreparedStructuredCall(
+    next_call,
+    prepared.contract,
+    prepared.output_codec,
+    limits,
+  ))
 }
 
 pub fn structured_prepared_call(
@@ -378,74 +400,86 @@ pub fn decode_structured_output(
     prepared.contract,
     prepared.output_codec,
     raw_json,
+    case
+      prepared.limits.text_bytes_per_block_limit
+      < prepared.limits.total_text_bytes_limit
+    {
+      True -> prepared.limits.text_bytes_per_block_limit
+      False -> prepared.limits.total_text_bytes_limit
+    },
   )
 }
 
 fn prepare_with_format(
-  config: provider_config.ProviderConfig,
+  config: provider.Adapter,
   request: types.Request,
   limits: types.Limits,
   structured_format: Option(StructuredFormat),
   provider_continuation: Option(stream_types.ProviderContinuation),
 ) -> Result(PreparedCall, types.WireError) {
+  let adapter = config
   use admitted_tools <- result.try(types.admit_tool_catalog(request.tools))
-  use endpoint_parts <- result.try(parse_endpoint(config_endpoint(config)))
-  use Nil <- result.try(validate_options(request))
-  let provider = config_provider(config)
-  use Nil <- result.try(validate_provider_options(provider, request))
-  use tool_json <- result.try(encode_tools(provider, admitted_tools))
-  let body = case config {
-    provider_config.OpenAIConfig(..) -> {
-      use encoded <- result.try(encode_openai_request(
-        request,
-        tool_json,
-        structured_format,
+  use projected_tools <- result.try(
+    list.fold(admitted_tools, Ok([]), fn(acc, tool) {
+      use prior <- result.try(acc)
+      use schema_json <- result.try(provider.project_tool_schema(
+        adapter,
+        types.tool_schema(tool),
       ))
-      Ok(json.to_string(encoded))
-    }
-    provider_config.AnthropicConfig(..) ->
-      encode_anthropic_request(request, tool_json, structured_format)
-    provider_config.GoogleConfig(..) ->
-      encode_google_request(
-        request,
-        tool_json,
-        structured_format,
-        provider_continuation,
-      )
-  }
-  use body_text <- result.try(body)
-  let #(host, port, base_path, tls_mode) = endpoint_parts
-  use provider_path <- result.try(case provider {
-    types.OpenAI -> Ok("/responses")
-    types.Anthropic -> Ok("/messages")
-    types.Google ->
       Ok(
-        "/models/"
-        <> types.model_id_to_string(request.model)
-        <> ":streamGenerateContent?alt=sse",
+        list.append(prior, [
+          provider.ProjectedTool(
+            types.tool_name_of(tool),
+            types.tool_description(tool),
+            schema_json,
+          ),
+        ]),
       )
-  })
+    }),
+  )
+  use endpoint_parts <- result.try(parse_endpoint(provider.endpoint(adapter)))
+  use Nil <- result.try(validate_options(request))
+  let identity = provider.identity(adapter)
+  use Nil <- result.try(validate_provider_options(identity, request))
+  let format = case structured_format {
+    Some(StructuredFormat(name, schema_json)) ->
+      Some(provider.OutputFormat(name, schema_json))
+    None -> None
+  }
+  let replay = case provider_continuation {
+    Some(stream_types.CustomProviderContinuation(value)) -> Some(value)
+    _ -> None
+  }
+  use encoded <- result.try(provider.encode(
+    adapter,
+    request,
+    projected_tools,
+    format,
+    replay,
+  ))
+  let provider.EncodedRequest(provider_path, body_text) = encoded
+  let #(host, port, base_path, tls_mode) = endpoint_parts
   let path = base_path <> provider_path
-  let headers =
-    request_headers(provider, config_api_key(config), config_headers(config))
-  case validate_headers(headers) {
+  let provider_headers = provider.headers(adapter)
+  let headers = list.append(provider_headers, common_headers())
+  case validate_headers(provider_headers) {
     Error(error) -> Error(error)
     Ok(Nil) -> {
       // Schema and argument limits are checked before transport. The captured
       // request is otherwise immutable once preparation succeeds.
       let body_bytes = string.byte_size(body_text)
-      case body_bytes > limits.event_bytes_limit {
+      case body_bytes > limits.request_bytes_limit {
         True ->
           Error(types.ResourceLimitExceeded(
             "request_bytes_limit",
-            limits.event_bytes_limit,
+            limits.request_bytes_limit,
             body_bytes,
           ))
         False -> {
           let prepared =
             PreparedCall(
               config,
-              provider,
+              identity,
               request.model,
               types.Request(..request, tools: admitted_tools),
               host,
@@ -457,10 +491,11 @@ fn prepare_with_format(
               structured_format,
               reference.new(),
             )
+          use Nil <- result.try(validate_prepared_transport(prepared, tls_mode))
           let _ =
             telemetry.observe(
               telemetry.Prepared,
-              provider_name(provider),
+              provider_name(identity),
               "accepted",
             )
           Ok(prepared)
@@ -524,7 +559,10 @@ pub fn prepare_continue(
           ))
           let messages =
             list.append(continuation.conversation, [
-              types.AssistantToolCalls(source_calls),
+              types.AssistantToolCallsWithText(
+                continuation.assistant_text,
+                source_calls,
+              ),
               ..list.map(ordered, fn(tool_result) {
                 types.ToolResultMessage(
                   tool_result.call_id,
@@ -680,7 +718,7 @@ pub fn terminal_result(
     stream_types.StreamFinished(stream_types.CompletedText(text), usage) ->
       Ok(RunText(text, usage))
     stream_types.StreamFinished(
-      stream_types.CompletedToolCalls(_text, calls, response_id),
+      stream_types.CompletedToolCalls(text, calls, response_id),
       usage,
     ) -> {
       let continuation =
@@ -689,16 +727,17 @@ pub fn terminal_result(
           prepared.model,
           list.map(calls, fn(call) { call.id }),
           calls,
+          text,
           prepared.request.messages,
           response_id,
           None,
           prepared.origin,
         )
-      Ok(RunToolCalls(calls, continuation, usage))
+      Ok(RunToolCalls(text, calls, continuation, usage))
     }
     stream_types.StreamFinished(
       stream_types.CompletedToolCallsWithContinuation(
-        _text,
+        text,
         calls,
         response_id,
         provider_continuation,
@@ -711,27 +750,20 @@ pub fn terminal_result(
           prepared.model,
           list.map(calls, fn(call) { call.id }),
           calls,
+          text,
           prepared.request.messages,
           response_id,
           Some(provider_continuation),
           prepared.origin,
         )
-      Ok(RunToolCalls(calls, continuation, usage))
+      Ok(RunToolCalls(text, calls, continuation, usage))
     }
     stream_types.StreamFinished(stream_types.OutputLimited(text, calls), usage) ->
       Ok(RunOutputLimited(text, calls, usage))
-    stream_types.StreamFinished(stream_types.Refused(reason), _usage) ->
-      Ok(RunRefusal(reason))
+    stream_types.StreamFinished(stream_types.Refused(reason), usage) ->
+      Ok(RunRefusal(reason, usage))
     stream_types.StreamFailed(error, _retry) -> Error(error)
     stream_types.StreamCancelledLocally(_) -> Error(types.CancelledLocally)
-  }
-}
-
-fn config_provider(config: provider_config.ProviderConfig) -> types.Provider {
-  case config {
-    provider_config.OpenAIConfig(..) -> types.OpenAI
-    provider_config.AnthropicConfig(..) -> types.Anthropic
-    provider_config.GoogleConfig(..) -> types.Google
   }
 }
 
@@ -740,67 +772,19 @@ fn provider_name(provider: types.Provider) -> String {
     types.OpenAI -> "openai"
     types.Anthropic -> "anthropic"
     types.Google -> "google"
-  }
-}
-
-fn config_endpoint(config: provider_config.ProviderConfig) -> types.Endpoint {
-  case config {
-    provider_config.OpenAIConfig(endpoint:, ..) -> endpoint
-    provider_config.AnthropicConfig(endpoint:, ..) -> endpoint
-    provider_config.GoogleConfig(endpoint:, ..) -> endpoint
-  }
-}
-
-fn config_api_key(config: provider_config.ProviderConfig) -> types.ApiKey {
-  case config {
-    provider_config.OpenAIConfig(api_key:, ..) -> api_key
-    provider_config.AnthropicConfig(api_key:, ..) -> api_key
-    provider_config.GoogleConfig(api_key:, ..) -> api_key
-  }
-}
-
-fn config_headers(
-  config: provider_config.ProviderConfig,
-) -> List(#(String, String)) {
-  case config {
-    provider_config.OpenAIConfig(organization:, project:, ..) -> {
-      let org = case organization {
-        Some(value) -> [#("OpenAI-Organization", value)]
-        None -> []
-      }
-      let proj = case project {
-        Some(value) -> [#("OpenAI-Project", value)]
-        None -> []
-      }
-      list.append(org, proj)
-    }
-    provider_config.AnthropicConfig(version:, ..) ->
-      case version {
-        Some(value) -> [#("anthropic-version", value)]
-        None -> []
-      }
-    provider_config.GoogleConfig(api_version:, ..) ->
-      case api_version {
-        Some(value) -> [#("x-goog-api-version", value)]
-        None -> []
-      }
+    types.Custom(name) -> name
   }
 }
 
 fn request_headers(
-  provider: types.Provider,
+  identity: types.Provider,
   api_key: types.ApiKey,
   additional_headers: List(#(String, String)),
 ) -> List(#(String, String)) {
-  let common = [
-    #("Content-Type", "application/json"),
-    #("Accept", "text/event-stream"),
-    #("Accept-Encoding", "identity"),
-  ]
-  case provider {
+  case identity {
     types.OpenAI -> [
       #("Authorization", "Bearer " <> types.api_key_expose(api_key)),
-      ..list.append(additional_headers, common)
+      ..additional_headers
     ]
     types.Anthropic -> {
       let has_version =
@@ -813,14 +797,23 @@ fn request_headers(
       }
       [
         #("x-api-key", types.api_key_expose(api_key)),
-        ..list.append(additional_headers, list.append(version_header, common))
+        ..list.append(additional_headers, version_header)
       ]
     }
     types.Google -> [
       #("x-goog-api-key", types.api_key_expose(api_key)),
-      ..list.append(additional_headers, common)
+      ..additional_headers
     ]
+    types.Custom(_) -> additional_headers
   }
+}
+
+fn common_headers() -> List(#(String, String)) {
+  [
+    #("Content-Type", "application/json"),
+    #("Accept", "text/event-stream"),
+    #("Accept-Encoding", "identity"),
+  ]
 }
 
 fn validate_headers(
@@ -828,7 +821,11 @@ fn validate_headers(
 ) -> Result(Nil, types.WireError) {
   case
     list.any(headers, fn(header) {
-      string.trim(header.0) == ""
+      let name = string.lowercase(header.0)
+      name == "content-type"
+      || name == "accept"
+      || name == "accept-encoding"
+      || string.trim(header.0) == ""
       || string.contains(header.0, "\r")
       || string.contains(header.0, "\n")
       || string.contains(header.1, "\r")
@@ -936,56 +933,13 @@ fn validate_provider_options(
             "prompt caching is not admitted by the Anthropic profile",
           ))
       }
+    types.Custom(_) -> Ok(Nil)
   }
 }
 
 fn in_float_range(value: Float, minimum: Float, maximum: Float) -> Bool {
   float.compare(value, with: minimum) != Lt
   && float.compare(value, with: maximum) != Gt
-}
-
-fn encode_tools(
-  provider: types.Provider,
-  tools: List(types.ToolDefinition),
-) -> Result(List(json.Json), types.WireError) {
-  list.fold(tools, Ok([]), fn(acc, tool) {
-    use prior <- result.try(acc)
-    use parameters <- result.try(case provider {
-      types.Google ->
-        schema.google_function_parameters_schema(types.tool_schema(tool))
-      _ -> schema.provider_schema(types.tool_schema(tool))
-    })
-    let name = json.string(types.tool_name_to_string(types.tool_name_of(tool)))
-    let description = json.string(types.tool_description(tool))
-    use encoded <- result.try(case provider {
-      types.OpenAI ->
-        Ok(
-          json.object([
-            #("type", json.string("function")),
-            #("name", name),
-            #("description", description),
-            #("parameters", parameters),
-          ]),
-        )
-      types.Anthropic ->
-        Ok(
-          json.object([
-            #("name", name),
-            #("description", description),
-            #("input_schema", parameters),
-          ]),
-        )
-      types.Google ->
-        Ok(
-          json.object([
-            #("name", name),
-            #("description", description),
-            #("parametersJsonSchema", parameters),
-          ]),
-        )
-    })
-    Ok(list.append(prior, [encoded]))
-  })
 }
 
 fn encode_openai_request(
@@ -1270,6 +1224,8 @@ fn build_google_contents_loop(
       {
         Some(stream_types.GoogleProviderContinuation(parts)),
           types.AssistantToolCalls(_)
+        | Some(stream_types.GoogleProviderContinuation(parts)),
+          types.AssistantToolCallsWithText(_, _)
         -> #(
           Ok(
             "{\"role\":\"model\",\"parts\":[" <> string.join(parts, ",") <> "]}",
@@ -1325,37 +1281,52 @@ fn single_google_turn(
       use encoded <- result.try(google_content_parts(parts))
       Ok("{\"role\":\"model\",\"parts\":[" <> string.join(encoded, ",") <> "]}")
     }
-    types.AssistantToolCalls(calls) -> {
-      let empty: Result(List(String), types.WireError) = Ok([])
-      use parts <- result.try(
-        list.fold(calls, empty, fn(acc, call) {
-          use prior <- result.try(acc)
-          use input <- result.try(canonical_json(call.arguments_json))
-          let id_part = case call.provider_id {
-            None -> ""
-            Some(provider_id) ->
-              ",\"id\":" <> json.to_string(json.string(provider_id))
-          }
-          let thought_signature_part = case call.provider_state {
-            None -> ""
-            Some(signature) ->
-              ",\"thoughtSignature\":" <> json.to_string(json.string(signature))
-          }
-          let fc =
-            "{\"name\":"
-            <> json.to_string(json.string(types.tool_name_to_string(call.name)))
-            <> ",\"args\":"
-            <> input
-            <> id_part
-            <> "}"
-          let part = "{\"functionCall\":" <> fc <> thought_signature_part <> "}"
-          Ok(list.append(prior, [part]))
-        }),
-      )
-      Ok("{\"role\":\"model\",\"parts\":[" <> string.join(parts, ",") <> "]}")
-    }
+    types.AssistantToolCalls(calls) -> google_tool_turn("", calls)
+    types.AssistantToolCallsWithText(text, calls) ->
+      google_tool_turn(text, calls)
     types.ToolResultMessage(..) -> Ok("{}")
   }
+}
+
+fn google_tool_turn(
+  text: String,
+  calls: List(types.ToolCall),
+) -> Result(String, types.WireError) {
+  let empty: Result(List(String), types.WireError) = Ok([])
+  use parts <- result.try(
+    list.fold(calls, empty, fn(acc, call) {
+      use prior <- result.try(acc)
+      use input <- result.try(canonical_json(call.arguments_json))
+      let id_part = case call.provider_id {
+        None -> ""
+        Some(provider_id) ->
+          ",\"id\":" <> json.to_string(json.string(provider_id))
+      }
+      let thought_signature_part = case call.provider_state {
+        None -> ""
+        Some(signature) ->
+          ",\"thoughtSignature\":" <> json.to_string(json.string(signature))
+      }
+      let fc =
+        "{\"name\":"
+        <> json.to_string(json.string(types.tool_name_to_string(call.name)))
+        <> ",\"args\":"
+        <> input
+        <> id_part
+        <> "}"
+      let part = "{\"functionCall\":" <> fc <> thought_signature_part <> "}"
+      Ok(list.append(prior, [part]))
+    }),
+  )
+  let text_parts = case text {
+    "" -> []
+    _ -> ["{\"text\":" <> json.to_string(json.string(text)) <> "}"]
+  }
+  Ok(
+    "{\"role\":\"model\",\"parts\":["
+    <> string.join(list.append(text_parts, parts), ",")
+    <> "]}",
+  )
 }
 
 fn google_content_parts(
@@ -1395,7 +1366,8 @@ fn find_tool_call_name(
   let found =
     list.find_map(messages, fn(msg) {
       case msg {
-        types.AssistantToolCalls(calls) ->
+        types.AssistantToolCalls(calls)
+        | types.AssistantToolCallsWithText(_, calls) ->
           case list.find(calls, fn(c) { c.id == call_id }) {
             Ok(c) -> Ok(types.tool_name_to_string(c.name))
             Error(Nil) -> Error(Nil)
@@ -1416,7 +1388,8 @@ fn find_tool_call_provider_id(
   let found =
     list.find_map(messages, fn(msg) {
       case msg {
-        types.AssistantToolCalls(calls) ->
+        types.AssistantToolCalls(calls)
+        | types.AssistantToolCallsWithText(_, calls) ->
           case list.find(calls, fn(c) { c.id == call_id }) {
             Ok(c) -> Ok(c.provider_id)
             Error(Nil) -> Error(Nil)
@@ -1502,30 +1475,43 @@ fn anthropic_message_json(
           ]),
         ),
       )
-    types.AssistantToolCalls(calls) -> {
-      let empty: Result(List(String), types.WireError) = Ok([])
-      use blocks <- result.try(
-        list.fold(calls, empty, fn(acc, call) {
-          use prior <- result.try(acc)
-          use input <- result.try(canonical_json(call.arguments_json))
-          let block =
-            "{\"type\":\"tool_use\",\"id\":"
-            <> json.to_string(json.string(types.call_id_to_string(call.id)))
-            <> ",\"name\":"
-            <> json.to_string(json.string(types.tool_name_to_string(call.name)))
-            <> ",\"input\":"
-            <> input
-            <> "}"
-          Ok(list.append(prior, [block]))
-        }),
-      )
-      Ok(
-        "{\"role\":\"assistant\",\"content\":["
-        <> string.join(blocks, ",")
-        <> "]}",
-      )
-    }
+    types.AssistantToolCalls(calls) -> anthropic_tool_message("", calls)
+    types.AssistantToolCallsWithText(text, calls) ->
+      anthropic_tool_message(text, calls)
   }
+}
+
+fn anthropic_tool_message(
+  text: String,
+  calls: List(types.ToolCall),
+) -> Result(String, types.WireError) {
+  let empty: Result(List(String), types.WireError) = Ok([])
+  use blocks <- result.try(
+    list.fold(calls, empty, fn(acc, call) {
+      use prior <- result.try(acc)
+      use input <- result.try(canonical_json(call.arguments_json))
+      let block =
+        "{\"type\":\"tool_use\",\"id\":"
+        <> json.to_string(json.string(types.call_id_to_string(call.id)))
+        <> ",\"name\":"
+        <> json.to_string(json.string(types.tool_name_to_string(call.name)))
+        <> ",\"input\":"
+        <> input
+        <> "}"
+      Ok(list.append(prior, [block]))
+    }),
+  )
+  let text_blocks = case text {
+    "" -> []
+    _ -> [
+      "{\"type\":\"text\",\"text\":" <> json.to_string(json.string(text)) <> "}",
+    ]
+  }
+  Ok(
+    "{\"role\":\"assistant\",\"content\":["
+    <> string.join(list.append(text_blocks, blocks), ",")
+    <> "]}",
+  )
 }
 
 fn anthropic_content_json(
@@ -1637,6 +1623,7 @@ fn request_option_fields(
         types.OpenAI -> [#("max_output_tokens", json.int(value))]
         types.Anthropic -> []
         types.Google -> [#("maxOutputTokens", json.int(value))]
+        types.Custom(_) -> []
       }
     None -> []
   }
@@ -1725,6 +1712,16 @@ fn openai_message_items(message: types.Message) -> List(json.Json) {
           #("arguments", json.string(call.arguments_json)),
         ])
       })
+    types.AssistantToolCallsWithText(text, calls) -> {
+      let text_items = case text {
+        "" -> []
+        _ -> openai_message_items(types.AssistantMessage(text))
+      }
+      list.append(
+        text_items,
+        openai_message_items(types.AssistantToolCalls(calls)),
+      )
+    }
     types.ToolResultMessage(call_id, content) -> [
       json.object([
         #("type", json.string("function_call_output")),
@@ -1765,7 +1762,7 @@ fn openai_content_parts(
 
 fn parse_endpoint(
   endpoint: types.Endpoint,
-) -> Result(#(String, Int, String, provider_config.TlsMode), types.WireError) {
+) -> Result(#(String, Int, String, tls.TlsMode), types.WireError) {
   let raw = types.endpoint_to_string(endpoint)
   use #(scheme, after_scheme) <- result.try(
     string.split_once(raw, "://")
@@ -1817,8 +1814,8 @@ fn parse_endpoint(
             value -> "/" <> trim_trailing_slashes(value)
           }
           let tls_mode = case scheme {
-            "https" -> provider_config.VerifySystem
-            _ -> provider_config.Plaintext
+            "https" -> tls.VerifySystem
+            _ -> tls.Plaintext
           }
           Ok(#(host, port, base_path, tls_mode))
         }
@@ -1831,5 +1828,246 @@ fn trim_trailing_slashes(path: String) -> String {
   case string.ends_with(path, "/") {
     True -> trim_trailing_slashes(string.drop_end(path, 1))
     False -> path
+  }
+}
+
+/// Built-in profiles enter exactly the same request/reducer boundary as an
+/// application adapter. Provider-specific wire rules stay in these closures.
+pub fn openai_adapter(
+  key: types.ApiKey,
+  endpoint: types.Endpoint,
+  organization: Option(String),
+  project: Option(String),
+) -> provider.Adapter {
+  let optional_headers =
+    list.append(
+      case organization {
+        Some(value) -> [#("OpenAI-Organization", value)]
+        None -> []
+      },
+      case project {
+        Some(value) -> [#("OpenAI-Project", value)]
+        None -> []
+      },
+    )
+  provider.adapter(provider.Spec(
+    identity: types.OpenAI,
+    endpoint: endpoint,
+    headers: request_headers(types.OpenAI, key, optional_headers),
+    encode: fn(request, tools, format) {
+      use body <- result.try(encode_openai_request(
+        request,
+        projected_tool_json(types.OpenAI, tools),
+        internal_format(format),
+      ))
+      Ok(provider.EncodedRequest("/responses", json.to_string(body)))
+    },
+    project_tool_schema: schema.provider_schema,
+    project_output_schema: schema.strict_output_schema,
+    new_reducer: openai_reducer,
+  ))
+}
+
+pub fn anthropic_adapter(
+  key: types.ApiKey,
+  endpoint: types.Endpoint,
+  version: Option(String),
+) -> provider.Adapter {
+  let optional_headers = case version {
+    Some(value) -> [#("anthropic-version", value)]
+    None -> []
+  }
+  provider.adapter(provider.Spec(
+    identity: types.Anthropic,
+    endpoint: endpoint,
+    headers: request_headers(types.Anthropic, key, optional_headers),
+    encode: fn(request, tools, format) {
+      use body <- result.try(encode_anthropic_request(
+        request,
+        projected_tool_json(types.Anthropic, tools),
+        internal_format(format),
+      ))
+      Ok(provider.EncodedRequest("/messages", body))
+    },
+    project_tool_schema: schema.provider_schema,
+    project_output_schema: schema.strict_output_schema,
+    new_reducer: anthropic_reducer,
+  ))
+}
+
+pub fn google_adapter(
+  key: types.ApiKey,
+  endpoint: types.Endpoint,
+  api_version: Option(String),
+) -> provider.Adapter {
+  let optional_headers = case api_version {
+    Some(value) -> [#("x-goog-api-version", value)]
+    None -> []
+  }
+  provider.adapter(provider.Spec(
+    identity: types.Google,
+    endpoint: endpoint,
+    headers: request_headers(types.Google, key, optional_headers),
+    encode: fn(request, tools, format) {
+      use body <- result.try(encode_google_request(
+        request,
+        projected_tool_json(types.Google, tools),
+        internal_format(format),
+        None,
+      ))
+      Ok(provider.EncodedRequest(google_path(request), body))
+    },
+    project_tool_schema: schema.google_function_parameters_schema,
+    project_output_schema: schema.google_strict_output_schema,
+    new_reducer: google_reducer,
+  ))
+}
+
+fn google_path(request: types.Request) -> String {
+  "/models/"
+  <> types.model_id_to_string(request.model)
+  <> ":streamGenerateContent?alt=sse"
+}
+
+fn internal_format(
+  format: Option(provider.OutputFormat),
+) -> Option(StructuredFormat) {
+  case format {
+    None -> None
+    Some(provider.OutputFormat(name, schema_json)) ->
+      Some(StructuredFormat(name, schema_json))
+  }
+}
+
+fn projected_tool_json(
+  identity: types.Provider,
+  tools: List(provider.ProjectedTool),
+) -> List(json.Json) {
+  list.map(tools, fn(tool) {
+    let provider.ProjectedTool(name, description, schema_json) = tool
+    let common = [
+      #("name", json.string(types.tool_name_to_string(name))),
+      #("description", json.string(description)),
+    ]
+    case identity {
+      types.OpenAI ->
+        json.object([
+          #("type", json.string("function")),
+          ..list.append(common, [
+            #("parameters", schema_json),
+          ])
+        ])
+      types.Anthropic ->
+        json.object(list.append(common, [#("input_schema", schema_json)]))
+      types.Google ->
+        json.object(
+          list.append(common, [#("parametersJsonSchema", schema_json)]),
+        )
+      types.Custom(_) -> json.object(common)
+    }
+  })
+}
+
+fn event_for_builtin(event: provider.Event) -> sse.ServerSentEvent {
+  sse.ServerSentEvent(event.event, event.data, event.id, event.retry)
+}
+
+fn openai_reducer(
+  limits: types.Limits,
+  tools: List(types.ToolDefinition),
+) -> Result(provider.Reducer, types.WireError) {
+  use state <- result.try(openai.new_with_tools(limits, tools))
+  Ok(provider.reducer(
+    state,
+    fn(current, event) { openai.step(current, event_for_builtin(event)) },
+    fn(current) {
+      map_builtin_terminal(openai.terminal(current), fn(_) { None })
+    },
+    openai.retry_evidence,
+  ))
+}
+
+fn anthropic_reducer(
+  limits: types.Limits,
+  tools: List(types.ToolDefinition),
+) -> Result(provider.Reducer, types.WireError) {
+  use state <- result.try(anthropic.new_with_tools(limits, tools))
+  Ok(provider.reducer(
+    state,
+    fn(current, event) { anthropic.step(current, event_for_builtin(event)) },
+    fn(current) {
+      map_builtin_terminal(anthropic.terminal(current), fn(_) { None })
+    },
+    anthropic.retry_evidence,
+  ))
+}
+
+fn google_reducer(
+  limits: types.Limits,
+  tools: List(types.ToolDefinition),
+) -> Result(provider.Reducer, types.WireError) {
+  use state <- result.try(google.new_with_tools(limits, tools))
+  Ok(provider.reducer(
+    state,
+    fn(current, event) { google.step(current, event_for_builtin(event)) },
+    fn(current) {
+      map_builtin_terminal(google.terminal(current), google_replay)
+    },
+    google.retry_evidence,
+  ))
+}
+
+fn google_replay(
+  continuation: stream_types.ProviderContinuation,
+) -> Option(provider.Replay) {
+  case continuation {
+    stream_types.GoogleProviderContinuation(parts) ->
+      Some(
+        provider.replay(parts, fn(saved_parts, request, tools, format) {
+          use body <- result.try(encode_google_request(
+            request,
+            projected_tool_json(types.Google, tools),
+            internal_format(format),
+            Some(stream_types.GoogleProviderContinuation(saved_parts)),
+          ))
+          Ok(provider.EncodedRequest(google_path(request), body))
+        }),
+      )
+    stream_types.CustomProviderContinuation(_) -> None
+  }
+}
+
+fn map_builtin_terminal(
+  terminal: Option(stream_types.TerminalOutcome),
+  make_replay: fn(stream_types.ProviderContinuation) -> Option(provider.Replay),
+) -> Option(provider.Terminal) {
+  case terminal {
+    None -> None
+    Some(stream_types.StreamFinished(outcome, usage)) ->
+      Some(case outcome {
+        stream_types.CompletedText(text) -> provider.Text(text, usage)
+        stream_types.CompletedToolCalls(text, calls, response_id) ->
+          provider.ToolCalls(text, calls, response_id, None, usage)
+        stream_types.CompletedToolCallsWithContinuation(
+          text,
+          calls,
+          response_id,
+          continuation,
+        ) ->
+          provider.ToolCalls(
+            text,
+            calls,
+            response_id,
+            make_replay(continuation),
+            usage,
+          )
+        stream_types.OutputLimited(text, calls) ->
+          provider.OutputLimited(text, calls, usage)
+        stream_types.Refused(reason) -> provider.Refusal(reason, usage)
+      })
+    Some(stream_types.StreamFailed(error, retry)) ->
+      Some(provider.Failure(error, retry))
+    Some(stream_types.StreamCancelledLocally(retry)) ->
+      Some(provider.Cancellation(retry))
   }
 }

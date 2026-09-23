@@ -4,13 +4,12 @@ import gleam/erlang/reference
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
+import gleam/result
 import gleam/string
-import llm_wire/internal/anthropic
-import llm_wire/internal/google
-import llm_wire/internal/openai
 import llm_wire/internal/sse
 import llm_wire/internal/stream_types
 import llm_wire/internal/transport_failure
+import llm_wire/provider
 import llm_wire/telemetry
 import llm_wire/types
 
@@ -22,10 +21,15 @@ pub type TransportPort {
   TransportPort(request_more: fn() -> Nil, close: fn() -> Nil)
 }
 
-pub type ProviderAdapter {
-  OpenAIAdapter(openai.Reducer)
-  AnthropicAdapter(anthropic.Reducer)
-  GoogleAdapter(google.Reducer)
+pub fn start_provider_stream(
+  identity: types.Provider,
+  reducer: provider.Reducer,
+  limits: types.Limits,
+  deadlines: types.Deadlines,
+  transport: TransportPort,
+  tools: List(types.ToolDefinition),
+) -> Result(Stream, types.WireError) {
+  start_stream(identity, reducer, limits, deadlines, transport, tools)
 }
 
 type Message {
@@ -41,7 +45,7 @@ type Message {
   )
   FeedChunk(chunk: BitArray)
   FeedEof
-  FeedError(reason: String)
+  FeedError(failure: transport_failure.Failure)
   AttachTransport(transport: TransportPort)
   RequestWasSent
   OverallDeadlineFired
@@ -55,7 +59,9 @@ type State {
     limits: types.Limits,
     deadlines: types.Deadlines,
     framer: sse.Framer,
-    provider: ProviderAdapter,
+    provider: provider.Reducer,
+    provider_identity: types.Provider,
+    admitted_tools: List(types.ToolDefinition),
     queue: List(stream_types.ReadResult),
     queue_count: Int,
     queue_bytes: Int,
@@ -70,6 +76,8 @@ type State {
     response_bytes_received: Int,
     semantic_progress_observed: Bool,
     first_progress_observed: Bool,
+    progress_text_bytes: Int,
+    progress_blocks: List(#(String, Int)),
     outstanding_read_credit: Bool,
     consumer_monitor: process.Monitor,
   )
@@ -102,79 +110,13 @@ pub fn owner_pid(stream: Stream) -> Result(process.Pid, Nil) {
   process.subject_owner(subject)
 }
 
-pub fn start_openai_stream(
-  limits: types.Limits,
-  deadlines: types.Deadlines,
-  transport: TransportPort,
-) -> Result(Stream, types.WireError) {
-  start_stream(OpenAIAdapter(openai.new(limits)), limits, deadlines, transport)
-}
-
-pub fn start_openai_stream_with_tools(
-  limits: types.Limits,
-  deadlines: types.Deadlines,
-  transport: TransportPort,
-  tools: List(types.ToolDefinition),
-) -> Result(Stream, types.WireError) {
-  case openai.new_with_tools(limits, tools) {
-    Error(error) -> Error(error)
-    Ok(reducer) ->
-      start_stream(OpenAIAdapter(reducer), limits, deadlines, transport)
-  }
-}
-
-pub fn start_anthropic_stream(
-  limits: types.Limits,
-  deadlines: types.Deadlines,
-  transport: TransportPort,
-) -> Result(Stream, types.WireError) {
-  start_stream(
-    AnthropicAdapter(anthropic.new(limits)),
-    limits,
-    deadlines,
-    transport,
-  )
-}
-
-pub fn start_anthropic_stream_with_tools(
-  limits: types.Limits,
-  deadlines: types.Deadlines,
-  transport: TransportPort,
-  tools: List(types.ToolDefinition),
-) -> Result(Stream, types.WireError) {
-  case anthropic.new_with_tools(limits, tools) {
-    Error(error) -> Error(error)
-    Ok(reducer) ->
-      start_stream(AnthropicAdapter(reducer), limits, deadlines, transport)
-  }
-}
-
-pub fn start_google_stream(
-  limits: types.Limits,
-  deadlines: types.Deadlines,
-  transport: TransportPort,
-) -> Result(Stream, types.WireError) {
-  start_stream(GoogleAdapter(google.new(limits)), limits, deadlines, transport)
-}
-
-pub fn start_google_stream_with_tools(
-  limits: types.Limits,
-  deadlines: types.Deadlines,
-  transport: TransportPort,
-  tools: List(types.ToolDefinition),
-) -> Result(Stream, types.WireError) {
-  case google.new_with_tools(limits, tools) {
-    Error(error) -> Error(error)
-    Ok(reducer) ->
-      start_stream(GoogleAdapter(reducer), limits, deadlines, transport)
-  }
-}
-
 fn start_stream(
-  provider: ProviderAdapter,
+  identity: types.Provider,
+  reducer: provider.Reducer,
   limits: types.Limits,
   deadlines: types.Deadlines,
   transport: TransportPort,
+  tools: List(types.ToolDefinition),
 ) -> Result(Stream, types.WireError) {
   let consumer_pid = process.self()
   let builder =
@@ -212,7 +154,9 @@ fn start_stream(
           limits: limits,
           deadlines: deadlines,
           framer: sse.new(limits),
-          provider: provider,
+          provider: reducer,
+          provider_identity: identity,
+          admitted_tools: tools,
           queue: [],
           queue_count: 0,
           queue_bytes: 0,
@@ -227,6 +171,8 @@ fn start_stream(
           response_bytes_received: 0,
           semantic_progress_observed: False,
           first_progress_observed: False,
+          progress_text_bytes: 0,
+          progress_blocks: [],
           outstanding_read_credit: True,
           consumer_monitor: consumer_monitor,
         )
@@ -312,9 +258,9 @@ pub fn feed_eof(stream: Stream) -> Nil {
   process.send(subject, FeedEof)
 }
 
-pub fn feed_error(stream: Stream, reason: String) -> Nil {
+pub fn feed_error(stream: Stream, failure: transport_failure.Failure) -> Nil {
   let Stream(subject) = stream
-  process.send(subject, FeedError(reason))
+  process.send(subject, FeedError(failure))
 }
 
 pub fn attach_transport(stream: Stream, transport: TransportPort) -> Nil {
@@ -367,7 +313,7 @@ fn handle_message(
       let _ =
         telemetry.observe(
           telemetry.RequestSent,
-          provider_name(state.provider),
+          provider_name(state.provider_identity),
           "gun_stream_started",
         )
       actor.continue(state)
@@ -480,7 +426,7 @@ fn handle_close(
       let _ =
         telemetry.observe(
           telemetry.Cancelled,
-          provider_name(cleaned.provider),
+          provider_name(cleaned.provider_identity),
           "consumer_closed",
         )
       let retry_evidence =
@@ -555,23 +501,10 @@ fn process_sse_events(
         Ok(#(next_provider, progress_list)) -> {
           let state_with_provider = State(..state, provider: next_provider)
           case ingest_progress(state_with_provider, progress_list) {
-            Error(err) -> {
-              case terminal_provider(next_provider) {
-                Some(terminal) -> {
-                  let cleaned = perform_cleanup(state_with_provider)
-                  let final_state =
-                    State(..cleaned, terminal_outcome: Some(terminal))
-                  deliver_or_enqueue(
-                    final_state,
-                    stream_types.StreamTerminal(terminal),
-                  )
-                }
-                None -> fail_stream(state_with_provider, err)
-              }
-            }
+            Error(#(partial_state, err)) -> fail_stream(partial_state, err)
             Ok(after_progress_state) -> {
-              case terminal_provider(after_progress_state.provider) {
-                Some(terminal) -> {
+              case terminal_provider(after_progress_state) {
+                Ok(Some(terminal)) -> {
                   let cleaned = perform_cleanup(after_progress_state)
                   let final_state =
                     State(..cleaned, terminal_outcome: Some(terminal))
@@ -580,7 +513,8 @@ fn process_sse_events(
                     stream_types.StreamTerminal(terminal),
                   )
                 }
-                None -> process_sse_events(after_progress_state, rest)
+                Ok(None) -> process_sse_events(after_progress_state, rest)
+                Error(error) -> fail_stream(after_progress_state, error)
               }
             }
           }
@@ -593,57 +527,163 @@ fn process_sse_events(
 fn ingest_progress(
   state: State,
   progress_list: List(types.StreamProgress),
-) -> Result(State, types.WireError) {
+) -> Result(State, #(State, types.WireError)) {
   list.fold(progress_list, Ok(state), fn(acc, progress) {
     case acc {
       Error(e) -> Error(e)
       Ok(curr_state) -> {
-        let size = size_of_progress(progress)
-        case curr_state.queue_count + 1 > curr_state.limits.queue_count_limit {
-          True ->
-            Error(types.ResourceLimitExceeded(
-              "queue_count_limit",
-              curr_state.limits.queue_count_limit,
-              curr_state.queue_count + 1,
-            ))
-          False ->
+        case validate_progress(curr_state, progress) {
+          Error(error) -> Error(#(curr_state, error))
+          Ok(validated) -> {
+            let size = size_of_progress(progress)
             case
-              curr_state.queue_bytes + size
-              > curr_state.limits.queue_bytes_limit
+              validated.queue_count + 1 > validated.limits.queue_count_limit
             {
               True ->
-                Error(types.ResourceLimitExceeded(
-                  "queue_bytes_limit",
-                  curr_state.limits.queue_bytes_limit,
-                  curr_state.queue_bytes + size,
+                Error(#(
+                  curr_state,
+                  types.ResourceLimitExceeded(
+                    "queue_count_limit",
+                    validated.limits.queue_count_limit,
+                    validated.queue_count + 1,
+                  ),
                 ))
-              False -> {
-                let reset_state = case is_semantic_progress(progress) {
+              False ->
+                case
+                  validated.queue_bytes + size
+                  > validated.limits.queue_bytes_limit
+                {
                   True ->
-                    restart_idle_timer(
-                      State(..curr_state, semantic_progress_observed: True),
-                    )
-                  False -> curr_state
-                }
-                let progress_state = case reset_state.first_progress_observed {
-                  True -> reset_state
+                    Error(#(
+                      curr_state,
+                      types.ResourceLimitExceeded(
+                        "queue_bytes_limit",
+                        validated.limits.queue_bytes_limit,
+                        validated.queue_bytes + size,
+                      ),
+                    ))
                   False -> {
-                    let _ =
-                      telemetry.observe(
-                        telemetry.FirstProgress,
-                        provider_name(reset_state.provider),
-                        "received",
-                      )
-                    State(..reset_state, first_progress_observed: True)
+                    let reset_state = case is_semantic_progress(progress) {
+                      True ->
+                        restart_idle_timer(
+                          State(..validated, semantic_progress_observed: True),
+                        )
+                      False -> validated
+                    }
+                    let progress_state = case
+                      reset_state.first_progress_observed
+                    {
+                      True -> reset_state
+                      False -> {
+                        let _ =
+                          telemetry.observe(
+                            telemetry.FirstProgress,
+                            provider_name(reset_state.provider_identity),
+                            "received",
+                          )
+                        State(..reset_state, first_progress_observed: True)
+                      }
+                    }
+                    Ok(dispatch_or_queue_progress(
+                      progress_state,
+                      progress,
+                      size,
+                    ))
                   }
                 }
-                Ok(dispatch_or_queue_progress(progress_state, progress, size))
-              }
             }
+          }
         }
       }
     }
   })
+}
+
+fn validate_progress(
+  state: State,
+  progress: types.StreamProgress,
+) -> Result(State, types.WireError) {
+  case progress {
+    types.TextDelta(block_id, text) ->
+      add_progress_text(state, "text:" <> block_id, text)
+    types.RefusalDelta(block_id, text) ->
+      add_progress_text(state, "refusal:" <> block_id, text)
+    types.ReasoningDelta(block_id, text) ->
+      add_progress_text(state, "reasoning:" <> block_id, text)
+    types.UsageUpdate(_) -> Ok(state)
+    types.ProviderExtension(provider_name, event_name) -> {
+      let bytes = string.byte_size(provider_name) + string.byte_size(event_name)
+      case bytes > state.limits.extension_bytes_limit {
+        True ->
+          Error(types.ResourceLimitExceeded(
+            "extension_bytes_limit",
+            state.limits.extension_bytes_limit,
+            bytes,
+          ))
+        False -> Ok(state)
+      }
+    }
+  }
+}
+
+fn add_progress_text(
+  state: State,
+  block_key: String,
+  text: String,
+) -> Result(State, types.WireError) {
+  let delta_bytes = string.byte_size(text)
+  let prior = case
+    list.find(state.progress_blocks, fn(block) { block.0 == block_key })
+  {
+    Ok(block) -> block.1
+    Error(Nil) -> 0
+  }
+  let block_bytes = prior + delta_bytes
+  let total_bytes = state.progress_text_bytes + delta_bytes
+  let is_new =
+    !list.any(state.progress_blocks, fn(block) { block.0 == block_key })
+  let blocks = case is_new {
+    True -> [#(block_key, block_bytes), ..state.progress_blocks]
+    False ->
+      list.map(state.progress_blocks, fn(block) {
+        case block.0 == block_key {
+          True -> #(block_key, block_bytes)
+          False -> block
+        }
+      })
+  }
+  case
+    block_bytes > state.limits.text_bytes_per_block_limit,
+    total_bytes > state.limits.total_text_bytes_limit,
+    list.length(blocks) > state.limits.active_blocks_limit
+  {
+    True, _, _ ->
+      Error(types.ResourceLimitExceeded(
+        "text_bytes_per_block_limit",
+        state.limits.text_bytes_per_block_limit,
+        block_bytes,
+      ))
+    _, True, _ ->
+      Error(types.ResourceLimitExceeded(
+        "total_text_bytes_limit",
+        state.limits.total_text_bytes_limit,
+        total_bytes,
+      ))
+    _, _, True ->
+      Error(types.ResourceLimitExceeded(
+        "active_blocks_limit",
+        state.limits.active_blocks_limit,
+        list.length(blocks),
+      ))
+    False, False, False ->
+      Ok(
+        State(
+          ..state,
+          progress_text_bytes: total_bytes,
+          progress_blocks: blocks,
+        ),
+      )
+  }
 }
 
 fn dispatch_or_queue_progress(
@@ -677,7 +717,7 @@ fn deliver_or_enqueue(
       let _ =
         telemetry.observe(
           telemetry.Terminal,
-          provider_name(state.provider),
+          provider_name(state.provider_identity),
           terminal_name(terminal),
         )
       case state.pending_read {
@@ -740,8 +780,8 @@ fn handle_eof(state: State) -> actor.Next(State, Message) {
       case sse.finish(state.framer) {
         Error(err) -> fail_stream(state, err)
         Ok(_) -> {
-          case terminal_provider(state.provider) {
-            Some(outcome) -> {
+          case terminal_provider(state) {
+            Ok(Some(outcome)) -> {
               let cleaned = perform_cleanup(state)
               let final_state =
                 State(..cleaned, terminal_outcome: Some(outcome))
@@ -750,11 +790,12 @@ fn handle_eof(state: State) -> actor.Next(State, Message) {
                 stream_types.StreamTerminal(outcome),
               )
             }
-            None ->
+            Ok(None) ->
               fail_stream(
                 state,
                 types.ProtocolError("Unexpected EOF before stream completed"),
               )
+            Error(error) -> fail_stream(state, error)
           }
         }
       }
@@ -762,8 +803,11 @@ fn handle_eof(state: State) -> actor.Next(State, Message) {
   }
 }
 
-fn handle_error(state: State, reason: String) -> actor.Next(State, Message) {
-  fail_stream(state, transport_failure.classify(reason))
+fn handle_error(
+  state: State,
+  failure: transport_failure.Failure,
+) -> actor.Next(State, Message) {
+  fail_stream(state, transport_failure.to_wire_error(failure))
 }
 
 fn handle_overall_deadline(state: State) -> actor.Next(State, Message) {
@@ -773,7 +817,7 @@ fn handle_overall_deadline(state: State) -> actor.Next(State, Message) {
       let _ =
         telemetry.observe(
           telemetry.Deadline,
-          provider_name(state.provider),
+          provider_name(state.provider_identity),
           "overall",
         )
       fail_stream(state, types.DeadlineExceeded(types.OverallDeadline))
@@ -788,7 +832,7 @@ fn handle_idle_deadline(state: State) -> actor.Next(State, Message) {
       let _ =
         telemetry.observe(
           telemetry.Deadline,
-          provider_name(state.provider),
+          provider_name(state.provider_identity),
           "idle",
         )
       fail_stream(state, types.DeadlineExceeded(types.IdleDeadline))
@@ -855,7 +899,7 @@ fn perform_cleanup(state: State) -> State {
       let _ =
         telemetry.observe(
           telemetry.Cleanup,
-          provider_name(state.provider),
+          provider_name(state.provider_identity),
           "transport_closed",
         )
       State(
@@ -868,11 +912,12 @@ fn perform_cleanup(state: State) -> State {
   }
 }
 
-fn provider_name(provider: ProviderAdapter) -> String {
-  case provider {
-    OpenAIAdapter(_) -> "openai"
-    AnthropicAdapter(_) -> "anthropic"
-    GoogleAdapter(_) -> "google"
+fn provider_name(identity: types.Provider) -> String {
+  case identity {
+    types.OpenAI -> "openai"
+    types.Anthropic -> "anthropic"
+    types.Google -> "google"
+    types.Custom(name) -> name
   }
 }
 
@@ -916,52 +961,275 @@ fn if_needed_request_bytes(state: State) -> actor.Next(State, Message) {
 }
 
 fn get_retry_evidence(
-  provider: ProviderAdapter,
+  reducer: provider.Reducer,
   fallback: types.RetryClassification,
-  _response_bytes: Bool,
-  _semantic_progress: Bool,
+  response_bytes: Bool,
+  semantic_progress: Bool,
 ) -> types.RetryEvidence {
-  case provider {
-    OpenAIAdapter(r) -> openai.retry_evidence(r, fallback)
-    AnthropicAdapter(r) -> anthropic.retry_evidence(r, fallback)
-    GoogleAdapter(r) -> google.retry_evidence(r, fallback)
+  let reported = provider.retry_evidence(reducer, fallback)
+  merge_retry_evidence(reported, fallback, response_bytes, semantic_progress)
+}
+
+fn merge_retry_evidence(
+  reported: types.RetryEvidence,
+  fallback: types.RetryClassification,
+  response_bytes: Bool,
+  semantic_progress: Bool,
+) -> types.RetryEvidence {
+  let classification = case reported.classification, fallback {
+    types.EffectUnknown, _ | _, types.EffectUnknown -> types.EffectUnknown
+    types.RequestMayHaveReachedProvider, _
+    | _, types.RequestMayHaveReachedProvider
+    -> types.RequestMayHaveReachedProvider
+    types.NoRequestSent, types.NoRequestSent -> types.NoRequestSent
   }
+  types.RetryEvidence(
+    classification: classification,
+    response_bytes_observed: reported.response_bytes_observed || response_bytes,
+    semantic_progress_observed: reported.semantic_progress_observed
+      || semantic_progress,
+  )
 }
 
 fn step_provider(
-  provider: ProviderAdapter,
+  reducer: provider.Reducer,
   event: sse.ServerSentEvent,
-) -> Result(#(ProviderAdapter, List(types.StreamProgress)), types.WireError) {
-  case provider {
-    OpenAIAdapter(r) -> {
-      case openai.step(r, event) {
-        Ok(#(nr, p)) -> Ok(#(OpenAIAdapter(nr), p))
-        Error(e) -> Error(e)
-      }
-    }
-    AnthropicAdapter(r) -> {
-      case anthropic.step(r, event) {
-        Ok(#(nr, p)) -> Ok(#(AnthropicAdapter(nr), p))
-        Error(e) -> Error(e)
-      }
-    }
-    GoogleAdapter(r) -> {
-      case google.step(r, event) {
-        Ok(#(nr, p)) -> Ok(#(GoogleAdapter(nr), p))
-        Error(e) -> Error(e)
-      }
-    }
-  }
+) -> Result(#(provider.Reducer, List(types.StreamProgress)), types.WireError) {
+  provider.step(
+    reducer,
+    provider.Event(event.event, event.data, event.id, event.retry),
+  )
 }
 
 fn terminal_provider(
-  provider: ProviderAdapter,
-) -> Option(stream_types.TerminalOutcome) {
-  case provider {
-    OpenAIAdapter(r) -> openai.terminal(r)
-    AnthropicAdapter(r) -> anthropic.terminal(r)
-    GoogleAdapter(r) -> google.terminal(r)
+  state: State,
+) -> Result(Option(stream_types.TerminalOutcome), types.WireError) {
+  case provider.terminal(state.provider) {
+    None -> Ok(None)
+    Some(provider.Text(text, usage)) ->
+      result.map(validate_terminal_text(state.limits, text), fn(_) {
+        Some(stream_types.StreamFinished(
+          stream_types.CompletedText(text),
+          usage,
+        ))
+      })
+    Some(provider.ToolCalls(text, calls, response_id, replay, usage)) -> {
+      use Nil <- result.try(validate_terminal_text(state.limits, text))
+      use Nil <- result.try(validate_terminal_metadata(
+        state.limits,
+        calls,
+        response_id,
+      ))
+      use Nil <- result.try(validate_terminal_calls(state, calls))
+      Ok(
+        Some(case replay {
+          None ->
+            stream_types.StreamFinished(
+              stream_types.CompletedToolCalls(text, calls, response_id),
+              usage,
+            )
+          Some(value) ->
+            stream_types.StreamFinished(
+              stream_types.CompletedToolCallsWithContinuation(
+                text,
+                calls,
+                response_id,
+                stream_types.CustomProviderContinuation(value),
+              ),
+              usage,
+            )
+        }),
+      )
+    }
+    Some(provider.OutputLimited(text, calls, usage)) -> {
+      use Nil <- result.try(validate_terminal_text(state.limits, text))
+      use Nil <- result.try(validate_terminal_metadata(
+        state.limits,
+        calls,
+        None,
+      ))
+      use Nil <- result.try(validate_partial_calls(state.limits, calls))
+      Ok(
+        Some(stream_types.StreamFinished(
+          stream_types.OutputLimited(text, calls),
+          usage,
+        )),
+      )
+    }
+    Some(provider.Refusal(reason, usage)) ->
+      result.map(validate_terminal_text(state.limits, reason), fn(_) {
+        Some(stream_types.StreamFinished(stream_types.Refused(reason), usage))
+      })
+    Some(provider.Failure(error, retry)) ->
+      Ok(
+        Some(stream_types.StreamFailed(
+          error,
+          merge_retry_evidence(
+            retry,
+            types.RequestMayHaveReachedProvider,
+            state.response_bytes_observed,
+            state.semantic_progress_observed,
+          ),
+        )),
+      )
+    Some(provider.Cancellation(retry)) ->
+      Ok(
+        Some(
+          stream_types.StreamCancelledLocally(merge_retry_evidence(
+            retry,
+            types.RequestMayHaveReachedProvider,
+            state.response_bytes_observed,
+            state.semantic_progress_observed,
+          )),
+        ),
+      )
   }
+}
+
+fn validate_terminal_text(
+  limits: types.Limits,
+  text: String,
+) -> Result(Nil, types.WireError) {
+  let size = string.byte_size(text)
+  case size > limits.total_text_bytes_limit {
+    True ->
+      Error(types.ResourceLimitExceeded(
+        "total_text_bytes_limit",
+        limits.total_text_bytes_limit,
+        size,
+      ))
+    False -> Ok(Nil)
+  }
+}
+
+fn validate_terminal_metadata(
+  limits: types.Limits,
+  calls: List(types.ToolCall),
+  response_id: Option(String),
+) -> Result(Nil, types.WireError) {
+  let response_bytes = case response_id {
+    Some(id) -> string.byte_size(id)
+    None -> 0
+  }
+  let bytes =
+    list.fold(calls, response_bytes, fn(total, call) {
+      total
+      + string.byte_size(types.call_id_to_string(call.id))
+      + string.byte_size(types.tool_name_to_string(call.name))
+      + option_string_bytes(call.provider_id)
+      + option_string_bytes(call.provider_state)
+    })
+  case bytes > limits.provider_metadata_bytes_limit {
+    True ->
+      Error(types.ResourceLimitExceeded(
+        "provider_metadata_bytes_limit",
+        limits.provider_metadata_bytes_limit,
+        bytes,
+      ))
+    False -> Ok(Nil)
+  }
+}
+
+fn option_string_bytes(value: Option(String)) -> Int {
+  case value {
+    Some(text) -> string.byte_size(text)
+    None -> 0
+  }
+}
+
+fn validate_terminal_calls(
+  state: State,
+  calls: List(types.ToolCall),
+) -> Result(Nil, types.WireError) {
+  let count = list.length(calls)
+  use Nil <- result.try(case count > state.limits.active_blocks_limit {
+    True ->
+      Error(types.ResourceLimitExceeded(
+        "active_blocks_limit",
+        state.limits.active_blocks_limit,
+        count,
+      ))
+    False -> Ok(Nil)
+  })
+  let empty: Result(#(List(types.CallId), Int), types.WireError) = Ok(#([], 0))
+  use _ <- result.try(
+    list.fold(calls, empty, fn(acc, call) {
+      use #(seen, bytes) <- result.try(acc)
+      use Nil <- result.try(case list.contains(seen, call.id) {
+        True -> Error(types.ProtocolError("Duplicate tool call ID"))
+        False -> Ok(Nil)
+      })
+      use tool <- result.try(
+        case
+          list.find(state.admitted_tools, fn(tool) {
+            types.tool_name_of(tool) == call.name
+          })
+        {
+          Ok(value) -> Ok(value)
+          Error(Nil) ->
+            Error(types.ProtocolError("Tool not declared in admitted catalog"))
+        },
+      )
+      use Nil <- result.try(types.validate_tool_arguments(
+        tool,
+        state.limits.argument_bytes_per_call_limit,
+        call.arguments_json,
+      ))
+      let total = bytes + string.byte_size(call.arguments_json)
+      case total > state.limits.total_argument_bytes_limit {
+        True ->
+          Error(types.ResourceLimitExceeded(
+            "total_argument_bytes_limit",
+            state.limits.total_argument_bytes_limit,
+            total,
+          ))
+        False -> Ok(#([call.id, ..seen], total))
+      }
+    }),
+  )
+  Ok(Nil)
+}
+
+fn validate_partial_calls(
+  limits: types.Limits,
+  calls: List(types.ToolCall),
+) -> Result(Nil, types.WireError) {
+  let count = list.length(calls)
+  use Nil <- result.try(case count > limits.active_blocks_limit {
+    True ->
+      Error(types.ResourceLimitExceeded(
+        "active_blocks_limit",
+        limits.active_blocks_limit,
+        count,
+      ))
+    False -> Ok(Nil)
+  })
+  use _ <- result.try(
+    list.fold(calls, Ok(0), fn(acc, call) {
+      use prior <- result.try(acc)
+      let bytes = string.byte_size(call.arguments_json)
+      use Nil <- result.try(case bytes > limits.argument_bytes_per_call_limit {
+        True ->
+          Error(types.ResourceLimitExceeded(
+            "argument_bytes_per_call_limit",
+            limits.argument_bytes_per_call_limit,
+            bytes,
+          ))
+        False -> Ok(Nil)
+      })
+      let total = prior + bytes
+      case total > limits.total_argument_bytes_limit {
+        True ->
+          Error(types.ResourceLimitExceeded(
+            "total_argument_bytes_limit",
+            limits.total_argument_bytes_limit,
+            total,
+          ))
+        False -> Ok(total)
+      }
+    }),
+  )
+  Ok(Nil)
 }
 
 fn is_semantic_progress(progress: types.StreamProgress) -> Bool {
@@ -983,10 +1251,12 @@ fn size_of_result(result: stream_types.ReadResult) -> Int {
 
 fn size_of_progress(progress: types.StreamProgress) -> Int {
   case progress {
-    types.TextDelta(_, t) -> string.byte_size(t) + 32
-    types.RefusalDelta(_, t) -> string.byte_size(t) + 32
-    types.ReasoningDelta(_, t) -> string.byte_size(t) + 32
+    types.TextDelta(id, t) -> string.byte_size(id) + string.byte_size(t) + 32
+    types.RefusalDelta(id, t) -> string.byte_size(id) + string.byte_size(t) + 32
+    types.ReasoningDelta(id, t) ->
+      string.byte_size(id) + string.byte_size(t) + 32
     types.UsageUpdate(_) -> 24
-    types.ProviderExtension(_, e) -> string.byte_size(e) + 16
+    types.ProviderExtension(provider_name, e) ->
+      string.byte_size(provider_name) + string.byte_size(e) + 16
   }
 }

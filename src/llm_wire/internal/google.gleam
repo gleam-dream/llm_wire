@@ -249,20 +249,19 @@ fn extract_usage(
   case get_field(payload, "usageMetadata") {
     Error(Nil) -> #(reducer, [])
     Ok(meta) -> {
-      let prompt =
-        get_field(meta, "promptTokenCount")
-        |> result.try(get_int)
-        |> result.unwrap(0)
-      let candidates =
-        get_field(meta, "candidatesTokenCount")
-        |> result.try(get_int)
-        |> result.unwrap(0)
-      let total =
-        get_field(meta, "totalTokenCount")
-        |> result.try(get_int)
-        |> result.unwrap(prompt + candidates)
-      let usage = types.Usage(prompt, candidates, total)
-      #(Reducer(..reducer, usage: Some(usage)), [types.UsageUpdate(usage)])
+      case
+        get_field(meta, "promptTokenCount") |> result.try(get_int),
+        get_field(meta, "candidatesTokenCount") |> result.try(get_int),
+        get_field(meta, "totalTokenCount") |> result.try(get_int)
+      {
+        Ok(prompt), Ok(candidates), Ok(total)
+          if prompt >= 0 && candidates >= 0 && total >= 0
+        -> {
+          let usage = types.Usage(prompt, candidates, total)
+          #(Reducer(..reducer, usage: Some(usage)), [types.UsageUpdate(usage)])
+        }
+        _, _, _ -> #(reducer, [])
+      }
     }
   }
 }

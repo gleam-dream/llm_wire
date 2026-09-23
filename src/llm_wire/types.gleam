@@ -3,6 +3,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/string
 import json/blueprint/codec
 import json/blueprint/parser
+import json/blueprint/parser_limits
 import json/blueprint/runtime
 
 pub opaque type ModelId {
@@ -99,6 +100,7 @@ pub type Provider {
   OpenAI
   Anthropic
   Google
+  Custom(name: String)
 }
 
 pub type Limits {
@@ -106,6 +108,8 @@ pub type Limits {
     chunk_bytes_limit: Int,
     line_bytes_limit: Int,
     event_bytes_limit: Int,
+    request_bytes_limit: Int,
+    provider_metadata_bytes_limit: Int,
     queue_count_limit: Int,
     queue_bytes_limit: Int,
     active_blocks_limit: Int,
@@ -123,6 +127,8 @@ pub fn default_limits() -> Limits {
     chunk_bytes_limit: 65_536,
     line_bytes_limit: 16_384,
     event_bytes_limit: 1_048_576,
+    request_bytes_limit: 1_048_576,
+    provider_metadata_bytes_limit: 1_048_576,
     queue_count_limit: 500,
     queue_bytes_limit: 2_097_152,
     active_blocks_limit: 64,
@@ -141,6 +147,8 @@ pub fn validate_limits(limits: Limits) -> Result(Nil, WireError) {
     limits.chunk_bytes_limit > 0
     && limits.line_bytes_limit > 0
     && limits.event_bytes_limit > 0
+    && limits.request_bytes_limit > 0
+    && limits.provider_metadata_bytes_limit > 0
     && limits.queue_count_limit > 0
     && limits.queue_bytes_limit > 0
     && limits.active_blocks_limit > 0
@@ -221,6 +229,7 @@ pub type Message {
   AssistantMessage(content: String)
   AssistantContent(parts: List(Content))
   AssistantToolCalls(calls: List(ToolCall))
+  AssistantToolCallsWithText(text: String, calls: List(ToolCall))
   ToolResultMessage(call_id: CallId, content: String)
 }
 
@@ -264,6 +273,18 @@ pub fn tool_from_codec(
   }
 }
 
+/// Admit a schema-only tool without inventing an application value type.
+/// The selected provider projects or rejects its schema during preparation.
+pub fn tool_from_contract(
+  name: ToolName,
+  description: String,
+  contract: runtime.RuntimeContract,
+) -> ToolDefinition {
+  ToolDefinition(name, description, runtime.schema(contract), contract, fn(_) {
+    Ok(Nil)
+  })
+}
+
 pub fn tool_name_of(definition: ToolDefinition) -> ToolName {
   definition.name
 }
@@ -290,8 +311,10 @@ pub fn validate_tool_arguments(
         max_bytes,
         bytes,
       ))
-    False ->
-      case parser.parse_value_from_string(parser.default_limits(), args_json) {
+    False -> {
+      let assert Ok(parser_bounds) =
+        parser_limits.default() |> parser_limits.with_max_bytes(max_bytes)
+      case parser.parse_value_from_string(parser_bounds, args_json) {
         Error(_) -> Error(ProtocolError("Invalid JSON in tool call arguments"))
         Ok(parsed) ->
           case runtime.validate(definition.contract, parsed) {
@@ -303,6 +326,7 @@ pub fn validate_tool_arguments(
             Ok(validated) -> definition.decode_arguments(validated)
           }
       }
+    }
   }
 }
 

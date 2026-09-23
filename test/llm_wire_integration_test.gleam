@@ -11,10 +11,11 @@ import llm_wire/config
 import llm_wire/internal/api
 import llm_wire/internal/client as prepared_client
 import llm_wire/internal/owner
-import llm_wire/internal/provider_config
 import llm_wire/internal/runtime
 import llm_wire/internal/stream_types
 import llm_wire/internal/tcp
+import llm_wire/internal/tls
+import llm_wire/provider/openai as openai_provider
 import llm_wire/session
 import llm_wire/types
 import llm_wire_test_client as client
@@ -24,7 +25,7 @@ import tool_fixtures
 pub fn api_rejects_remote_plaintext_before_transport_test() {
   let assert Ok(api_key) = types.api_key("sk-never-send")
   let assert Ok(endpoint) = types.endpoint("http://api.example.test/v1")
-  let config = provider_config.OpenAIConfig(api_key, endpoint, None, None)
+  let config = api.openai_adapter(api_key, endpoint, None, None)
   let assert Ok(model) = types.model_id("gpt-test")
   let request = types.new_request(model, [types.UserMessage("hello")])
   case api.prepare(config, request, types.default_limits()) {
@@ -41,7 +42,7 @@ pub fn prepared_client_rejects_caller_ca_for_remote_host_test() {
   let assert Ok(api_key) = types.api_key("sk-never-send")
   let assert Ok(endpoint) = types.endpoint("https://api.example.test/v1")
   let assert Ok(model) = types.model_id("gpt-test")
-  let config = provider_config.OpenAIConfig(api_key, endpoint, None, None)
+  let config = api.openai_adapter(api_key, endpoint, None, None)
   let request = types.new_request(model, [types.UserMessage("hello")])
   let assert Ok(prepared) = api.prepare(config, request, types.default_limits())
   case
@@ -49,14 +50,16 @@ pub fn prepared_client_rejects_caller_ca_for_remote_host_test() {
       prepared,
       types.default_limits(),
       types.default_deadlines(),
-      Some(provider_config.VerifyCaFile("test/fixtures/llm-wire-test-ca.crt")),
+      Some(tls.VerifyCaFile("test/fixtures/llm-wire-test-ca.crt")),
     )
   {
-    Error(types.ConfigurationError(reason)) ->
+    Error(prepared_client.OpenFailure(types.ConfigurationError(reason), retry)) -> {
+      retry.classification |> should.equal(types.NoRequestSent)
       reason
       |> should.equal(
         "Client requires valid HTTP fields; remote hosts require system-verified HTTPS",
       )
+    }
     _ -> should.fail()
   }
 }
@@ -100,7 +103,7 @@ pub fn continuation_is_opaque_and_bound_to_its_prepared_interaction_test() {
   let assert Ok(endpoint) =
     types.endpoint("http://127.0.0.1:" <> int.to_string(server.port) <> "/v1")
   let assert Ok(model) = types.model_id("gpt-test")
-  let config = provider_config.OpenAIConfig(key, endpoint, None, None)
+  let config = api.openai_adapter(key, endpoint, None, None)
   let tool = tool_fixtures.int_field_tool("calc", "x")
   let request =
     types.new_request(model, [types.UserMessage("calculate")])
@@ -110,7 +113,7 @@ pub fn continuation_is_opaque_and_bound_to_its_prepared_interaction_test() {
   let assert Ok(second_prepared) =
     api.prepare(config, request, types.default_limits())
 
-  let assert Ok(api.RunToolCalls(calls, continuation, _usage)) =
+  let assert Ok(api.RunToolCalls(_, calls, continuation, _usage)) =
     runtime.run(
       first_prepared,
       types.default_limits(),
@@ -182,13 +185,13 @@ pub fn anthropic_continuation_restores_typed_tool_use_input_test() {
   let assert Ok(endpoint) =
     types.endpoint("http://127.0.0.1:" <> int.to_string(server.port) <> "/v1")
   let assert Ok(model) = types.model_id("claude-test")
-  let config = provider_config.AnthropicConfig(key, endpoint, None)
+  let config = api.anthropic_adapter(key, endpoint, None)
   let tool = tool_fixtures.int_field_tool("calc", "x")
   let request =
     types.new_request(model, [types.UserMessage("calculate")])
     |> types.with_tools([tool])
   let assert Ok(prepared) = api.prepare(config, request, types.default_limits())
-  let assert Ok(api.RunToolCalls([call], continuation, _)) =
+  let assert Ok(api.RunToolCalls(_, [call], continuation, _)) =
     runtime.run(prepared, types.default_limits(), types.default_deadlines())
   let assert Ok(follow_up) =
     api.prepare_continue(
@@ -252,12 +255,12 @@ pub fn buffered_api_preserves_openai_refusal_outcome_test() {
   let assert Ok(endpoint) =
     types.endpoint("http://127.0.0.1:" <> int.to_string(server.port) <> "/v1")
   let assert Ok(model) = types.model_id("gpt-test")
-  let config = provider_config.OpenAIConfig(key, endpoint, None, None)
+  let config = api.openai_adapter(key, endpoint, None, None)
   let request = types.new_request(model, [types.UserMessage("help")])
   let assert Ok(prepared) = api.prepare(config, request, types.default_limits())
 
   runtime.run(prepared, types.default_limits(), types.default_deadlines())
-  |> should.equal(Ok(api.RunRefusal("I cannot help with that.")))
+  |> should.equal(Ok(api.RunRefusal("I cannot help with that.", None)))
   fake_server.stop(server)
 }
 
@@ -471,6 +474,34 @@ pub fn real_http_error_response_test() {
     _ -> panic as "expected HttpStatusError(429)"
   }
 
+  fake_server.stop(server)
+}
+
+pub fn buffered_http_status_failure_records_response_bytes_test() {
+  let assert Ok(server) = fake_server.start()
+  process.spawn_unlinked(fn() {
+    let assert Ok(socket) = fake_server.accept_connection(server, 2000)
+    let assert Ok(_) = fake_server.read_request_headers(socket, 2000)
+    let _ =
+      fake_server.send_http_error(socket, 429, "Too Many Requests", "busy")
+    Nil
+  })
+  let assert Ok(key) = types.api_key("sk-test")
+  let assert Ok(endpoint) =
+    types.endpoint("http://127.0.0.1:" <> int.to_string(server.port) <> "/v1")
+  let assert Ok(model) = types.model_id("gpt-test")
+  let settings =
+    config.openai(openai_provider.options(key))
+    |> config.with_endpoint(endpoint)
+  let request = types.new_request(model, [types.UserMessage("hello")])
+  let assert Ok(prepared) = session.prepare(settings, request)
+  case session.run(prepared) {
+    Error(session.RunFailure(types.HttpStatusError(429, "busy", _), retry)) -> {
+      retry.classification |> should.equal(types.RequestMayHaveReachedProvider)
+      retry.response_bytes_observed |> should.be_true
+    }
+    _ -> should.fail()
+  }
   fake_server.stop(server)
 }
 
@@ -774,7 +805,7 @@ pub fn gun_tls_stream_with_pinned_ca_test() {
     types.endpoint("https://127.0.0.1:" <> int.to_string(port) <> "/v1")
   let assert Ok(model) = types.model_id("gpt-test")
   let settings =
-    config.openai(api_key)
+    config.openai(openai_provider.options(api_key))
     |> config.with_endpoint(endpoint)
     |> config.with_ca_cert_file("test/fixtures/llm-wire-test-ca.crt")
   let request = types.new_request(model, [types.UserMessage("hello")])
@@ -824,7 +855,7 @@ pub fn gun_tls_rejects_hostname_mismatch_test() {
       types.default_deadlines(),
       [],
       "{}",
-      provider_config.VerifyCaFile("test/fixtures/llm-wire-test-ca.crt"),
+      tls.VerifyCaFile("test/fixtures/llm-wire-test-ca.crt"),
     )
   case result {
     Error(types.TransportError(_)) -> Nil
@@ -864,7 +895,7 @@ pub fn gun_tls_rejects_untrusted_ca_test() {
       types.default_deadlines(),
       [],
       "{}",
-      provider_config.VerifySystem,
+      tls.VerifySystem,
     )
   case result {
     Error(types.TransportError(_)) -> should.be_true(True)

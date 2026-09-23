@@ -6,6 +6,7 @@ import llm_wire/internal/owner
 import llm_wire/internal/sse
 import llm_wire/internal/stream_types
 import llm_wire/types
+import owner_provider_helper
 import tool_fixtures
 
 // Finding 6A: OpenAI duplicate output_index in output_item.added must be rejected
@@ -175,7 +176,7 @@ pub fn finding_5a_owner_timeout_read_cleanup_test() {
   let dummy_transport =
     owner.TransportPort(request_more: fn() { Nil }, close: fn() { Nil })
   let assert Ok(stream) =
-    owner.start_openai_stream(
+    owner_provider_helper.start_openai_stream(
       types.default_limits(),
       types.default_deadlines(),
       dummy_transport,
@@ -194,7 +195,7 @@ pub fn finding_5a_owner_timeout_read_cleanup_test() {
 }
 
 // Finding 7: Provider terminal must take precedence over late progress queue failure
-pub fn finding_7_terminal_precedence_over_queue_failure_test() {
+pub fn terminal_cannot_bypass_queue_admission_failure_test() {
   let limits =
     types.Limits(
       ..types.default_limits(),
@@ -204,7 +205,7 @@ pub fn finding_7_terminal_precedence_over_queue_failure_test() {
   let dummy_transport =
     owner.TransportPort(request_more: fn() { Nil }, close: fn() { Nil })
   let assert Ok(stream) =
-    owner.start_openai_stream(
+    owner_provider_helper.start_openai_stream(
       limits,
       types.default_deadlines(),
       dummy_transport,
@@ -222,7 +223,8 @@ pub fn finding_7_terminal_precedence_over_queue_failure_test() {
   >>)
 
   // Queue now has 1 TextDelta item. Now feed response.completed with usage!
-  // This produces UsageUpdate (which exceeds queue_count_limit of 1) and terminal outcome StreamFinished.
+  // This produces UsageUpdate (which exceeds queue_count_limit of 1) and a
+  // nominal completed terminal. The admission failure remains authoritative.
   owner.feed_chunk(stream, <<
     "event: response.completed\ndata: {\"response\": {\"id\": \"resp_1\", \"status\": \"completed\", \"usage\": {\"input_tokens\": 1, \"output_tokens\": 1, \"total_tokens\": 2}}}\n\n":utf8,
   >>)
@@ -231,8 +233,10 @@ pub fn finding_7_terminal_precedence_over_queue_failure_test() {
   let assert Ok(stream_types.NextProgress(_)) = owner.next(stream, 1000)
   let term_res = owner.next(stream, 1000)
   case term_res {
-    Ok(stream_types.StreamTerminal(stream_types.StreamFinished(..))) ->
-      should.be_true(True)
+    Ok(stream_types.StreamTerminal(stream_types.StreamFailed(
+      types.ResourceLimitExceeded("queue_count_limit", _, _),
+      _,
+    ))) -> should.be_true(True)
     _ -> should.fail()
   }
 

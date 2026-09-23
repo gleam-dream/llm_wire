@@ -8,72 +8,59 @@ options and schemas before a network request.
 
 ## Make a call
 
+Build provider options, then compose common execution settings. Preparation
+returns `WireError`; execution returns `session.RunFailure(error, retry)` so a
+caller can decide whether a request might have reached the provider.
+
 ```gleam
-import gleam/result
 import llm_wire/config
+import llm_wire/provider/openai
 import llm_wire/session
 import llm_wire/types
 
-pub fn ask(
-  key: types.ApiKey,
-  model: types.ModelId,
-  question: String,
-) -> Result(session.RunResult, types.WireError) {
-  let request =
-    types.new_request(model, [types.UserMessage(question)])
-    |> types.with_max_tokens(256)
-  use prepared <- result.try(session.prepare(config.openai(key), request))
-  session.run(prepared)
-}
-```
-
-Construct credentials and model IDs with `types.api_key` and `types.model_id`.
-For Anthropic or Google, use `config.anthropic(key)` or `config.google(key)`.
-`session.run` returns `RunText`, `RunToolCalls`, `RunOutputLimited`, or
-`RunRefusal`; match each outcome as your application requires. It does not
-automatically execute tools or retry a request. Provider-specific config
-modifiers return `Result` and reject a mismatched provider.
-
-Settings compose value first. The built-in defaults are bounded; update only
-the settings your application needs. `session.prepare` validates the resulting
-records before any network request:
-
-```gleam
-let limits =
-  types.Limits(..types.default_limits(), event_bytes_limit: 524_288)
-let deadlines =
-  types.Deadlines(..types.default_deadlines(), overall_timeout_ms: 30_000)
-let settings =
-  config.openai(key)
-  |> config.with_limits(limits)
-  |> config.with_deadlines(deadlines)
-```
-
-These timeouts are durations applied when an interaction runs. A continuation
-keeps the originating settings and starts with fresh execution timeouts.
-
-Provider-specific modifiers return `Result`. For example, an OpenAI project
-setting can be composed before preparation:
-
-```gleam
-use settings <- result.try(
-  config.with_openai_project(config.openai(key), "my-project"),
+let assert Ok(key) = types.api_key("sk-...")
+let assert Ok(model) = types.model_id("gpt-...")
+let options = openai.options(key) |> openai.with_project("my-project")
+let limits = types.Limits(
+  ..types.default_limits(),
+  request_bytes_limit: 524_288,
 )
-use prepared <- result.try(session.prepare(settings, request))
-session.run(prepared)
+let settings = config.openai(options) |> config.with_limits(limits)
+let request =
+  types.new_request(model, [types.UserMessage("Hello")])
+  |> types.with_max_tokens(256)
+let assert Ok(prepared) = session.prepare(settings, request)
+let outcome = session.run(prepared)
 ```
 
-For a local HTTPS server signed by a private CA, set an endpoint and CA file:
+Use `config.anthropic(anthropic.options(key))` or
+`config.google(google.options(key))` for the other built-in adapters. Their
+provider-specific options live in `llm_wire/provider/anthropic` and
+`llm_wire/provider/google`. All three enter the same bounded HTTP/SSE runtime.
+`RunText`, `RunToolCalls`, `RunOutputLimited`, and `RunRefusal` are distinct
+successful outcomes. The library does not run tools or retry automatically.
+
+`types.default_limits()` and `types.default_deadlines()` are bounded records.
+Update fields by name and attach them with `config.with_limits` and
+`config.with_deadlines`. `request_bytes_limit` bounds the outgoing JSON body;
+`event_bytes_limit` independently bounds each incoming SSE event.
+`provider_metadata_bytes_limit` bounds retained call IDs, tool names, provider
+IDs/state, and response IDs. Opaque adapter replay closure state belongs to its
+adapter. Preparation validates all limit and deadline fields before transport.
+
+For a local HTTPS server signed by a private CA, compose an endpoint and CA
+file:
 
 ```gleam
 let settings =
-  config.openai(key)
+  config.openai(openai.options(key))
   |> config.with_endpoint(endpoint)
   |> config.with_ca_cert_file("certs/local-ca.pem")
 ```
 
-Preparation rejects an empty CA path, plaintext endpoint, or remote host with
-a caller CA. Certificate and hostname verification still apply when streaming.
+Preparation rejects an empty CA path, a plaintext endpoint with a CA file,
+and remote hosts with a caller CA. Certificate and hostname verification apply
+when streaming.
 
 ## Continue a tool call
 
@@ -88,49 +75,37 @@ call.
 
 ```gleam
 import gleam/list
-import gleam/result
 import json/blueprint/codec
-import llm_wire/config
 import llm_wire/session
 import llm_wire/types
 
-fn echo_result(call: types.ToolCall) -> Result(types.ToolResult, types.WireError) {
-  case types.tool_name_to_string(call.name) {
-    "echo" ->
-      case codec.decode_json(
-        codec.field("text", codec.string()),
-        call.arguments_json,
-      ) {
-        Ok(text) -> Ok(types.ToolResult(call.id, text))
-        Error(_) -> Error(types.ProtocolError("Invalid echo arguments"))
-      }
-    _ -> Error(types.ProtocolError("Unexpected tool call"))
+let assert Ok(name) = types.tool_name("echo")
+let assert Ok(echo_tool) = types.tool_from_codec(
+  name, "Echo text", codec.field("text", codec.string()),
+)
+let request =
+  types.new_request(model, [types.UserMessage("Echo hello")])
+  |> types.with_tools([echo_tool])
+let assert Ok(prepared) = session.prepare(settings, request)
+let first = session.run(prepared)
+case first {
+  Ok(session.RunToolCalls(_text, calls, continuation, _usage)) -> {
+    // The application executes each call and supplies the exact call IDs.
+    let results = list.map(calls, fn(call) {
+      types.ToolResult(call.id, "hello")
+    })
+    let assert Ok(next) = session.prepare_continue(continuation, results)
+    session.run(next)
   }
-}
-
-pub fn echo_once(
-  key: types.ApiKey,
-  model: types.ModelId,
-) -> Result(session.RunResult, types.WireError) {
-  let assert Ok(name) = types.tool_name("echo")
-  use echo_tool <- result.try(types.tool_from_codec(
-    name, "Echo text", codec.field("text", codec.string()),
-  ))
-  let request =
-    types.new_request(model, [types.UserMessage("Echo hello")])
-    |> types.with_tools([echo_tool])
-  use prepared <- result.try(session.prepare(config.openai(key), request))
-  use first <- result.try(session.run(prepared))
-  case first {
-    session.RunToolCalls(calls, continuation, _) -> {
-      use results <- result.try(list.try_map(calls, echo_result))
-      use next <- result.try(session.prepare_continue(continuation, results))
-      session.run(next)
-    }
-    other -> Ok(other)
-  }
+  other -> other
 }
 ```
+
+`types.tool_from_contract(name, description, runtime_contract)` constructs a
+schema-only tool from an admitted Blueprint `runtime.RuntimeContract` without a
+dummy native type. The selected provider projects its schema during
+preparation; unsupported variants fail there. Returned argument JSON receives
+the same bounded schema validation as a codec-backed tool.
 
 Handle another `RunToolCalls` result with another continuation round if your
 application permits it. Set an application limit on tool rounds.
@@ -154,7 +129,8 @@ The structured schema must be a closed object with required properties.
 `codec.field` and an equivalent one-property `codec.object` are both admitted.
 Optional fields remain optional and fail strict admission. Google additionally
 rejects nullable schemas. Unsupported provider schema forms fail during
-preparation.
+preparation. Structured-output JSON parsing uses the admitted text byte bound
+while retaining Blueprint's bounded depth and number policy.
 
 For progress events, open a stream and read until a terminal outcome:
 
@@ -190,10 +166,31 @@ supervision or startup path, attach it, and stop it during shutdown:
 import llm_wire/pool
 
 let assert Ok(owned_pool) = pool.start(pool.default_pool_config())
-let settings = config.openai(key) |> config.with_pool(owned_pool)
+let settings = config.openai(openai.options(key)) |> config.with_pool(owned_pool)
 // Prepare and run calls with `settings` while the application owns `owned_pool`.
 let shutdown = pool.stop(owned_pool)
 ```
+
+## Add an HTTP/SSE provider
+
+An application can build `provider.Adapter(provider.Spec(...))` and pass it to
+`config.from_provider(adapter)`. The spec supplies provider identity, endpoint,
+auth or extra headers, request encoding, schema projection, and a reducer
+factory. `provider.reducer(state, step, terminal, retry)` keeps application
+state typed inside closures; `provider.replay(turn, encode)` keeps the complete
+provider-authored assistant turn for tool continuation. The external consumer
+fixture in [external_provider.gleam](test/external_provider.gleam) implements a
+fourth provider using only public modules and runs against a real local
+HTTP/SSE server.
+
+The runtime supplies `Content-Type: application/json`,
+`Accept: text/event-stream`, and `Accept-Encoding: identity` for every adapter.
+Provider headers add authentication and other provider-specific fields;
+attempts to override those fixed protocol headers fail preparation. The
+runtime owns transport, deadlines, queue limits, retry evidence, tool catalog
+validation, and terminal admission. Adapters must retain bounded opaque replay
+state and enforce any wire-specific block limits when they emit aggregate-only
+terminals; the runtime cannot inspect a closure's captured memory.
 
 ## Observe and integrate
 
@@ -253,11 +250,17 @@ The application still owns dispatch, tool execution, output encoding, and
 The earlier root and wire APIs were never released. They have no compatibility
 shims in this cleanup.
 
-| Earlier call or type                                                          | Current public path                                                                                           |
-| ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `llm_wire.prepare` / `run` / `stream` / `prepare_continue`                    | `session.prepare` / `run` / `stream` / `prepare_continue`, with `config.Config` retaining settings            |
-| Root `Message`, reduced `ToolCall`, `ToolResult`, `RunResult`                 | `types.Message`, full `types.ToolCall`, `types.ToolResult`, `session.RunResult`                               |
-| `types.openai_config` / `anthropic_config` / `google_config`                  | `config.openai` / `anthropic` / `google`, then value-first modifiers                                          |
-| `types.new_limits` / `new_deadlines`                                          | Update `types.default_limits()` / `default_deadlines()` records; `session.prepare` validates the whole config |
-| `types.with_provider_continuation`                                            | `session.prepare_continue` with the opaque continuation returned by `session.run`                             |
-| Direct `api`, `runtime`, provider reducer, owner, SSE, schema, or TCP modules | `session` and `types`; protocol plumbing lives under `llm_wire/internal`                                      |
+| Earlier call or type                                                   | Current public path                                                                                                       |
+| ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `llm_wire.prepare` / `run` / `stream` / `prepare_continue`             | `session.prepare` / `run` / `stream` / `prepare_continue`, with `config.Config` retaining settings                        |
+| Root `Message`, reduced `ToolCall`, `ToolResult`, `RunResult`          | `types.Message`, full `types.ToolCall`, `types.ToolResult`, `session.RunResult`                                           |
+| `config.openai(key)` / `anthropic(key)` / `google(key)`                | `config.openai(openai.options(key))` and analogous provider option builders                                               |
+| Fallible `config.with_openai_*` / `with_anthropic_*` / `with_google_*` | Compose typed options in the matching `llm_wire/provider/*` module before common configuration                            |
+| `types.new_limits` / `new_deadlines`                                   | Update `types.default_limits()` / `default_deadlines()` records; `session.prepare` validates the whole config             |
+| Outgoing request checked against `event_bytes_limit`                   | Set `request_bytes_limit` independently; event and request defaults remain 1 MiB                                          |
+| Buffered execution or stream opening returns `WireError` directly      | Match `session.RunFailure(error, retry)`; preparation still returns `WireError`                                           |
+| Tool-call outcome omitted assistant text                               | `RunToolCalls(text, calls, continuation, usage)` preserves text and provider-authored replay                              |
+| Tool arguments parsed with Blueprint's 10 MiB default                  | Parser byte bounds now follow `argument_bytes_per_call_limit`; depth and number policy stay bounded                       |
+| Structured output parsed with Blueprint's 10 MiB default               | Parser byte bound follows the smaller admitted per-block and total text limits                                            |
+| `types.with_provider_continuation`                                     | `session.prepare_continue` with the opaque continuation returned by `session.run`                                         |
+| Direct internal provider reducer and request hooks                     | Use `provider.Adapter`/`provider.Spec`/`provider.reducer`, then `config.from_provider`; internal transport is unsupported |

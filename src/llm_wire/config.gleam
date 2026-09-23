@@ -1,15 +1,19 @@
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
-import llm_wire/internal/provider_config
+import llm_wire/internal/api
 import llm_wire/pool
+import llm_wire/provider
+import llm_wire/provider/anthropic as anthropic_provider
+import llm_wire/provider/google as google_provider
+import llm_wire/provider/openai as openai_provider
 import llm_wire/types
 
 /// Pure provider settings. A pool is attached only when the caller has
 /// explicitly started and retained ownership of one.
 pub opaque type Config {
   Config(
-    provider: provider_config.ProviderConfig,
+    provider: provider.Adapter,
     limits: types.Limits,
     deadlines: types.Deadlines,
     pool: Option(pool.Pool),
@@ -17,10 +21,11 @@ pub opaque type Config {
   )
 }
 
-pub fn openai(key: types.ApiKey) -> Config {
+pub fn openai(options: openai_provider.Options) -> Config {
+  let #(key, organization, project) = openai_provider.values(options)
   let assert Ok(endpoint) = types.endpoint("https://api.openai.com/v1")
   Config(
-    provider_config.OpenAIConfig(key, endpoint, None, None),
+    api.openai_adapter(key, endpoint, organization, project),
     types.default_limits(),
     types.default_deadlines(),
     None,
@@ -28,10 +33,11 @@ pub fn openai(key: types.ApiKey) -> Config {
   )
 }
 
-pub fn anthropic(key: types.ApiKey) -> Config {
+pub fn anthropic(options: anthropic_provider.Options) -> Config {
+  let #(key, version) = anthropic_provider.values(options)
   let assert Ok(endpoint) = types.endpoint("https://api.anthropic.com/v1")
   Config(
-    provider_config.AnthropicConfig(key, endpoint, None),
+    api.anthropic_adapter(key, endpoint, version),
     types.default_limits(),
     types.default_deadlines(),
     None,
@@ -39,11 +45,12 @@ pub fn anthropic(key: types.ApiKey) -> Config {
   )
 }
 
-pub fn google(key: types.ApiKey) -> Config {
+pub fn google(options: google_provider.Options) -> Config {
+  let #(key, api_version) = google_provider.values(options)
   let assert Ok(endpoint) =
     types.endpoint("https://generativelanguage.googleapis.com/v1beta")
   Config(
-    provider_config.GoogleConfig(key, endpoint, None),
+    api.google_adapter(key, endpoint, api_version),
     types.default_limits(),
     types.default_deadlines(),
     None,
@@ -51,16 +58,14 @@ pub fn google(key: types.ApiKey) -> Config {
   )
 }
 
+/// Uses an application-defined HTTP/SSE adapter with the same bounded session
+/// runtime as the built-in providers.
+pub fn from_provider(adapter: provider.Adapter) -> Config {
+  Config(adapter, types.default_limits(), types.default_deadlines(), None, None)
+}
+
 pub fn with_endpoint(config: Config, endpoint: types.Endpoint) -> Config {
-  let provider = case config.provider {
-    provider_config.OpenAIConfig(..) as current ->
-      provider_config.OpenAIConfig(..current, endpoint: endpoint)
-    provider_config.AnthropicConfig(..) as current ->
-      provider_config.AnthropicConfig(..current, endpoint: endpoint)
-    provider_config.GoogleConfig(..) as current ->
-      provider_config.GoogleConfig(..current, endpoint: endpoint)
-  }
-  Config(..config, provider: provider)
+  Config(..config, provider: provider.with_endpoint(config.provider, endpoint))
 }
 
 pub fn with_limits(config: Config, limits: types.Limits) -> Config {
@@ -82,94 +87,8 @@ pub fn with_ca_cert_file(config: Config, path: String) -> Config {
   Config(..config, ca_cert_file: Some(path))
 }
 
-pub fn with_openai_organization(
-  config: Config,
-  organization: String,
-) -> Result(Config, types.WireError) {
-  case config.provider {
-    provider_config.OpenAIConfig(..) as current ->
-      Ok(
-        Config(
-          ..config,
-          provider: provider_config.OpenAIConfig(
-            ..current,
-            organization: Some(organization),
-          ),
-        ),
-      )
-    _ ->
-      Error(types.ConfigurationError(
-        "OpenAI organization requires an OpenAI config",
-      ))
-  }
-}
-
-pub fn with_openai_project(
-  config: Config,
-  project: String,
-) -> Result(Config, types.WireError) {
-  case config.provider {
-    provider_config.OpenAIConfig(..) as current ->
-      Ok(
-        Config(
-          ..config,
-          provider: provider_config.OpenAIConfig(
-            ..current,
-            project: Some(project),
-          ),
-        ),
-      )
-    _ ->
-      Error(types.ConfigurationError("OpenAI project requires an OpenAI config"))
-  }
-}
-
-pub fn with_anthropic_version(
-  config: Config,
-  version: String,
-) -> Result(Config, types.WireError) {
-  case config.provider {
-    provider_config.AnthropicConfig(..) as current ->
-      Ok(
-        Config(
-          ..config,
-          provider: provider_config.AnthropicConfig(
-            ..current,
-            version: Some(version),
-          ),
-        ),
-      )
-    _ ->
-      Error(types.ConfigurationError(
-        "Anthropic version requires an Anthropic config",
-      ))
-  }
-}
-
-pub fn with_google_api_version(
-  config: Config,
-  version: String,
-) -> Result(Config, types.WireError) {
-  case config.provider {
-    provider_config.GoogleConfig(..) as current ->
-      Ok(
-        Config(
-          ..config,
-          provider: provider_config.GoogleConfig(
-            ..current,
-            api_version: Some(version),
-          ),
-        ),
-      )
-    _ ->
-      Error(types.ConfigurationError(
-        "Google API version requires a Google config",
-      ))
-  }
-}
-
 @internal
-pub fn provider_config(config: Config) -> provider_config.ProviderConfig {
+pub fn adapter(config: Config) -> provider.Adapter {
   config.provider
 }
 
@@ -202,11 +121,7 @@ pub fn validate(config: Config) -> Result(Nil, types.WireError) {
   use Nil <- result.try(case config.ca_cert_file {
     None -> Ok(Nil)
     Some(path) -> {
-      let endpoint = case config.provider {
-        provider_config.OpenAIConfig(endpoint: endpoint, ..)
-        | provider_config.AnthropicConfig(endpoint: endpoint, ..)
-        | provider_config.GoogleConfig(endpoint: endpoint, ..) -> endpoint
-      }
+      let endpoint = provider.endpoint(config.provider)
       case
         string.trim(path) != "",
         string.starts_with(types.endpoint_to_string(endpoint), "https://")

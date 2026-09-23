@@ -5,7 +5,7 @@ import gleam/string
 import llm_wire/internal/api
 import llm_wire/internal/client
 import llm_wire/internal/owner
-import llm_wire/internal/provider_config
+import llm_wire/internal/tls
 import llm_wire/types
 
 pub fn open_openai_stream(
@@ -63,7 +63,7 @@ pub fn open_openai_stream_with_tls_mode(
   deadlines: types.Deadlines,
   tools: List(types.ToolDefinition),
   _body: String,
-  tls_mode: provider_config.TlsMode,
+  tls_mode: tls.TlsMode,
 ) -> Result(owner.Stream, types.WireError) {
   open_stream(
     types.OpenAI,
@@ -87,26 +87,27 @@ fn open_stream(
   limits: types.Limits,
   deadlines: types.Deadlines,
   tools: List(types.ToolDefinition),
-  tls_override: Option(provider_config.TlsMode),
+  tls_override: Option(tls.TlsMode),
 ) -> Result(owner.Stream, types.WireError) {
   let suffix = case provider {
     types.OpenAI -> "/responses"
     types.Anthropic -> "/messages"
     types.Google -> ""
+    types.Custom(_) -> panic as "Custom test client is unsupported"
   }
   let base_path = string.drop_end(path, string.byte_size(suffix))
   let scheme = case tls_override {
-    Some(provider_config.VerifySystem)
-    | Some(provider_config.VerifyCaFile(_)) -> "https"
-    Some(provider_config.Plaintext) | None -> "http"
+    Some(tls.VerifySystem) | Some(tls.VerifyCaFile(_)) -> "https"
+    Some(tls.Plaintext) | None -> "http"
   }
   let endpoint_text =
     scheme <> "://" <> host <> ":" <> int.to_string(port) <> base_path
   use endpoint <- result.try(types.endpoint(endpoint_text))
   let config = case provider {
-    types.OpenAI -> provider_config.OpenAIConfig(api_key, endpoint, None, None)
-    types.Anthropic -> provider_config.AnthropicConfig(api_key, endpoint, None)
+    types.OpenAI -> api.openai_adapter(api_key, endpoint, None, None)
+    types.Anthropic -> api.anthropic_adapter(api_key, endpoint, None)
     types.Google -> panic as "Google test client is unsupported"
+    types.Custom(_) -> panic as "Custom test client is unsupported"
   }
   use model <- result.try(types.model_id("test-model"))
   let request =
@@ -114,4 +115,5 @@ fn open_stream(
     |> types.with_tools(tools)
   use prepared <- result.try(api.prepare(config, request, limits))
   client.open_prepared_stream(prepared, limits, deadlines, tls_override)
+  |> result.map_error(fn(failure) { failure.error })
 }

@@ -5,8 +5,8 @@ import llm_wire/config
 import llm_wire/internal/api
 import llm_wire/internal/client
 import llm_wire/internal/owner
-import llm_wire/internal/provider_config
 import llm_wire/internal/stream_types
+import llm_wire/internal/tls
 import llm_wire/pool
 import llm_wire/types
 
@@ -23,6 +23,7 @@ pub opaque type Continuation {
 pub type RunResult {
   RunText(text: String, usage: Option(types.Usage))
   RunToolCalls(
+    text: String,
     calls: List(types.ToolCall),
     continuation: Continuation,
     usage: Option(types.Usage),
@@ -55,13 +56,19 @@ pub type Terminal {
   Cancelled(types.RetryEvidence)
 }
 
+/// Buffered execution preserves the same retry evidence exposed by streams.
+/// Preparation errors remain WireError at the separate prepare step.
+pub type RunFailure {
+  RunFailure(error: types.WireError, retry: types.RetryEvidence)
+}
+
 pub fn prepare(
   settings: config.Config,
   request: types.Request,
 ) -> Result(PreparedCall, types.WireError) {
   use Nil <- result.try(config.validate(settings))
   use call <- result.try(api.prepare(
-    config.provider_config(settings),
+    config.adapter(settings),
     request,
     config.limits(settings),
   ))
@@ -69,10 +76,10 @@ pub fn prepare(
   Ok(PreparedCall(call, settings))
 }
 
-fn ca_override(settings: config.Config) -> Option(provider_config.TlsMode) {
+fn ca_override(settings: config.Config) -> Option(tls.TlsMode) {
   case config.ca_cert_file(settings) {
     None -> None
-    Some(path) -> Some(provider_config.VerifyCaFile(path))
+    Some(path) -> Some(tls.VerifyCaFile(path))
   }
 }
 
@@ -101,8 +108,17 @@ pub fn prepare_continue(
   Ok(PreparedCall(call, settings))
 }
 
-pub fn stream(prepared: PreparedCall) -> Result(Stream, types.WireError) {
+pub fn stream(prepared: PreparedCall) -> Result(Stream, RunFailure) {
   let PreparedCall(call, settings) = prepared
+  open_source(call, settings)
+  |> result.map(fn(source) { Stream(source, prepared) })
+  |> result.map_error(open_failure)
+}
+
+fn open_source(
+  call: api.PreparedCall,
+  settings: config.Config,
+) -> Result(owner.Stream, client.OpenFailure) {
   let opened = case config.pool(settings) {
     None ->
       client.open_prepared_stream(
@@ -120,25 +136,37 @@ pub fn stream(prepared: PreparedCall) -> Result(Stream, types.WireError) {
         Some(pool.pool_pid(owned_pool)),
       )
   }
-  result.map(opened, fn(source) { Stream(source, prepared) })
+  opened
 }
 
-pub fn run(prepared: PreparedCall) -> Result(RunResult, types.WireError) {
+pub fn run(prepared: PreparedCall) -> Result(RunResult, RunFailure) {
   use stream <- result.try(stream(prepared))
   collect(stream)
 }
 
 /// The stream carries its originating prepared call, so collection cannot
 /// stamp a continuation with another interaction's identity.
-pub fn collect(stream: Stream) -> Result(RunResult, types.WireError) {
+pub fn collect(stream: Stream) -> Result(RunResult, RunFailure) {
   case next(stream) {
     Ok(NextProgress(_)) -> collect(stream)
     Ok(StreamTerminal(Finished(outcome))) -> Ok(outcome)
-    Ok(StreamTerminal(Failed(error, _))) -> Error(error)
-    Ok(StreamTerminal(Cancelled(_))) -> Error(types.CancelledLocally)
+    Ok(StreamTerminal(Failed(error, retry))) -> Error(RunFailure(error, retry))
+    Ok(StreamTerminal(Cancelled(retry))) ->
+      Error(RunFailure(types.CancelledLocally, retry))
     Error(StreamReadError(types.ReadTimeout)) -> collect(stream)
-    Error(error) -> Error(read_error_wire(error))
+    Error(error) -> Error(read_failure(error))
   }
+}
+
+fn open_failure(failure: client.OpenFailure) -> RunFailure {
+  RunFailure(failure.error, failure.retry)
+}
+
+fn read_failure(error: ReadError) -> RunFailure {
+  RunFailure(
+    read_error_wire(error),
+    types.RetryEvidence(types.EffectUnknown, True, True),
+  )
 }
 
 fn read_error_wire(error: ReadError) -> types.WireError {
@@ -160,11 +188,11 @@ fn read_error_wire(error: ReadError) -> types.WireError {
 fn wrap_result(prepared: PreparedCall, outcome: api.RunResult) -> RunResult {
   case outcome {
     api.RunText(text, usage) -> RunText(text, usage)
-    api.RunToolCalls(calls, replay, usage) ->
-      RunToolCalls(calls, Continuation(prepared, replay), usage)
+    api.RunToolCalls(text, calls, replay, usage) ->
+      RunToolCalls(text, calls, Continuation(prepared, replay), usage)
     api.RunOutputLimited(text, calls, usage) ->
       RunOutputLimited(text, calls, usage)
-    api.RunRefusal(reason) -> RunRefusal(reason, None)
+    api.RunRefusal(reason, usage) -> RunRefusal(reason, usage)
   }
 }
 
@@ -227,6 +255,7 @@ pub opaque type StructuredContinuation(output) {
 pub type StructuredRunResult(output) {
   StructuredValue(value: output, raw_json: String, usage: Option(types.Usage))
   StructuredNeedsTools(
+    text: String,
     calls: List(types.ToolCall),
     continuation: StructuredContinuation(output),
     usage: Option(types.Usage),
@@ -265,7 +294,7 @@ pub fn prepare_structured(
 ) -> Result(PreparedStructuredCall(output), types.WireError) {
   use Nil <- result.try(config.validate(settings))
   use call <- result.try(api.prepare_structured(
-    config.provider_config(settings),
+    config.adapter(settings),
     request,
     config.limits(settings),
     output_name,
@@ -295,47 +324,33 @@ pub fn prepare_structured_continue(
 
 pub fn stream_structured(
   prepared: PreparedStructuredCall(output),
-) -> Result(StructuredStream(output), types.WireError) {
+) -> Result(StructuredStream(output), RunFailure) {
   let PreparedStructuredCall(call, settings) = prepared
   let api_call = api.structured_prepared_call(call)
-  let opened = case config.pool(settings) {
-    None ->
-      client.open_prepared_stream(
-        api_call,
-        config.limits(settings),
-        config.deadlines(settings),
-        ca_override(settings),
-      )
-    Some(owned_pool) ->
-      client.open_prepared_stream_with_pool(
-        api_call,
-        config.limits(settings),
-        config.deadlines(settings),
-        ca_override(settings),
-        Some(pool.pool_pid(owned_pool)),
-      )
-  }
-  result.map(opened, fn(source) { StructuredStream(source, prepared) })
+  open_source(api_call, settings)
+  |> result.map(fn(source) { StructuredStream(source, prepared) })
+  |> result.map_error(open_failure)
 }
 
 pub fn run_structured(
   prepared: PreparedStructuredCall(output),
-) -> Result(StructuredRunResult(output), types.WireError) {
+) -> Result(StructuredRunResult(output), RunFailure) {
   use stream <- result.try(stream_structured(prepared))
   collect_structured(stream)
 }
 
 pub fn collect_structured(
   stream: StructuredStream(output),
-) -> Result(StructuredRunResult(output), types.WireError) {
+) -> Result(StructuredRunResult(output), RunFailure) {
   case next_structured(stream) {
     Ok(StructuredNextProgress(_)) -> collect_structured(stream)
     Ok(StructuredStreamTerminal(StructuredFinished(outcome))) -> Ok(outcome)
-    Ok(StructuredStreamTerminal(StructuredFailed(error, _))) -> Error(error)
-    Ok(StructuredStreamTerminal(StructuredCancelled(_))) ->
-      Error(types.CancelledLocally)
+    Ok(StructuredStreamTerminal(StructuredFailed(error, retry))) ->
+      Error(RunFailure(error, retry))
+    Ok(StructuredStreamTerminal(StructuredCancelled(retry))) ->
+      Error(RunFailure(types.CancelledLocally, retry))
     Error(StreamReadError(types.ReadTimeout)) -> collect_structured(stream)
-    Error(error) -> Error(read_error_wire(error))
+    Error(error) -> Error(read_failure(error))
   }
 }
 
@@ -349,15 +364,16 @@ fn wrap_structured_result(
       use value <- result.try(api.decode_structured_output(call, text))
       Ok(StructuredValue(value, text, usage))
     }
-    api.RunToolCalls(calls, replay, usage) ->
+    api.RunToolCalls(text, calls, replay, usage) ->
       Ok(StructuredNeedsTools(
+        text,
         calls,
         StructuredContinuation(prepared, replay),
         usage,
       ))
     api.RunOutputLimited(text, calls, usage) ->
       Ok(StructuredOutputLimited(text, calls, usage))
-    api.RunRefusal(reason) -> Ok(StructuredRefusal(reason, None))
+    api.RunRefusal(reason, usage) -> Ok(StructuredRefusal(reason, usage))
   }
 }
 

@@ -1,3 +1,4 @@
+import external_provider
 import gleam/erlang/process
 import gleam/json
 import gleam/list
@@ -7,9 +8,9 @@ import gleeunit/should
 import json/blueprint/codec
 import json/blueprint/number
 import json/blueprint/parser
+import json/blueprint/runtime
 import json/blueprint/value
 import llm_wire/internal/api
-import llm_wire/internal/provider_config
 import llm_wire/internal/schema
 import llm_wire/telemetry
 import llm_wire/types
@@ -20,8 +21,7 @@ pub fn prepare_openai_request_uses_responses_wire_test() {
   let assert Ok(key) = types.api_key("test-key")
   let assert Ok(endpoint) = types.endpoint("http://127.0.0.1:4321/v1/")
   let assert Ok(model) = types.model_id("gpt-test")
-  let config =
-    provider_config.OpenAIConfig(key, endpoint, None, Some("project-test"))
+  let config = api.openai_adapter(key, endpoint, None, Some("project-test"))
   let request =
     types.new_request(model, [types.UserMessage("hello")])
     |> types.with_tools([tool_fixtures.int_field_tool("sum", "value")])
@@ -43,6 +43,98 @@ pub fn prepare_openai_request_uses_responses_wire_test() {
   let assert Ok(contract_schema) =
     codec.schema(codec.field("value", codec.int()))
   actual_schema |> should.equal(codec.schema_value(contract_schema))
+}
+
+pub fn schema_only_tool_validates_json_without_a_native_codec_test() {
+  let assert Ok(name) = types.tool_name("remote_lookup")
+  let assert Ok(contract) =
+    runtime.from_schema(codec.FieldSchema("id", codec.IntSchema))
+  let tool = types.tool_from_contract(name, "Lookup", contract)
+  types.validate_tool_arguments(tool, 128, "{\"id\":7}") |> should.be_ok
+  types.validate_tool_arguments(tool, 128, "{\"id\":\"seven\"}")
+  |> should.be_error
+  types.validate_tool_arguments(tool, 5, "{\"id\":7}")
+  |> should.be_error
+
+  let assert Ok(key) = types.api_key("test-key")
+  let assert Ok(endpoint) = types.endpoint("http://127.0.0.1:4321/v1")
+  let assert Ok(model) = types.model_id("gpt-test")
+  let adapter = api.openai_adapter(key, endpoint, None, None)
+  let request =
+    types.new_request(model, [types.UserMessage("lookup")])
+    |> types.with_tools([tool])
+  let assert Ok(prepared) =
+    api.prepare(adapter, request, types.default_limits())
+  api.prepared_request_json(prepared)
+  |> string.contains("\"name\":\"remote_lookup\"")
+  |> should.be_true
+}
+
+pub fn schema_only_tool_rejects_unsupported_projection_test() {
+  let assert Ok(name) = types.tool_name("unsupported")
+  let assert Ok(contract) =
+    runtime.from_schema(codec.PairSchema(codec.IntSchema, codec.IntSchema))
+  let tool = types.tool_from_contract(name, "Unsupported", contract)
+  let assert Ok(key) = types.api_key("test-key")
+  let assert Ok(endpoint) = types.endpoint("http://127.0.0.1:4321/v1")
+  let assert Ok(model) = types.model_id("gpt-test")
+  let request =
+    types.new_request(model, [types.UserMessage("test")])
+    |> types.with_tools([tool])
+  case
+    api.prepare(
+      api.openai_adapter(key, endpoint, None, None),
+      request,
+      types.default_limits(),
+    )
+  {
+    Error(types.PreparationError(_)) -> should.be_true(True)
+    _ -> should.fail()
+  }
+  let assert Ok(_) =
+    api.prepare(
+      external_provider.adapter(endpoint),
+      request,
+      types.default_limits(),
+    )
+}
+
+pub fn structured_parser_uses_admitted_text_bound_test() {
+  let assert Ok(key) = types.api_key("test-key")
+  let assert Ok(endpoint) = types.endpoint("http://127.0.0.1:4321/v1")
+  let assert Ok(model) = types.model_id("gpt-test")
+  let adapter = api.openai_adapter(key, endpoint, None, None)
+  let request = types.new_request(model, [types.UserMessage("answer")])
+  let raw = "{\"answer\":7}"
+  let raw_bytes = string.byte_size(raw)
+  let limited =
+    types.Limits(
+      ..types.default_limits(),
+      text_bytes_per_block_limit: raw_bytes - 1,
+    )
+  let assert Ok(prepared) =
+    api.prepare_structured(
+      adapter,
+      request,
+      limited,
+      "answer_shape",
+      codec.field("answer", codec.int()),
+    )
+  case api.decode_structured_output(prepared, raw) {
+    Error(types.OutputValidationError(_)) -> should.be_true(True)
+    _ -> should.fail()
+  }
+  let allowed = types.Limits(..limited, text_bytes_per_block_limit: raw_bytes)
+  let assert Ok(prepared_allowed) =
+    api.prepare_structured(
+      adapter,
+      request,
+      allowed,
+      "answer_shape",
+      codec.field("answer", codec.int()),
+    )
+  api.decode_structured_output(prepared_allowed, raw)
+  |> should.equal(Ok(7))
 }
 
 pub fn codec_schema_json_encodes_exact_blueprint_field_schema_and_numeric_bounds_test() {
@@ -133,8 +225,7 @@ pub fn prepare_anthropic_request_uses_messages_wire_test() {
   let assert Ok(key) = types.api_key("test-key")
   let assert Ok(endpoint) = types.endpoint("https://api.example.test/v1")
   let assert Ok(model) = types.model_id("claude-test")
-  let config =
-    provider_config.AnthropicConfig(key, endpoint, Some("2025-01-01"))
+  let config = api.anthropic_adapter(key, endpoint, Some("2025-01-01"))
   let request =
     types.new_request(model, [
       types.SystemMessage("be concise"),
@@ -156,7 +247,7 @@ pub fn prepare_openai_request_encodes_typed_multimodal_content_test() {
   let assert Ok(key) = types.api_key("test-key")
   let assert Ok(endpoint) = types.endpoint("https://api.example.test/v1")
   let assert Ok(model) = types.model_id("gpt-test")
-  let config = provider_config.OpenAIConfig(key, endpoint, None, None)
+  let config = api.openai_adapter(key, endpoint, None, None)
   let request =
     types.new_request(model, [
       types.UserContent([
@@ -186,7 +277,7 @@ pub fn prepare_anthropic_request_encodes_inline_image_content_test() {
   let assert Ok(key) = types.api_key("test-key")
   let assert Ok(endpoint) = types.endpoint("https://api.example.test/v1")
   let assert Ok(model) = types.model_id("claude-test")
-  let config = provider_config.AnthropicConfig(key, endpoint, None)
+  let config = api.anthropic_adapter(key, endpoint, None)
   let request =
     types.new_request(model, [
       types.UserContent([
@@ -211,7 +302,7 @@ pub fn prepare_google_request_encodes_inline_image_and_rejects_url_test() {
   let assert Ok(endpoint) =
     types.endpoint("https://generativelanguage.example.test")
   let assert Ok(model) = types.model_id("gemini-test")
-  let config = provider_config.GoogleConfig(key, endpoint, None)
+  let config = api.google_adapter(key, endpoint, None)
   let request =
     types.new_request(model, [
       types.UserContent([
@@ -247,8 +338,7 @@ pub fn provider_prompt_cache_references_are_encoded_and_scoped_test() {
   let assert Ok(key) = types.api_key("test-key")
   let assert Ok(model) = types.model_id("gpt-test")
   let assert Ok(openai_endpoint) = types.endpoint("https://api.example.test/v1")
-  let openai_config =
-    provider_config.OpenAIConfig(key, openai_endpoint, None, None)
+  let openai_config = api.openai_adapter(key, openai_endpoint, None, None)
   let openai_request =
     types.with_prompt_cache(
       types.new_request(model, [types.UserMessage("hello")]),
@@ -262,7 +352,7 @@ pub fn provider_prompt_cache_references_are_encoded_and_scoped_test() {
 
   let assert Ok(google_endpoint) =
     types.endpoint("https://generativelanguage.example.test")
-  let google_config = provider_config.GoogleConfig(key, google_endpoint, None)
+  let google_config = api.google_adapter(key, google_endpoint, None)
   let google_request =
     types.with_prompt_cache(
       types.new_request(model, [types.UserMessage("hello")]),
@@ -292,7 +382,7 @@ pub fn preparation_rejects_non_loopback_plain_http_test() {
   let assert Ok(key) = types.api_key("test-key")
   let assert Ok(endpoint) = types.endpoint("http://api.example.test/v1")
   let assert Ok(model) = types.model_id("gpt-test")
-  let config = provider_config.OpenAIConfig(key, endpoint, None, None)
+  let config = api.openai_adapter(key, endpoint, None, None)
   let request = types.new_request(model, [types.UserMessage("hello")])
   case api.prepare(config, request, types.default_limits()) {
     Error(types.ConfigurationError(_)) -> should.be_true(True)
@@ -304,7 +394,7 @@ pub fn preparation_rejects_unsupported_openai_stop_sequences_test() {
   let assert Ok(key) = types.api_key("test-key")
   let assert Ok(endpoint) = types.endpoint("https://api.example.test/v1")
   let assert Ok(model) = types.model_id("gpt-test")
-  let config = provider_config.OpenAIConfig(key, endpoint, None, None)
+  let config = api.openai_adapter(key, endpoint, None, None)
   let request =
     types.new_request(model, [types.UserMessage("hello")])
     |> types.with_stop_sequences(["stop"])
@@ -318,7 +408,7 @@ pub fn structured_output_is_admitted_and_decoded_with_native_codec_test() {
   let assert Ok(key) = types.api_key("test-key")
   let assert Ok(endpoint) = types.endpoint("https://api.example.test/v1")
   let assert Ok(model) = types.model_id("gpt-test")
-  let config = provider_config.OpenAIConfig(key, endpoint, None, None)
+  let config = api.openai_adapter(key, endpoint, None, None)
   let request = types.new_request(model, [types.UserMessage("return a count")])
   let output_codec = codec.object(codec.required("answer", codec.int()))
   let assert Ok(prepared) =
@@ -346,7 +436,7 @@ pub fn structured_output_rejects_optional_strict_schema_test() {
   let assert Ok(key) = types.api_key("test-key")
   let assert Ok(endpoint) = types.endpoint("https://api.example.test/v1")
   let assert Ok(model) = types.model_id("gpt-test")
-  let config = provider_config.OpenAIConfig(key, endpoint, None, None)
+  let config = api.openai_adapter(key, endpoint, None, None)
   let request = types.new_request(model, [types.UserMessage("hello")])
   let output_codec = codec.object(codec.optional("note", codec.string()))
   case

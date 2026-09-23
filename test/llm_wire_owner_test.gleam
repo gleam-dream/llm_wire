@@ -2,7 +2,9 @@ import gleam/erlang/process
 import gleeunit/should
 import llm_wire/internal/owner
 import llm_wire/internal/stream_types
+import llm_wire/internal/transport_failure
 import llm_wire/types
+import owner_provider_helper
 import tool_fixtures
 
 pub fn owner_sequential_read_test() {
@@ -12,7 +14,8 @@ pub fn owner_sequential_read_test() {
   let port =
     owner.TransportPort(request_more: fn() { Nil }, close: fn() { Nil })
 
-  let assert Ok(stream) = owner.start_openai_stream(limits, deadlines, port)
+  let assert Ok(stream) =
+    owner_provider_helper.start_openai_stream(limits, deadlines, port)
 
   // Feed chunk with output item and text delta
   owner.feed_chunk(stream, <<
@@ -52,7 +55,8 @@ pub fn owner_copied_handles_and_close_test() {
   let port =
     owner.TransportPort(request_more: fn() { Nil }, close: fn() { Nil })
 
-  let assert Ok(stream1) = owner.start_openai_stream(limits, deadlines, port)
+  let assert Ok(stream1) =
+    owner_provider_helper.start_openai_stream(limits, deadlines, port)
   let stream2 = stream1
 
   // Close via stream1
@@ -74,7 +78,8 @@ pub fn owner_concurrent_read_conflict_test() {
   let port =
     owner.TransportPort(request_more: fn() { Nil }, close: fn() { Nil })
 
-  let assert Ok(stream) = owner.start_openai_stream(limits, deadlines, port)
+  let assert Ok(stream) =
+    owner_provider_helper.start_openai_stream(limits, deadlines, port)
 
   // Start a background process that calls next (which will block waiting for data)
   let test_subject = process.new_subject()
@@ -107,7 +112,8 @@ pub fn owner_idle_deadline_test() {
   let port =
     owner.TransportPort(request_more: fn() { Nil }, close: fn() { Nil })
 
-  let assert Ok(stream) = owner.start_openai_stream(limits, deadlines, port)
+  let assert Ok(stream) =
+    owner_provider_helper.start_openai_stream(limits, deadlines, port)
 
   // Wait 100ms for idle timeout to trigger
   process.sleep(100)
@@ -134,7 +140,8 @@ pub fn owner_overall_deadline_test() {
   let port =
     owner.TransportPort(request_more: fn() { Nil }, close: fn() { Nil })
 
-  let assert Ok(stream) = owner.start_openai_stream(limits, deadlines, port)
+  let assert Ok(stream) =
+    owner_provider_helper.start_openai_stream(limits, deadlines, port)
 
   // Wait 100ms for overall timeout to trigger
   process.sleep(100)
@@ -160,7 +167,8 @@ pub fn owner_cleanup_called_once_test() {
       process.send(close_counter, 1)
     })
 
-  let assert Ok(stream) = owner.start_openai_stream(limits, deadlines, port)
+  let assert Ok(stream) =
+    owner_provider_helper.start_openai_stream(limits, deadlines, port)
 
   // First close
   owner.close(stream)
@@ -186,7 +194,7 @@ pub fn owner_monitors_consumer_between_reads_test() {
         process.send(close_counter, Nil)
       })
     let assert Ok(stream) =
-      owner.start_openai_stream(
+      owner_provider_helper.start_openai_stream(
         types.default_limits(),
         types.default_deadlines(),
         transport,
@@ -224,7 +232,7 @@ pub fn owner_keeps_one_outstanding_transport_credit_test() {
       close: fn() { Nil },
     )
   let assert Ok(stream) =
-    owner.start_openai_stream(
+    owner_provider_helper.start_openai_stream(
       types.default_limits(),
       types.default_deadlines(),
       transport,
@@ -243,7 +251,7 @@ pub fn owner_read_timeout_delivery_race_never_loses_accepted_progress_test() {
   let transport =
     owner.TransportPort(request_more: fn() { Nil }, close: fn() { Nil })
   let assert Ok(stream) =
-    owner.start_openai_stream(
+    owner_provider_helper.start_openai_stream(
       types.default_limits(),
       types.default_deadlines(),
       transport,
@@ -278,6 +286,8 @@ pub fn owner_queue_limit_test() {
       chunk_bytes_limit: 10_000,
       line_bytes_limit: 10_000,
       event_bytes_limit: 10_000,
+      request_bytes_limit: 10_000,
+      provider_metadata_bytes_limit: 10_000,
       queue_count_limit: 2,
       queue_bytes_limit: 10_000,
       active_blocks_limit: 10,
@@ -292,7 +302,8 @@ pub fn owner_queue_limit_test() {
   let port =
     owner.TransportPort(request_more: fn() { Nil }, close: fn() { Nil })
 
-  let assert Ok(stream) = owner.start_openai_stream(limits, deadlines, port)
+  let assert Ok(stream) =
+    owner_provider_helper.start_openai_stream(limits, deadlines, port)
 
   // Add block
   owner.feed_chunk(stream, <<
@@ -333,7 +344,11 @@ pub fn owner_response_body_limit_is_enforced_test() {
   let transport =
     owner.TransportPort(request_more: fn() { Nil }, close: fn() { Nil })
   let assert Ok(stream) =
-    owner.start_openai_stream(limits, types.default_deadlines(), transport)
+    owner_provider_helper.start_openai_stream(
+      limits,
+      types.default_deadlines(),
+      transport,
+    )
   owner.feed_chunk(stream, <<"1234567890123":utf8>>)
   case owner.next(stream, 1000) {
     Ok(stream_types.StreamTerminal(stream_types.StreamFailed(
@@ -349,7 +364,7 @@ pub fn owner_argument_disconnect_never_emits_partial_tool_call_test() {
   let transport =
     owner.TransportPort(request_more: fn() { Nil }, close: fn() { Nil })
   let assert Ok(stream) =
-    owner.start_anthropic_stream_with_tools(
+    owner_provider_helper.start_anthropic_stream_with_tools(
       types.default_limits(),
       types.default_deadlines(),
       transport,
@@ -364,7 +379,10 @@ pub fn owner_argument_disconnect_never_emits_partial_tool_call_test() {
   owner.feed_chunk(stream, <<
     "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"x\\\":\"}}\n\n":utf8,
   >>)
-  owner.feed_error(stream, "connection reset during tool arguments")
+  owner.feed_error(
+    stream,
+    transport_failure.TransportFailure("connection reset during tool arguments"),
+  )
   let assert Ok(stream_types.StreamTerminal(stream_types.StreamFailed(
     types.TransportError("connection reset during tool arguments"),
     _,

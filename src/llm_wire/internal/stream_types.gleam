@@ -1,9 +1,11 @@
 import gleam/option.{type Option}
+import llm_wire/provider
 import llm_wire/types
 
 /// Provider-owned replay state is never accepted in an application request.
 pub type ProviderContinuation {
   GoogleProviderContinuation(parts: List(String))
+  CustomProviderContinuation(replay: provider.Replay)
 }
 
 /// Reducer outcomes are converted to session results at the owned boundary.

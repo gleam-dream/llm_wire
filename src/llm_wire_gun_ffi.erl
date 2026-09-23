@@ -58,11 +58,11 @@ connect_and_stream_with_pool(Pool, Host, Port, Path, Headers, Body, OverallTimeo
             erlang:demonitor(BridgeMonitor, [flush]),
             {error, Error};
         {'DOWN', BridgeMonitor, process, Pid, Reason} ->
-            {error, {gun_failure, format_error(Reason)}}
+            {error, {gun_failure, {transport_failure, format_error(Reason)}}}
     after remaining_ms(Deadline) + 50 ->
         erlang:demonitor(BridgeMonitor, [flush]),
         exit(Pid, kill),
-        {error, {gun_failure, <<"overall deadline exceeded during setup">>}}
+        {error, {gun_failure, overall_deadline_failure}}
     end.
 
 init_bridge(Parent, Ref, Owner, OwnerMonitor, Pool, Host, Port, Path, Headers, Body,
@@ -123,10 +123,14 @@ init_standalone(Parent, Ref, Owner, OwnerMonitor, Host, Port, Path, Headers, Bod
                         OnChunk, OnEof, OnError);
                 {error, Reason} ->
                     gun:close(Conn),
-                    Parent ! {Ref, {error, {gun_failure, format_error(Reason)}}}
+                    Failure = case Reason of
+                        timeout -> overall_deadline_failure;
+                        _ -> {transport_failure, format_error(Reason)}
+                    end,
+                    Parent ! {Ref, {error, {gun_failure, Failure}}}
             end;
         {error, Reason} ->
-            Parent ! {Ref, {error, {gun_failure, format_error(Reason)}}}
+            Parent ! {Ref, {error, {gun_failure, {transport_failure, format_error(Reason)}}}}
     end.
 
 init_pooled(Parent, Ref, Owner, OwnerMonitor, Pool, Host, Port, Path, Headers, Body,
@@ -144,9 +148,9 @@ init_pooled(Parent, Ref, Owner, OwnerMonitor, Pool, Host, Port, Path, Headers, B
                 Conn, ConnMon, StreamRef, Deadline, MaxHeaderBytes, MaxChunkBytes,
                 OnChunk, OnEof, OnError);
         {error, pool_timeout} ->
-            Parent ! {Ref, {error, {gun_failure, <<"connection pool checkout timeout">>}}};
+            Parent ! {Ref, {error, {gun_failure, overall_deadline_failure}}};
         {error, Reason} ->
-            Parent ! {Ref, {error, {gun_failure, format_error(Reason)}}}
+            Parent ! {Ref, {error, {gun_failure, {transport_failure, format_error(Reason)}}}}
     end.
 
 wait_for_response(Parent, Ref, Owner, OwnerMonitor, Pool, LeaseRef, Conn, ConnMon,
@@ -157,31 +161,31 @@ wait_for_response(Parent, Ref, Owner, OwnerMonitor, Pool, LeaseRef, Conn, ConnMo
                 true ->
                     gun:cancel(Conn, StreamRef),
                     cleanup_conn(Pool, LeaseRef, Conn, ConnMon, closed),
-                    Parent ! {Ref, {error, {gun_failure, <<"response header block limit exceeded">>}}};
+                    Parent ! {Ref, {error, {gun_failure, {transport_failure, <<"response header block limit exceeded">>}}}};
                 false -> handle_response_headers(Parent, Ref, Owner,
                     OwnerMonitor, Pool, LeaseRef, Conn, ConnMon, StreamRef, Fin, Status, Headers,
                     Deadline, MaxChunkBytes, OnChunk, OnEof, OnError)
             end;
         {gun_error, Conn, StreamRef, Reason} ->
             cleanup_conn(Pool, LeaseRef, Conn, ConnMon, closed),
-            Parent ! {Ref, {error, {gun_failure, format_error(Reason)}}};
+            Parent ! {Ref, {error, {gun_failure, {transport_failure, format_error(Reason)}}}};
         {gun_error, Conn, Reason} ->
             cleanup_conn(Pool, LeaseRef, Conn, ConnMon, closed),
-            Parent ! {Ref, {error, {gun_failure, format_error(Reason)}}};
+            Parent ! {Ref, {error, {gun_failure, {transport_failure, format_error(Reason)}}}};
         {'DOWN', ConnMon, process, Conn, Reason} ->
             cleanup_conn(Pool, LeaseRef, Conn, undefined, closed),
-            Parent ! {Ref, {error, {gun_failure, format_error(Reason)}}};
+            Parent ! {Ref, {error, {gun_failure, {transport_failure, format_error(Reason)}}}};
         {'DOWN', OwnerMonitor, process, Owner, _Reason} ->
             gun:cancel(Conn, StreamRef),
             cleanup_conn(Pool, LeaseRef, Conn, ConnMon, closed),
-            Parent ! {Ref, {error, {gun_failure, <<"stream owner stopped during setup">>}}};
+            Parent ! {Ref, {error, {gun_failure, {transport_failure, <<"stream owner stopped during setup">>}}}};
         {'EXIT', Parent, _Reason} ->
             gun:cancel(Conn, StreamRef),
             cleanup_conn(Pool, LeaseRef, Conn, ConnMon, closed)
     after remaining_ms(Deadline) ->
         gun:cancel(Conn, StreamRef),
         cleanup_conn(Pool, LeaseRef, Conn, ConnMon, closed),
-        Parent ! {Ref, {error, {gun_failure, <<"overall deadline exceeded waiting for headers">>}}}
+        Parent ! {Ref, {error, {gun_failure, overall_deadline_failure}}}
     end.
 
 handle_response_headers(Parent, Ref, Owner, OwnerMonitor, Pool, LeaseRef, Conn, ConnMon,
@@ -205,7 +209,7 @@ handle_response_headers(Parent, Ref, Owner, OwnerMonitor, Pool, LeaseRef, Conn, 
         {200, {error, Reason}} ->
             gun:cancel(Conn, StreamRef),
             cleanup_conn(Pool, LeaseRef, Conn, ConnMon, closed),
-            Parent ! {Ref, {error, {gun_failure, Reason}}};
+            Parent ! {Ref, {error, {gun_failure, {transport_failure, Reason}}}};
         {OtherStatus, _} ->
             read_error_body(Parent, Ref, Owner, OwnerMonitor, Pool, LeaseRef,
                 Conn, ConnMon, StreamRef, OtherStatus, retry_after_value(Headers),
@@ -261,7 +265,7 @@ read_error_body(Parent, Ref, Owner, OwnerMonitor, Pool, LeaseRef, Conn, ConnMon,
                         true ->
                             gun:cancel(Conn, StreamRef),
                             cleanup_conn(Pool, LeaseRef, Conn, ConnMon, closed),
-                            Parent ! {Ref, {error, {gun_failure, <<"error response body limit exceeded">>}}};
+                            Parent ! {Ref, {error, {gun_failure, {transport_failure, <<"error response body limit exceeded">>}}}};
                         false ->
                             read_error_body(Parent, Ref, Owner, OwnerMonitor,
                                 Pool, LeaseRef, Conn, ConnMon, StreamRef, Status,
@@ -269,18 +273,18 @@ read_error_body(Parent, Ref, Owner, OwnerMonitor, Pool, LeaseRef, Conn, ConnMon,
                     end;
                 {gun_error, Conn, StreamRef, Reason} ->
                     cleanup_conn(Pool, LeaseRef, Conn, ConnMon, closed),
-                    Parent ! {Ref, {error, {gun_failure, format_error(Reason)}}};
+                    Parent ! {Ref, {error, {gun_failure, {transport_failure, format_error(Reason)}}}};
                 {'DOWN', ConnMon, process, Conn, Reason} ->
                     cleanup_conn(Pool, LeaseRef, Conn, undefined, closed),
-                    Parent ! {Ref, {error, {gun_failure, format_error(Reason)}}};
+                    Parent ! {Ref, {error, {gun_failure, {transport_failure, format_error(Reason)}}}};
                 {'DOWN', OwnerMonitor, process, Owner, _Reason} ->
                     gun:cancel(Conn, StreamRef),
                     cleanup_conn(Pool, LeaseRef, Conn, ConnMon, closed),
-                    Parent ! {Ref, {error, {gun_failure, <<"stream owner stopped during setup">>}}}
+                    Parent ! {Ref, {error, {gun_failure, {transport_failure, <<"stream owner stopped during setup">>}}}}
             after remaining_ms(Deadline) ->
                 gun:cancel(Conn, StreamRef),
                 cleanup_conn(Pool, LeaseRef, Conn, ConnMon, closed),
-                Parent ! {Ref, {error, {gun_failure, <<"overall deadline exceeded reading error response">>}}}
+                Parent ! {Ref, {error, {gun_failure, overall_deadline_failure}}}
             end
     end.
 
@@ -300,7 +304,7 @@ loop(#state{parent=Parent, owner=Owner, owner_monitor=OwnerMonitor,
         {gun_data, Conn, StreamRef, nofin, Data} ->
             case byte_size(Data) > MaxChunkBytes of
                 true ->
-                    OnError(<<"response chunk byte limit exceeded">>),
+                    OnError({transport_failure, <<"response chunk byte limit exceeded">>}),
                     gun:cancel(Conn, StreamRef),
                     cleanup_conn(Pool, LeaseRef, Conn, ConnMon, closed);
                 false ->
@@ -310,7 +314,7 @@ loop(#state{parent=Parent, owner=Owner, owner_monitor=OwnerMonitor,
         {gun_data, Conn, StreamRef, fin, Data} ->
             case byte_size(Data) > MaxChunkBytes of
                 true ->
-                    OnError(<<"response chunk byte limit exceeded">>),
+                    OnError({transport_failure, <<"response chunk byte limit exceeded">>}),
                     cleanup_conn(Pool, LeaseRef, Conn, ConnMon, closed);
                 false ->
                     OnChunk(Data),
@@ -321,16 +325,16 @@ loop(#state{parent=Parent, owner=Owner, owner_monitor=OwnerMonitor,
             OnEof(),
             cleanup_conn(Pool, LeaseRef, Conn, ConnMon, ok);
         {gun_error, Conn, StreamRef, Reason} ->
-            OnError(format_error(Reason)),
+            OnError({transport_failure, format_error(Reason)}),
             cleanup_conn(Pool, LeaseRef, Conn, ConnMon, closed);
         {gun_error, Conn, Reason} ->
-            OnError(format_error(Reason)),
+            OnError({transport_failure, format_error(Reason)}),
             cleanup_conn(Pool, LeaseRef, Conn, ConnMon, closed);
         {gun_down, Conn, _Proto, Reason, _Killed} ->
-            OnError(format_error(Reason)),
+            OnError({transport_failure, format_error(Reason)}),
             cleanup_conn(Pool, LeaseRef, Conn, ConnMon, closed);
         {'DOWN', ConnMon, process, Conn, Reason} ->
-            OnError(format_error(Reason)),
+            OnError({transport_failure, format_error(Reason)}),
             cleanup_conn(Pool, LeaseRef, Conn, undefined, closed);
         {'DOWN', OwnerMonitor, process, Owner, _Reason} ->
             gun:cancel(Conn, StreamRef),
@@ -341,12 +345,12 @@ loop(#state{parent=Parent, owner=Owner, owner_monitor=OwnerMonitor,
             cleanup_conn(Pool, LeaseRef, Conn, ConnMon, closed),
             ok;
         {overall_deadline, StreamRef} ->
-            OnError(<<"overall deadline exceeded">>),
+            OnError(overall_deadline_failure),
             gun:cancel(Conn, StreamRef),
             cleanup_conn(Pool, LeaseRef, Conn, ConnMon, closed);
         _Other -> loop(State)
     after remaining_ms(Deadline) ->
-        OnError(<<"overall deadline exceeded">>),
+        OnError(overall_deadline_failure),
         gun:cancel(Conn, StreamRef),
         cleanup_conn(Pool, LeaseRef, Conn, ConnMon, closed)
     end.

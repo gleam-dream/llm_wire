@@ -6,6 +6,7 @@ import gleam/string
 import json/blueprint/codec
 import json/blueprint/number
 import json/blueprint/parser
+import json/blueprint/parser_limits
 import json/blueprint/runtime
 import json/blueprint/value
 import llm_wire/types
@@ -118,16 +119,6 @@ pub fn provider_schema(
   }
 }
 
-/// Projects the Blueprint subset admitted by Google's JSON Schema field.
-/// Google exposes this under `parametersJsonSchema`; it is deliberately kept
-/// as a provider-specific admission point even though its supported value
-/// projection currently matches the common OpenAI-compatible subset.
-pub fn google_function_parameters_schema(
-  schema: codec.Schema,
-) -> Result(json.Json, types.WireError) {
-  provider_schema(schema)
-}
-
 fn provider_schema_supported(schema: codec.Schema) -> Bool {
   case schema {
     codec.StringSchema
@@ -147,6 +138,16 @@ fn provider_schema_supported(schema: codec.Schema) -> Bool {
     | codec.TaggedSchema(_, _, _, _)
     | codec.NumberRangeSchema(_, _) -> False
   }
+}
+
+/// Projects the Blueprint subset admitted by Google's JSON Schema field.
+/// Google exposes this under `parametersJsonSchema`; it is deliberately kept
+/// as a provider-specific admission point even though its supported value
+/// projection currently matches the common OpenAI-compatible subset.
+pub fn google_function_parameters_schema(
+  schema: codec.Schema,
+) -> Result(json.Json, types.WireError) {
+  provider_schema(schema)
 }
 
 /// Strict structured-output schemas require a closed object at the root and
@@ -288,34 +289,17 @@ fn validate_google_strict_schema(
   }
 }
 
-/// Validates raw tool argument JSON string against an admitted Blueprint runtime contract.
-pub fn validate_tool_arguments(
-  contract: runtime.RuntimeContract,
-  args_json: String,
-) -> Result(Nil, types.WireError) {
-  case parser.parse_value_from_string(parser.default_limits(), args_json) {
-    Error(_) ->
-      Error(types.ProtocolError("Invalid JSON in tool call arguments"))
-    Ok(val) ->
-      case runtime.validate(contract, val) {
-        Error(err) ->
-          Error(types.ProtocolError(
-            "Tool call arguments failed schema validation: "
-            <> string.inspect(err),
-          ))
-        Ok(_) -> Ok(Nil)
-      }
-  }
-}
-
 /// Validates structured output string against an admitted Blueprint runtime contract
 /// and decodes using the target codec.
 pub fn validate_and_decode_structured_output(
   contract: runtime.RuntimeContract,
   output_codec: codec.Codec(a),
   output_json: String,
+  max_bytes: Int,
 ) -> Result(a, types.WireError) {
-  case parser.parse_value_from_string(parser.default_limits(), output_json) {
+  let assert Ok(parser_bounds) =
+    parser_limits.default() |> parser_limits.with_max_bytes(max_bytes)
+  case parser.parse_value_from_string(parser_bounds, output_json) {
     Error(_) ->
       Error(types.OutputValidationError("Invalid JSON in structured output"))
     Ok(val) ->

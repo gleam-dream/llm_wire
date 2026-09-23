@@ -8,11 +8,11 @@ import gleeunit/should
 import llm_wire/config
 import llm_wire/internal/api
 import llm_wire/internal/owner
-import llm_wire/internal/provider_config
 import llm_wire/internal/runtime
 import llm_wire/internal/stream_types
 import llm_wire/internal/tcp
 import llm_wire/pool
+import llm_wire/provider/openai as openai_provider
 import llm_wire/session
 import llm_wire/types
 
@@ -25,7 +25,7 @@ fn openai_prepared(port: Int, model_name: String) -> api.PreparedCall {
   let assert Ok(key) = types.api_key("sk-test-key")
   let assert Ok(ep) =
     types.endpoint("http://127.0.0.1:" <> string.inspect(port) <> "/v1")
-  let config = provider_config.OpenAIConfig(key, ep, None, None)
+  let config = api.openai_adapter(key, ep, None, None)
   let request = test_request(model_name)
   let assert Ok(prep) = api.prepare(config, request, types.default_limits())
   prep
@@ -85,7 +85,7 @@ pub fn pool_reuses_connection_for_sequential_requests_test() {
     types.endpoint("http://127.0.0.1:" <> string.inspect(server.port) <> "/v1")
   let assert Ok(model) = types.model_id("gpt-4o")
   let settings =
-    config.openai(key)
+    config.openai(openai_provider.options(key))
     |> config.with_endpoint(endpoint)
     |> config.with_pool(p)
   let request = types.new_request(model, [types.UserMessage("hello")])
@@ -294,8 +294,8 @@ pub fn pool_bounds_resources_and_enforces_waiter_timeout_test() {
   let result2 =
     runtime.stream_with_pool(p, prep, types.default_limits(), tight_deadlines)
 
-  // Must fail due to pool timeout / limit!
-  let assert Error(_) = result2
+  // Exhausting the remaining overall budget in pool checkout is a deadline.
+  let assert Error(types.DeadlineExceeded(types.OverallDeadline)) = result2
 
   // Clean up stream 1
   let _ = owner.close(stream1)

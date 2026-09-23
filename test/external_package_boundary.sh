@@ -16,14 +16,19 @@ gleam = ">= 1.18.0"
 
 [dependencies]
 gleam_stdlib = ">= 0.70.0 and < 1.0.0"
+gleam_json = ">= 3.0.0 and < 4.0.0"
+json_blueprint = { path = "$package_root/../json_blueprint" }
 llm_wire = { path = "$package_root" }
 EOF
 }
 
 positive="$scratch/positive"
 make_consumer "$positive"
+cp "$package_root/test/external_provider.gleam" "$positive/src/external_provider.gleam"
 cat >"$positive/src/consumer.gleam" <<'EOF'
+import external_provider
 import llm_wire/config
+import llm_wire/provider/openai
 import llm_wire/session
 import llm_wire/types
 
@@ -31,9 +36,13 @@ pub fn prepares_through_configured_session() {
   let assert Ok(key) = types.api_key("consumer-key")
   let assert Ok(endpoint) = types.endpoint("https://api.example.test/v1")
   let assert Ok(model) = types.model_id("consumer-model")
-  let settings = config.openai(key) |> config.with_endpoint(endpoint)
+  let settings =
+    config.openai(openai.options(key)) |> config.with_endpoint(endpoint)
   let request = types.new_request(model, [types.UserMessage("hello")])
-  session.prepare(settings, request)
+  let assert Ok(prepared) = session.prepare(settings, request)
+  let custom = config.from_provider(external_provider.adapter(endpoint))
+  let assert Ok(_) = session.prepare(custom, request)
+  prepared
 }
 EOF
 (cd "$positive" && gleam check --target erlang)
