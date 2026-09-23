@@ -6,6 +6,16 @@ continues interactions. `llm_wire/types` holds the request, message, tool call,
 and tool result values shared across those paths. Preparation checks local
 options and schemas before a network request.
 
+The package targets Gleam 1.18 or newer on Erlang/OTP. The checked-in Nix
+development shell uses OTP 28; other OTP versions have not been verified in
+this release candidate. The JavaScript target is unsupported. The current
+dependency manifest uses local Blueprint and Sinal path dependencies, so the
+package is not yet ready for an independent registry install.
+
+The initial release scope and remaining release decisions are recorded in
+[CHANGELOG.md](CHANGELOG.md). The exercised behavior is tracked in
+[DESIGN-COVERAGE.md](DESIGN-COVERAGE.md).
+
 ## Make a call
 
 Build provider options, then compose common execution settings. Preparation
@@ -173,7 +183,7 @@ let shutdown = pool.stop(owned_pool)
 
 ## Add an HTTP/SSE provider
 
-An application can build `provider.Adapter(provider.Spec(...))` and pass it to
+An application can build `provider.adapter(provider.Spec(...))` and pass it to
 `config.from_provider(adapter)`. The spec supplies provider identity, endpoint,
 auth or extra headers, request encoding, schema projection, and a reducer
 factory. `provider.reducer(state, step, terminal, retry)` keeps application
@@ -264,3 +274,22 @@ shims in this cleanup.
 | Structured output parsed with Blueprint's 10 MiB default               | Parser byte bound follows the smaller admitted per-block and total text limits                                            |
 | `types.with_provider_continuation`                                     | `session.prepare_continue` with the opaque continuation returned by `session.run`                                         |
 | Direct internal provider reducer and request hooks                     | Use `provider.Adapter`/`provider.Spec`/`provider.reducer`, then `config.from_provider`; internal transport is unsupported |
+
+## Local release checks
+
+Run these commands from this package in the Gleam/OTP dev shell, with the
+sibling Blueprint and Sinal source directories present for the current local
+dependencies:
+
+```sh
+gleam format --check src test
+gleam check
+gleam build
+gleam test
+sh test/external_package_boundary.sh
+nix flake check
+git diff --check
+```
+
+There is no hosted CI workflow yet. It must be added when the release
+dependency layout is fixed so a fresh checkout can run these gates.

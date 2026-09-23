@@ -19,6 +19,7 @@ gleam_stdlib = ">= 0.70.0 and < 1.0.0"
 gleam_json = ">= 3.0.0 and < 4.0.0"
 json_blueprint = { path = "$package_root/../json_blueprint" }
 llm_wire = { path = "$package_root" }
+sinal = { path = "$package_root/../sinal" }
 EOF
 }
 
@@ -27,10 +28,14 @@ make_consumer "$positive"
 cp "$package_root/test/external_provider.gleam" "$positive/src/external_provider.gleam"
 cat >"$positive/src/consumer.gleam" <<'EOF'
 import external_provider
+import json/blueprint/codec
+import json/blueprint/runtime
 import llm_wire/config
 import llm_wire/provider/openai
 import llm_wire/session
+import llm_wire/telemetry
 import llm_wire/types
+import sinal
 
 pub fn prepares_through_configured_session() {
   let assert Ok(key) = types.api_key("consumer-key")
@@ -43,6 +48,41 @@ pub fn prepares_through_configured_session() {
   let custom = config.from_provider(external_provider.adapter(endpoint))
   let assert Ok(_) = session.prepare(custom, request)
   prepared
+}
+
+pub fn prepares_schema_only_tool_and_structured_output() {
+  let assert Ok(key) = types.api_key("consumer-key")
+  let assert Ok(model) = types.model_id("consumer-model")
+  let assert Ok(name) = types.tool_name("lookup")
+  let assert Ok(contract) =
+    runtime.from_codec(codec.field("query", codec.string()))
+  let tool = types.tool_from_contract(name, "Lookup", contract)
+  let request =
+    types.new_request(model, [types.UserMessage("Find a result")])
+    |> types.with_tools([tool])
+  let settings = config.openai(openai.options(key))
+  let assert Ok(prepared) = session.prepare(settings, request)
+  let assert Ok(structured) =
+    session.prepare_structured(
+      settings,
+      request,
+      "answer",
+      codec.field("answer", codec.string()),
+    )
+  #(prepared, structured)
+}
+
+pub fn prepare_next_round(
+  pending: session.Continuation,
+  results: List(types.ToolResult),
+) -> Result(session.PreparedCall, types.WireError) {
+  session.prepare_continue(pending, results)
+}
+
+pub fn observe_with_sinal(
+  id: sinal.HandlerId,
+) -> Result(sinal.Attachment, sinal.AttachError) {
+  sinal.observe(id, telemetry.observation_event(), fn(_, _metadata) { Nil })
 }
 EOF
 (cd "$positive" && gleam check --target erlang)
