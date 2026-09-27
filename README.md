@@ -207,6 +207,44 @@ validation, and terminal admission. Adapters must retain bounded opaque replay
 state and enforce any wire-specific block limits when they emit aggregate-only
 terminals; the runtime cannot inspect a closure's captured memory.
 
+## Test without a network
+
+`llm_wire/testing` scripts provider replies for application tests. A script
+is a process that serves queued replies in order and records each admitted
+request. The replies enter the same stream owner, SSE framer, reducer, limits,
+deadlines, and terminal admission as a real response. No socket opens.
+
+```gleam
+import llm_wire/session
+import llm_wire/testing
+import llm_wire/types
+
+let script =
+  testing.start([
+    testing.tool_calls("", [
+      testing.ScriptedCall("call_1", "lookup", "{\"query\":\"gleam\"}"),
+    ]),
+    testing.text("Found it.") |> testing.with_usage(types.Usage(12, 3, 15)),
+  ])
+let assert Ok(prepared) = session.prepare(testing.config(script), request)
+let assert Ok(session.RunToolCalls(_, [call], continuation, _)) =
+  session.run(prepared)
+let assert Ok(next) =
+  session.prepare_continue(continuation, [types.ToolResult(call.id, "gleam.run")])
+let assert Ok(session.RunText("Found it.", _)) = session.run(next)
+let assert [_, second] = testing.requests(script)
+// second.request.messages ends with the assistant calls and the tool result.
+```
+
+`testing.config(script)` selects a provider-neutral scripted provider. Its
+replies come from `text`, `tool_calls`, `refusal`, and `output_limited`.
+`testing.with_script(settings, script)` routes any configuration, including a
+built-in provider, through the script; those replies carry that provider's raw
+SSE bytes in `testing.Events(chunks)`. `testing.Interrupted(chunks)` ends with
+a transport failure, and `testing.Status(code, body)` fails before a stream
+opens. A request with no reply left fails with `ConfigurationError` and is
+still recorded.
+
 ## Observe and integrate
 
 `llm_wire/telemetry.observation_event()` is a typed Sinal event. Subscribe

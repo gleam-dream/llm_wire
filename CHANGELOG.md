@@ -26,6 +26,12 @@ candidate API.
   outcomes. Callers that need a `WireError` map the error explicitly.
   Provider-returned names use the same grammar; a response naming a tool
   outside it fails with `ProtocolError`.
+- Added `llm_wire/testing`, a supported deterministic test transport. A
+  `Script` serves queued replies to the ordinary session runtime without a
+  socket and records each admitted request. `testing.config` selects a
+  provider-neutral scripted provider; `testing.with_script` routes any
+  configuration, including built-in providers, through raw scripted SSE.
+  Downstream packages no longer need a loopback HTTP stub.
 
 ### Current limits
 

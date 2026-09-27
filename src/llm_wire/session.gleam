@@ -119,24 +119,14 @@ fn open_source(
   call: api.PreparedCall,
   settings: config.Config,
 ) -> Result(owner.Stream, client.OpenFailure) {
-  let opened = case config.pool(settings) {
-    None ->
-      client.open_prepared_stream(
-        call,
-        config.limits(settings),
-        config.deadlines(settings),
-        ca_override(settings),
-      )
-    Some(owned_pool) ->
-      client.open_prepared_stream_with_pool(
-        call,
-        config.limits(settings),
-        config.deadlines(settings),
-        ca_override(settings),
-        Some(pool.pool_pid(owned_pool)),
-      )
-  }
-  opened
+  client.open_prepared_stream_with(
+    call,
+    config.limits(settings),
+    config.deadlines(settings),
+    ca_override(settings),
+    option.map(config.pool(settings), pool.pool_pid),
+    config.connector(settings),
+  )
 }
 
 pub fn run(prepared: PreparedCall) -> Result(RunResult, RunFailure) {

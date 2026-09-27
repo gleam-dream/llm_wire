@@ -1,5 +1,5 @@
 import gleam/erlang/process
-import gleam/option.{type Option, None, unwrap}
+import gleam/option.{type Option, None, Some, unwrap}
 import gleam/result
 import llm_wire/internal/api
 import llm_wire/internal/owner
@@ -38,6 +38,26 @@ pub fn open_prepared_stream_with_pool(
   tls_override: Option(tls.TlsMode),
   pool_pid: Option(process.Pid),
 ) -> Result(owner.Stream, OpenFailure) {
+  open_prepared_stream_with(
+    prepared,
+    limits,
+    deadlines,
+    tls_override,
+    pool_pid,
+    None,
+  )
+}
+
+/// A connector, when present, replaces the network connection and the pool.
+/// Transport admission, the owner, and the reducer are unchanged.
+pub fn open_prepared_stream_with(
+  prepared: api.PreparedCall,
+  limits: types.Limits,
+  deadlines: types.Deadlines,
+  tls_override: Option(tls.TlsMode),
+  pool_pid: Option(process.Pid),
+  connector: Option(transport.Connector),
+) -> Result(owner.Stream, OpenFailure) {
   let tools = api.prepared_tools(prepared)
   let prepared_tls_mode = api.prepared_tls_mode(prepared)
   let tls_mode = unwrap(tls_override, prepared_tls_mode)
@@ -45,7 +65,7 @@ pub fn open_prepared_stream_with_pool(
     api.validate_prepared_transport(prepared, tls_mode)
     |> result.map_error(before_request),
   )
-  open_stream(prepared, limits, deadlines, tools, tls_mode, pool_pid)
+  open_stream(prepared, limits, deadlines, tools, tls_mode, pool_pid, connector)
 }
 
 fn open_stream(
@@ -55,6 +75,7 @@ fn open_stream(
   tools: List(types.ToolDefinition),
   tls_mode: tls.TlsMode,
   pool_pid: Option(process.Pid),
+  connector: Option(transport.Connector),
 ) -> Result(owner.Stream, OpenFailure) {
   let overall_started_ms = transport.monotonic_millis()
   let dummy_transport =
@@ -74,24 +95,36 @@ fn open_stream(
           let on_error = fn(error) { owner.feed_error(stream, error) }
           let on_request_sent = fn() { owner.request_was_sent(stream) }
 
-          case
-            transport.connect_and_stream_with_pool(
-              pool_pid,
-              prepared,
-              remaining_overall_ms(
-                overall_started_ms,
-                deadlines.overall_timeout_ms,
-              ),
-              tls_mode,
-              16_384,
-              limits.chunk_bytes_limit,
-              owner_pid,
-              on_chunk,
-              on_eof,
-              on_error,
-              on_request_sent,
-            )
-          {
+          let connected = case connector {
+            Some(transport.Connector(connect)) ->
+              connect(
+                prepared,
+                limits.chunk_bytes_limit,
+                owner_pid,
+                on_chunk,
+                on_eof,
+                on_error,
+                on_request_sent,
+              )
+            None ->
+              transport.connect_and_stream_with_pool(
+                pool_pid,
+                prepared,
+                remaining_overall_ms(
+                  overall_started_ms,
+                  deadlines.overall_timeout_ms,
+                ),
+                tls_mode,
+                16_384,
+                limits.chunk_bytes_limit,
+                owner_pid,
+                on_chunk,
+                on_eof,
+                on_error,
+                on_request_sent,
+              )
+          }
+          case connected {
             Error(error) -> {
               let _ = owner.close(stream)
               Error(after_transport_attempt(error))

@@ -14,6 +14,23 @@ pub type TransportHandle {
   )
 }
 
+/// Replaces the network connection for one prepared call. `llm_wire/testing`
+/// uses it to deliver scripted bytes to the same stream owner, reducer, and
+/// session path as a real response; the runtime never opens a socket for it.
+pub type Connector {
+  Connector(
+    connect: fn(
+      api.PreparedCall,
+      Int,
+      process.Pid,
+      fn(BitArray) -> Nil,
+      fn() -> Nil,
+      fn(transport_failure.Failure) -> Nil,
+      fn() -> Nil,
+    ) -> Result(TransportHandle, types.WireError),
+  )
+}
+
 pub fn owner_pid(handle: TransportHandle) -> process.Pid {
   handle.owner_pid
 }

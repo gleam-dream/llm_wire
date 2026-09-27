@@ -2,6 +2,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import llm_wire/internal/api
+import llm_wire/internal/transport
 import llm_wire/pool
 import llm_wire/provider
 import llm_wire/provider/anthropic as anthropic_provider
@@ -18,6 +19,7 @@ pub opaque type Config {
     deadlines: types.Deadlines,
     pool: Option(pool.Pool),
     ca_cert_file: Option(String),
+    connector: Option(transport.Connector),
   )
 }
 
@@ -30,6 +32,7 @@ pub fn openai(options: openai_provider.Options) -> Config {
     types.default_deadlines(),
     None,
     None,
+    None,
   )
 }
 
@@ -40,6 +43,7 @@ pub fn anthropic(options: anthropic_provider.Options) -> Config {
     api.anthropic_adapter(key, endpoint, version),
     types.default_limits(),
     types.default_deadlines(),
+    None,
     None,
     None,
   )
@@ -55,13 +59,21 @@ pub fn google(options: google_provider.Options) -> Config {
     types.default_deadlines(),
     None,
     None,
+    None,
   )
 }
 
 /// Uses an application-defined HTTP/SSE adapter with the same bounded session
 /// runtime as the built-in providers.
 pub fn from_provider(adapter: provider.Adapter) -> Config {
-  Config(adapter, types.default_limits(), types.default_deadlines(), None, None)
+  Config(
+    adapter,
+    types.default_limits(),
+    types.default_deadlines(),
+    None,
+    None,
+    None,
+  )
 }
 
 pub fn with_endpoint(config: Config, endpoint: types.Endpoint) -> Config {
@@ -85,6 +97,20 @@ pub fn with_pool(config: Config, owned_pool: pool.Pool) -> Config {
 /// rejects an empty path or unsuitable endpoint. The file is read on connect.
 pub fn with_ca_cert_file(config: Config, path: String) -> Config {
   Config(..config, ca_cert_file: Some(path))
+}
+
+/// Replaces the network connection; used by `llm_wire/testing`.
+@internal
+pub fn with_connector(
+  config: Config,
+  connector: transport.Connector,
+) -> Config {
+  Config(..config, connector: Some(connector))
+}
+
+@internal
+pub fn connector(config: Config) -> Option(transport.Connector) {
+  config.connector
 }
 
 @internal

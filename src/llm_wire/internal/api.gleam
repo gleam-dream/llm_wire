@@ -128,6 +128,11 @@ pub fn prepared_request_json(prepared: PreparedCall) -> String {
   prepared.body
 }
 
+/// The admitted request this call encodes, for the scripted test transport.
+pub fn prepared_request(prepared: PreparedCall) -> types.Request {
+  prepared.request
+}
+
 pub fn prepared_tools(prepared: PreparedCall) -> List(types.ToolDefinition) {
   prepared.request.tools
 }

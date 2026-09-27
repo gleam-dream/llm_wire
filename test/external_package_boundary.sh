@@ -34,6 +34,7 @@ import llm_wire/config
 import llm_wire/provider/openai
 import llm_wire/session
 import llm_wire/telemetry
+import llm_wire/testing
 import llm_wire/types
 import sinal
 
@@ -77,6 +78,15 @@ pub fn prepare_next_round(
   results: List(types.ToolResult),
 ) -> Result(session.PreparedCall, types.WireError) {
   session.prepare_continue(pending, results)
+}
+
+pub fn scripts_a_provider_without_a_socket() {
+  let assert Ok(model) = types.model_id("consumer-model")
+  let script = testing.start([testing.text("scripted")])
+  let request = types.new_request(model, [types.UserMessage("hello")])
+  let assert Ok(prepared) = session.prepare(testing.config(script), request)
+  let outcome = session.run(prepared)
+  #(outcome, testing.requests(script))
 }
 
 pub fn observe_with_sinal(
