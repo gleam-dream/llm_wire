@@ -28,8 +28,9 @@ pub fn start_provider_stream(
   deadlines: types.Deadlines,
   transport: TransportPort,
   tools: List(types.ToolDefinition),
+  checks: types.ToolCallChecks,
 ) -> Result(Stream, types.WireError) {
-  start_stream(identity, reducer, limits, deadlines, transport, tools)
+  start_stream(identity, reducer, limits, deadlines, transport, tools, checks)
 }
 
 type Message {
@@ -62,6 +63,7 @@ type State {
     provider: provider.Reducer,
     provider_identity: types.Provider,
     admitted_tools: List(types.ToolDefinition),
+    tool_call_checks: types.ToolCallChecks,
     queue: List(stream_types.ReadResult),
     queue_count: Int,
     queue_bytes: Int,
@@ -117,6 +119,7 @@ fn start_stream(
   deadlines: types.Deadlines,
   transport: TransportPort,
   tools: List(types.ToolDefinition),
+  checks: types.ToolCallChecks,
 ) -> Result(Stream, types.WireError) {
   let consumer_pid = process.self()
   let builder =
@@ -157,6 +160,7 @@ fn start_stream(
           provider: reducer,
           provider_identity: identity,
           admitted_tools: tools,
+          tool_call_checks: checks,
           queue: [],
           queue_count: 0,
           queue_bytes: 0,
@@ -926,10 +930,10 @@ fn terminal_name(terminal: stream_types.TerminalOutcome) -> String {
     stream_types.StreamFinished(stream_types.CompletedText(_), _) ->
       "completed_text"
     stream_types.StreamFinished(stream_types.Refused(_), _) -> "refused"
-    stream_types.StreamFinished(stream_types.CompletedToolCalls(_, _, _), _) ->
+    stream_types.StreamFinished(stream_types.CompletedToolCalls(..), _) ->
       "completed_tools"
     stream_types.StreamFinished(
-      stream_types.CompletedToolCallsWithContinuation(_, _, _, _),
+      stream_types.CompletedToolCallsWithContinuation(..),
       _,
     ) -> "completed_tools"
     stream_types.StreamFinished(stream_types.OutputLimited(_, _), _) ->
@@ -1020,12 +1024,12 @@ fn terminal_provider(
         calls,
         response_id,
       ))
-      use Nil <- result.try(validate_terminal_calls(state, calls))
+      use issues <- result.try(admit_terminal_calls(state, calls))
       Ok(
         Some(case replay {
           None ->
             stream_types.StreamFinished(
-              stream_types.CompletedToolCalls(text, calls, response_id),
+              stream_types.CompletedToolCalls(text, calls, response_id, issues),
               usage,
             )
           Some(value) ->
@@ -1035,6 +1039,7 @@ fn terminal_provider(
                 calls,
                 response_id,
                 stream_types.CustomProviderContinuation(value),
+                issues,
               ),
               usage,
             )
@@ -1137,10 +1142,14 @@ fn option_string_bytes(value: Option(String)) -> Int {
   }
 }
 
-fn validate_terminal_calls(
+/// Admits a completed tool-call batch. Duplicate IDs and byte bounds always
+/// fail the response. An undeclared tool or invalid arguments fail it under
+/// `RejectInvalidToolCalls` and become per-call issues under
+/// `ReportInvalidToolCalls`; every call stays in provider order either way.
+fn admit_terminal_calls(
   state: State,
   calls: List(types.ToolCall),
-) -> Result(Nil, types.WireError) {
+) -> Result(List(types.ToolCallIssue), types.WireError) {
   let count = list.length(calls)
   use Nil <- result.try(case count > state.limits.active_blocks_limit {
     True ->
@@ -1151,43 +1160,63 @@ fn validate_terminal_calls(
       ))
     False -> Ok(Nil)
   })
-  let empty: Result(#(List(types.CallId), Int), types.WireError) = Ok(#([], 0))
-  use _ <- result.try(
+  let empty: Result(
+    #(List(types.CallId), Int, List(types.ToolCallIssue)),
+    types.WireError,
+  ) = Ok(#([], 0, []))
+  use #(_, _, issues) <- result.try(
     list.fold(calls, empty, fn(acc, call) {
-      use #(seen, bytes) <- result.try(acc)
+      use #(seen, bytes, issues) <- result.try(acc)
       use Nil <- result.try(case list.contains(seen, call.id) {
         True -> Error(types.ProtocolError("Duplicate tool call ID"))
         False -> Ok(Nil)
       })
-      use tool <- result.try(
-        case
-          list.find(state.admitted_tools, fn(tool) {
-            types.tool_name_of(tool) == call.name
-          })
-        {
-          Ok(value) -> Ok(value)
-          Error(Nil) ->
-            Error(types.ProtocolError("Tool not declared in admitted catalog"))
-        },
-      )
-      use Nil <- result.try(types.validate_tool_arguments(
-        tool,
-        state.limits.argument_bytes_per_call_limit,
+      let max_bytes = state.limits.argument_bytes_per_call_limit
+      use Nil <- result.try(types.check_argument_bytes(
+        max_bytes,
         call.arguments_json,
       ))
       let total = bytes + string.byte_size(call.arguments_json)
-      case total > state.limits.total_argument_bytes_limit {
-        True ->
-          Error(types.ResourceLimitExceeded(
-            "total_argument_bytes_limit",
-            state.limits.total_argument_bytes_limit,
-            total,
-          ))
-        False -> Ok(#([call.id, ..seen], total))
+      use Nil <- result.try(
+        case total > state.limits.total_argument_bytes_limit {
+          True ->
+            Error(types.ResourceLimitExceeded(
+              "total_argument_bytes_limit",
+              state.limits.total_argument_bytes_limit,
+              total,
+            ))
+          False -> Ok(Nil)
+        },
+      )
+      let issue = case
+        list.find(state.admitted_tools, fn(tool) {
+          types.tool_name_of(tool) == call.name
+        })
+      {
+        Error(Nil) -> Some(types.UnknownTool(call.id))
+        Ok(tool) ->
+          case
+            types.check_tool_arguments(tool, max_bytes, call.arguments_json)
+          {
+            Ok(Nil) -> None
+            Error(reason) -> Some(types.InvalidArguments(call.id, reason))
+          }
       }
+      use issues <- result.try(case issue, state.tool_call_checks {
+        None, _ -> Ok(issues)
+        Some(issue), types.ReportInvalidToolCalls -> Ok([issue, ..issues])
+        Some(types.UnknownTool(_)), types.RejectInvalidToolCalls ->
+          Error(types.ProtocolError(
+            "Tool not declared in admitted catalog: "
+            <> types.tool_name_to_string(call.name),
+          ))
+        Some(types.InvalidArguments(_, reason)), types.RejectInvalidToolCalls ->
+          Error(types.ProtocolError(reason))
+      })
+      Ok(#([call.id, ..seen], total, issues))
     }),
   )
-  Ok(Nil)
+  Ok(list.reverse(issues))
 }
 
 fn validate_partial_calls(

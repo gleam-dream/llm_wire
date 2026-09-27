@@ -125,6 +125,26 @@ the same bounded schema validation as a codec-backed tool.
 Handle another `RunToolCalls` result with another continuation round if your
 application permits it. Set an application limit on tool rounds.
 
+By default a response whose call names an undeclared tool, or whose arguments
+are not valid JSON or fail the tool schema, fails with `ProtocolError`. An agent
+that answers such calls itself selects reporting instead:
+
+```gleam
+let settings =
+  config.openai(openai.options(key))
+  |> config.with_tool_call_checks(types.ReportInvalidToolCalls)
+// After session.run returns RunToolCalls(_, calls, continuation, _):
+let issues = session.tool_call_issues(continuation)
+// [types.UnknownTool(call_id), types.InvalidArguments(call_id, reason), ...]
+```
+
+Every call stays in `calls`, and `prepare_continue` still needs one
+`ToolResult` per call, so the application returns an error result for each
+reported call. Argument byte limits, duplicate call IDs, and names outside the
+tool-name grammar still fail the response. Streamed terminals carry the same
+continuation, and `session.structured_tool_call_issues` serves structured
+continuations.
+
 ## Structured output and streaming
 
 `session.prepare_structured(settings, request, name, codec)` keeps the output

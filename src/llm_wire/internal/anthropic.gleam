@@ -3,7 +3,6 @@ import gleam/dynamic/decode
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/result
 import gleam/string
 import llm_wire/internal/sse
 import llm_wire/internal/stream_types
@@ -26,7 +25,6 @@ pub opaque type Reducer {
     semantic_progress_observed: Bool,
     server_tool_observed: Bool,
     terminal_outcome: Option(stream_types.TerminalOutcome),
-    admitted_tools: List(types.ToolDefinition),
     seen_call_ids: List(String),
   )
 }
@@ -59,18 +57,20 @@ pub fn new(limits: types.Limits) -> Reducer {
     semantic_progress_observed: False,
     server_tool_observed: False,
     terminal_outcome: None,
-    admitted_tools: [],
     seen_call_ids: [],
   )
 }
 
+/// Admits the catalog so duplicate names fail before transport. Whether a
+/// returned call names a declared tool with valid arguments is decided by the
+/// runtime's terminal admission, not by this reducer.
 pub fn new_with_tools(
   limits: types.Limits,
   tools: List(types.ToolDefinition),
 ) -> Result(Reducer, types.WireError) {
   case types.admit_tool_catalog(tools) {
     Error(error) -> Error(error)
-    Ok(admitted) -> Ok(Reducer(..new(limits), admitted_tools: admitted))
+    Ok(_) -> Ok(new(limits))
   }
 }
 
@@ -295,56 +295,35 @@ fn handle_content_block_start(
                           ))
                         False -> {
                           case
-                            list.any(reducer.admitted_tools, fn(tool) {
-                              types.tool_name_to_string(types.tool_name_of(tool))
-                              == name_str
-                            })
+                            types.call_id(id_str),
+                            types.provider_tool_name(name_str)
                           {
-                            False ->
-                              Error(types.ProtocolError(
-                                "Tool call for unadmitted tool: " <> name_str,
-                              ))
-                            True -> {
-                              case
-                                types.call_id(id_str),
-                                types.provider_tool_name(name_str)
-                              {
-                                Ok(call_id), Ok(tool_name) -> {
-                                  let updated_blocks =
-                                    dict.insert(
-                                      reducer.blocks,
-                                      payload.index,
-                                      ToolUseBlock(
-                                        call_id,
-                                        tool_name,
-                                        "",
-                                        False,
-                                      ),
-                                    )
-                                  let updated_seen_calls = [
-                                    id_str,
-                                    ..reducer.seen_call_ids
-                                  ]
-                                  Ok(
-                                    #(
-                                      Reducer(
-                                        ..reducer,
-                                        blocks: updated_blocks,
-                                        block_order: updated_order,
-                                        seen_call_ids: updated_seen_calls,
-                                        active_blocks_count: reducer.active_blocks_count
-                                          + 1,
-                                      ),
-                                      [],
-                                    ),
-                                  )
-                                }
-                                _, _ ->
-                                  Error(types.ProtocolError(
-                                    "Invalid call_id or tool_name in tool_use block",
-                                  ))
-                              }
+                            Ok(call_id), Ok(tool_name) -> {
+                              let updated_blocks =
+                                dict.insert(
+                                  reducer.blocks,
+                                  payload.index,
+                                  ToolUseBlock(call_id, tool_name, "", False),
+                                )
+                              let updated_seen_calls = [
+                                id_str,
+                                ..reducer.seen_call_ids
+                              ]
+                              Ok(
+                                #(
+                                  Reducer(
+                                    ..reducer,
+                                    blocks: updated_blocks,
+                                    block_order: updated_order,
+                                    seen_call_ids: updated_seen_calls,
+                                    active_blocks_count: reducer.active_blocks_count
+                                      + 1,
+                                  ),
+                                  [],
+                                ),
+                              )
                             }
+                            Error(error), _ | _, Error(error) -> Error(error)
                           }
                         }
                       }
@@ -670,41 +649,24 @@ fn handle_content_block_stop(
                 True ->
                   Error(types.ProtocolError("Duplicate content_block_stop"))
                 False -> {
-                  let tool_nm = types.tool_name_to_string(name)
-                  case
-                    list.find(reducer.admitted_tools, fn(definition) {
-                      types.tool_name_to_string(types.tool_name_of(definition))
-                      == tool_nm
-                    })
-                  {
-                    Ok(admitted) -> {
-                      use Nil <- result.try(types.validate_tool_arguments(
-                        admitted,
-                        reducer.limits.argument_bytes_per_call_limit,
-                        args,
-                      ))
-                      let updated_blocks =
-                        dict.insert(
-                          reducer.blocks,
-                          payload.index,
-                          ToolUseBlock(call_id, name, args, True),
-                        )
-                      Ok(
-                        #(
-                          Reducer(
-                            ..reducer,
-                            blocks: updated_blocks,
-                            semantic_progress_observed: True,
-                          ),
-                          [],
-                        ),
-                      )
-                    }
-                    Error(Nil) ->
-                      Error(types.ProtocolError(
-                        "Tool call for unadmitted tool: " <> tool_nm,
-                      ))
-                  }
+                  // Catalog and schema admission belong to the runtime's
+                  // terminal check, which may report rather than reject.
+                  let updated_blocks =
+                    dict.insert(
+                      reducer.blocks,
+                      payload.index,
+                      ToolUseBlock(call_id, name, args, True),
+                    )
+                  Ok(
+                    #(
+                      Reducer(
+                        ..reducer,
+                        blocks: updated_blocks,
+                        semantic_progress_observed: True,
+                      ),
+                      [],
+                    ),
+                  )
                 }
               }
             }
@@ -852,6 +814,7 @@ fn handle_message_stop(
               all_text,
               all_calls,
               reducer.response_id,
+              [],
             ),
             final_usage,
           )

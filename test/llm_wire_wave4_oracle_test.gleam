@@ -172,7 +172,7 @@ pub fn local_google_provider_state_reducer_test() {
   let assert Ok(#(reducer, _)) = google.step(reducer, event)
   case google.terminal(reducer) {
     Some(stream_types.StreamFinished(
-      stream_types.CompletedToolCallsWithContinuation(_, [call], _, _),
+      stream_types.CompletedToolCallsWithContinuation(_, [call], _, _, []),
       _,
     )) -> call.provider_state |> should.equal(Some("sig_123"))
     _ -> should.fail()

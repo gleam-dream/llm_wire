@@ -1,10 +1,15 @@
+import gleam/json
 import gleam/option.{None, Some}
 import gleeunit/should
+import llm_wire/config
 import llm_wire/internal/anthropic
 import llm_wire/internal/openai
 import llm_wire/internal/owner
 import llm_wire/internal/sse
 import llm_wire/internal/stream_types
+import llm_wire/provider/openai as openai_provider
+import llm_wire/session
+import llm_wire/testing
 import llm_wire/types
 import owner_provider_helper
 import tool_fixtures
@@ -244,49 +249,39 @@ pub fn terminal_cannot_bypass_queue_admission_failure_test() {
   Nil
 }
 
-pub fn finding_1_unadmitted_tool_is_rejected_before_completion_test() {
-  let reducer = openai.new(types.default_limits())
-  let event =
-    sse.ServerSentEvent(
-      event: Some("response.output_item.added"),
-      data: "{\"output_index\":0,\"item\":{\"id\":\"item_1\",\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"unknown\"}}",
-      id: None,
-      retry: None,
-    )
-
-  openai.step(reducer, event)
-  |> should.be_error
+// Finding 1: completed calls are admitted by the runtime before any pending
+// turn is returned; the reducer only decodes them.
+pub fn finding_1_unadmitted_tool_is_rejected_before_a_pending_turn_test() {
+  assert_openai_call_rejected("unknown", "{\"city\":\"Oslo\"}")
 }
 
 pub fn finding_1_invalid_native_schema_arguments_are_not_emitted_test() {
-  let tool = tool_fixtures.string_field_tool("weather", "city")
-  let assert Ok(reducer) = openai.new_with_tools(types.default_limits(), [tool])
-  let started =
-    sse.ServerSentEvent(
-      event: Some("response.output_item.added"),
-      data: "{\"output_index\":0,\"item\":{\"id\":\"item_1\",\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"weather\"}}",
-      id: None,
-      retry: None,
-    )
-  let assert Ok(#(reducer, _)) = openai.step(reducer, started)
-  let arguments =
-    sse.ServerSentEvent(
-      event: Some("response.function_call_arguments.delta"),
-      data: "{\"output_index\":0,\"item_id\":\"item_1\",\"delta\":\"{\\\"city\\\":42}\"}",
-      id: None,
-      retry: None,
-    )
-  let assert Ok(#(reducer, _)) = openai.step(reducer, arguments)
-  let completed =
-    sse.ServerSentEvent(
-      event: Some("response.output_item.done"),
-      data: "{\"output_index\":0,\"item\":{\"id\":\"item_1\"}}",
-      id: None,
-      retry: None,
-    )
+  assert_openai_call_rejected("weather", "{\"city\":42}")
+}
 
-  openai.step(reducer, completed)
-  |> should.be_error
+fn assert_openai_call_rejected(name: String, arguments: String) -> Nil {
+  let assert Ok(key) = types.api_key("sk-scripted")
+  let assert Ok(model) = types.model_id("regression-model")
+  let body =
+    "event: response.output_item.added\ndata: {\"output_index\":0,\"item\":{\"id\":\"item_1\",\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\""
+    <> name
+    <> "\"}}\n\n"
+    <> "event: response.function_call_arguments.delta\ndata: {\"output_index\":0,\"item_id\":\"item_1\",\"delta\":"
+    <> json.to_string(json.string(arguments))
+    <> "}\n\n"
+    <> "event: response.output_item.done\ndata: {\"output_index\":0,\"item\":{\"id\":\"item_1\"}}\n\n"
+    <> "event: response.completed\ndata: {\"response\":{\"id\":\"r1\",\"status\":\"completed\"}}\n\n"
+  let script = testing.start([testing.Events([body])])
+  let settings =
+    config.openai(openai_provider.options(key)) |> testing.with_script(script)
+  let request =
+    types.new_request(model, [types.UserMessage("Weather?")])
+    |> types.with_tools([tool_fixtures.string_field_tool("weather", "city")])
+  let assert Ok(prepared) = session.prepare(settings, request)
+  case session.run(prepared) {
+    Error(session.RunFailure(types.ProtocolError(_), _)) -> Nil
+    _ -> should.fail()
+  }
 }
 
 pub fn finding_1_duplicate_catalog_names_are_rejected_test() {

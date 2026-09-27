@@ -14,7 +14,6 @@ import llm_wire/types
 pub opaque type Reducer {
   Reducer(
     limits: types.Limits,
-    admitted_tools: List(types.ToolDefinition),
     text_buffer: String,
     tool_buffers: Dict(String, ToolBuffer),
     tool_order: List(String),
@@ -44,7 +43,6 @@ pub type ToolBuffer {
 pub fn new(limits: types.Limits) -> Reducer {
   Reducer(
     limits: limits,
-    admitted_tools: [],
     text_buffer: "",
     tool_buffers: dict.new(),
     tool_order: [],
@@ -61,13 +59,16 @@ pub fn new(limits: types.Limits) -> Reducer {
   )
 }
 
+/// Admits the catalog so duplicate names fail before transport. Whether a
+/// returned call names a declared tool with valid arguments is decided by the
+/// runtime's terminal admission, not by this reducer.
 pub fn new_with_tools(
   limits: types.Limits,
   tools: List(types.ToolDefinition),
 ) -> Result(Reducer, types.WireError) {
   case types.admit_tool_catalog(tools) {
     Error(error) -> Error(error)
-    Ok(admitted) -> Ok(Reducer(..new(limits), admitted_tools: admitted))
+    Ok(_) -> Ok(new(limits))
   }
 }
 
@@ -504,8 +505,7 @@ fn apply_finish_reason(
           Ok(Reducer(..reducer, terminal_outcome: Some(outcome)))
         }
         _ -> {
-          // Validate every tool call against admitted tools
-          use calls <- result.try(validate_and_build_tool_calls(reducer))
+          use calls <- result.try(build_tool_calls(reducer))
           let outcome = case reducer.has_thought_signature {
             True ->
               stream_types.StreamFinished(
@@ -516,6 +516,7 @@ fn apply_finish_reason(
                   stream_types.GoogleProviderContinuation(list.reverse(
                     reducer.provider_parts,
                   )),
+                  [],
                 ),
                 reducer.usage,
               )
@@ -525,6 +526,7 @@ fn apply_finish_reason(
                   reducer.text_buffer,
                   calls,
                   reducer.response_id,
+                  [],
                 ),
                 reducer.usage,
               )
@@ -613,44 +615,23 @@ fn apply_finish_reason(
   }
 }
 
-fn validate_and_build_tool_calls(
+/// Catalog and schema admission belong to the runtime's terminal check, which
+/// may report rather than reject.
+fn build_tool_calls(
   reducer: Reducer,
 ) -> Result(List(types.ToolCall), types.WireError) {
-  let empty: Result(List(types.ToolCall), types.WireError) = Ok([])
-  list.fold(reducer.tool_order, empty, fn(acc, raw_id) {
-    use collected <- result.try(acc)
+  list.try_map(reducer.tool_order, fn(raw_id) {
     case dict.get(reducer.tool_buffers, raw_id) {
       Error(Nil) ->
         Error(types.ProtocolError("Missing tool buffer for ID: " <> raw_id))
-      Ok(buf) -> {
-        let name_str = types.tool_name_to_string(buf.name)
-        case
-          list.find(reducer.admitted_tools, fn(tool) {
-            types.tool_name_to_string(types.tool_name_of(tool)) == name_str
-          })
-        {
-          Error(Nil) ->
-            Error(types.ProtocolError(
-              "Tool not declared in admitted catalog: " <> name_str,
-            ))
-          Ok(tool_def) -> {
-            use Nil <- result.try(types.validate_tool_arguments(
-              tool_def,
-              reducer.limits.argument_bytes_per_call_limit,
-              buf.arguments,
-            ))
-            let call =
-              types.ToolCall(
-                buf.call_id,
-                buf.name,
-                buf.arguments,
-                buf.provider_id,
-                buf.provider_state,
-              )
-            Ok(list.append(collected, [call]))
-          }
-        }
-      }
+      Ok(buf) ->
+        Ok(types.ToolCall(
+          buf.call_id,
+          buf.name,
+          buf.arguments,
+          buf.provider_id,
+          buf.provider_state,
+        ))
     }
   })
 }

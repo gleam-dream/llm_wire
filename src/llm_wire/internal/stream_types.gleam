@@ -12,16 +12,20 @@ pub type ProviderContinuation {
 pub type Outcome {
   CompletedText(text: String)
   Refused(reason: String)
+  /// `issues` is filled only by the runtime's terminal admission; a reducer
+  /// reports none.
   CompletedToolCalls(
     text: String,
     calls: List(types.ToolCall),
     response_id: Option(String),
+    issues: List(types.ToolCallIssue),
   )
   CompletedToolCallsWithContinuation(
     text: String,
     calls: List(types.ToolCall),
     response_id: Option(String),
     provider_continuation: ProviderContinuation,
+    issues: List(types.ToolCallIssue),
   )
   OutputLimited(partial_text: String, partial_calls: List(types.ToolCall))
 }

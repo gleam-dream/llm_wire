@@ -287,7 +287,7 @@ pub opaque type ToolDefinition {
     description: String,
     schema: codec.Schema,
     contract: runtime.RuntimeContract,
-    decode_arguments: fn(runtime.ValidatedValue) -> Result(Nil, WireError),
+    decode_arguments: fn(runtime.ValidatedValue) -> Result(Nil, String),
   )
 }
 
@@ -309,10 +309,10 @@ pub fn tool_from_codec(
               case runtime.decode(input_codec, validated) {
                 Ok(_) -> Ok(Nil)
                 Error(error) ->
-                  Error(ProtocolError(
+                  Error(
                     "Tool arguments failed native decode: "
                     <> string.inspect(error),
-                  ))
+                  )
               }
             }),
           )
@@ -351,6 +351,22 @@ pub fn validate_tool_arguments(
   max_bytes: Int,
   args_json: String,
 ) -> Result(Nil, WireError) {
+  case check_argument_bytes(max_bytes, args_json) {
+    Error(error) -> Error(error)
+    Ok(Nil) ->
+      case check_tool_arguments(definition, max_bytes, args_json) {
+        Ok(Nil) -> Ok(Nil)
+        Error(reason) -> Error(ProtocolError(reason))
+      }
+  }
+}
+
+/// The per-call argument bound. Exceeding it fails the whole response.
+@internal
+pub fn check_argument_bytes(
+  max_bytes: Int,
+  args_json: String,
+) -> Result(Nil, WireError) {
   let bytes = string.byte_size(args_json)
   case bytes > max_bytes {
     True ->
@@ -359,22 +375,31 @@ pub fn validate_tool_arguments(
         max_bytes,
         bytes,
       ))
-    False -> {
-      let assert Ok(parser_bounds) =
-        parser_limits.default() |> parser_limits.with_max_bytes(max_bytes)
-      case parser.parse_value_from_string(parser_bounds, args_json) {
-        Error(_) -> Error(ProtocolError("Invalid JSON in tool call arguments"))
-        Ok(parsed) ->
-          case runtime.validate(definition.contract, parsed) {
-            Error(error) ->
-              Error(ProtocolError(
-                "Tool call arguments failed schema validation: "
-                <> string.inspect(error),
-              ))
-            Ok(validated) -> definition.decode_arguments(validated)
-          }
+    False -> Ok(Nil)
+  }
+}
+
+/// Parses, schema-validates, and natively decodes arguments that are already
+/// within `max_bytes`. The error explains the failure for the model.
+@internal
+pub fn check_tool_arguments(
+  definition: ToolDefinition,
+  max_bytes: Int,
+  args_json: String,
+) -> Result(Nil, String) {
+  let assert Ok(parser_bounds) =
+    parser_limits.default() |> parser_limits.with_max_bytes(max_bytes)
+  case parser.parse_value_from_string(parser_bounds, args_json) {
+    Error(_) -> Error("Invalid JSON in tool call arguments")
+    Ok(parsed) ->
+      case runtime.validate(definition.contract, parsed) {
+        Error(error) ->
+          Error(
+            "Tool call arguments failed schema validation: "
+            <> string.inspect(error),
+          )
+        Ok(validated) -> definition.decode_arguments(validated)
       }
-    }
   }
 }
 
@@ -398,6 +423,25 @@ pub fn admit_tool_catalog(
       }
     }
   })
+}
+
+/// How a finished tool-call response treats a call that names a tool outside
+/// the request's catalog or carries arguments that fail its schema.
+pub type ToolCallChecks {
+  /// Fail the whole response with `ProtocolError`. This is the default.
+  RejectInvalidToolCalls
+  /// Return every call and report each failing one as a `ToolCallIssue`. The
+  /// caller answers such calls with a `ToolResult` like any other call.
+  ReportInvalidToolCalls
+}
+
+/// Why one returned call cannot be dispatched as declared. Bounds, duplicate
+/// call IDs, and names outside the tool-name grammar still fail the response.
+pub type ToolCallIssue {
+  /// The call names a tool the request did not declare.
+  UnknownTool(call_id: CallId)
+  /// The arguments are not JSON, fail the schema, or fail native decoding.
+  InvalidArguments(call_id: CallId, reason: String)
 }
 
 pub type ToolResult {

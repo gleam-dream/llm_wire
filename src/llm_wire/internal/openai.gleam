@@ -13,7 +13,6 @@ import llm_wire/types
 pub opaque type Reducer {
   Reducer(
     limits: types.Limits,
-    admitted_tools: List(types.ToolDefinition),
     text_buffers: Dict(String, String),
     text_order: List(String),
     text_done: Dict(String, Bool),
@@ -47,7 +46,6 @@ type ToolBuffer {
 pub fn new(limits: types.Limits) -> Reducer {
   Reducer(
     limits: limits,
-    admitted_tools: [],
     text_buffers: dict.new(),
     text_order: [],
     text_done: dict.new(),
@@ -69,13 +67,16 @@ pub fn new(limits: types.Limits) -> Reducer {
   )
 }
 
+/// Admits the catalog so duplicate names fail before transport. Whether a
+/// returned call names a declared tool with valid arguments is decided by the
+/// runtime's terminal admission, not by this reducer.
 pub fn new_with_tools(
   limits: types.Limits,
   tools: List(types.ToolDefinition),
 ) -> Result(Reducer, types.WireError) {
   case types.admit_tool_catalog(tools) {
     Error(error) -> Error(error)
-    Ok(admitted) -> Ok(Reducer(..new(limits), admitted_tools: admitted))
+    Ok(_) -> Ok(new(limits))
   }
 }
 
@@ -320,65 +321,48 @@ fn handle_output_item_added(
                               ))
                             False -> {
                               case
-                                list.any(reducer.admitted_tools, fn(tool) {
-                                  types.tool_name_to_string(types.tool_name_of(
-                                    tool,
-                                  ))
-                                  == nm
-                                })
+                                types.call_id(cid),
+                                types.provider_tool_name(nm)
                               {
-                                False ->
-                                  Error(types.ProtocolError(
-                                    "Tool call for unadmitted tool: " <> nm,
-                                  ))
-                                True -> {
-                                  case
-                                    types.call_id(cid),
-                                    types.provider_tool_name(nm)
-                                  {
-                                    Ok(call_id), Ok(tool_name) -> {
-                                      let buffer =
-                                        ToolBuffer(
-                                          call_id: call_id,
-                                          name: tool_name,
-                                          arguments: "",
-                                          is_done: False,
-                                        )
-                                      let updated_tools =
-                                        dict.insert(
-                                          reducer.tool_buffers,
-                                          added.item_id,
-                                          buffer,
-                                        )
-                                      let updated_order =
-                                        list.append(reducer.tool_order, [
-                                          added.item_id,
-                                        ])
-                                      let updated_seen_calls = [
-                                        cid,
-                                        ..reducer.seen_call_ids
-                                      ]
-                                      Ok(
-                                        #(
-                                          Reducer(
-                                            ..reducer,
-                                            tool_buffers: updated_tools,
-                                            tool_order: updated_order,
-                                            index_to_item_id: updated_indices,
-                                            seen_call_ids: updated_seen_calls,
-                                            active_blocks_count: reducer.active_blocks_count
-                                              + 1,
-                                          ),
-                                          [],
-                                        ),
-                                      )
-                                    }
-                                    _, _ ->
-                                      Error(types.ProtocolError(
-                                        "Invalid call_id or tool_name in function_call",
-                                      ))
-                                  }
+                                Ok(call_id), Ok(tool_name) -> {
+                                  let buffer =
+                                    ToolBuffer(
+                                      call_id: call_id,
+                                      name: tool_name,
+                                      arguments: "",
+                                      is_done: False,
+                                    )
+                                  let updated_tools =
+                                    dict.insert(
+                                      reducer.tool_buffers,
+                                      added.item_id,
+                                      buffer,
+                                    )
+                                  let updated_order =
+                                    list.append(reducer.tool_order, [
+                                      added.item_id,
+                                    ])
+                                  let updated_seen_calls = [
+                                    cid,
+                                    ..reducer.seen_call_ids
+                                  ]
+                                  Ok(
+                                    #(
+                                      Reducer(
+                                        ..reducer,
+                                        tool_buffers: updated_tools,
+                                        tool_order: updated_order,
+                                        index_to_item_id: updated_indices,
+                                        seen_call_ids: updated_seen_calls,
+                                        active_blocks_count: reducer.active_blocks_count
+                                          + 1,
+                                      ),
+                                      [],
+                                    ),
+                                  )
                                 }
+                                Error(error), _ | _, Error(error) ->
+                                  Error(error)
                               }
                             }
                           }
@@ -807,38 +791,21 @@ fn handle_output_item_done(
                 True ->
                   Error(types.ProtocolError("Duplicate tool block completion"))
                 False -> {
-                  let tool_nm = types.tool_name_to_string(tool.name)
-                  case
-                    list.find(reducer.admitted_tools, fn(definition) {
-                      types.tool_name_to_string(types.tool_name_of(definition))
-                      == tool_nm
-                    })
-                  {
-                    Ok(admitted) -> {
-                      use Nil <- result.try(types.validate_tool_arguments(
-                        admitted,
-                        reducer.limits.argument_bytes_per_call_limit,
-                        tool.arguments,
-                      ))
-                      let updated_tool = ToolBuffer(..tool, is_done: True)
-                      let updated_buffers =
-                        dict.insert(reducer.tool_buffers, item_id, updated_tool)
-                      Ok(
-                        #(
-                          Reducer(
-                            ..reducer,
-                            tool_buffers: updated_buffers,
-                            semantic_progress_observed: True,
-                          ),
-                          [],
-                        ),
-                      )
-                    }
-                    Error(Nil) ->
-                      Error(types.ProtocolError(
-                        "Tool call for unadmitted tool: " <> tool_nm,
-                      ))
-                  }
+                  // Catalog and schema admission belong to the runtime's
+                  // terminal check, which may report rather than reject.
+                  let updated_tool = ToolBuffer(..tool, is_done: True)
+                  let updated_buffers =
+                    dict.insert(reducer.tool_buffers, item_id, updated_tool)
+                  Ok(
+                    #(
+                      Reducer(
+                        ..reducer,
+                        tool_buffers: updated_buffers,
+                        semantic_progress_observed: True,
+                      ),
+                      [],
+                    ),
+                  )
                 }
               }
             }
@@ -962,6 +929,7 @@ fn handle_response_completed(
                     all_text,
                     all_calls,
                     Some(completed.id),
+                    [],
                   )
               }
               stream_types.StreamFinished(

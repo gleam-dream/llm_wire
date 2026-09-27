@@ -422,7 +422,7 @@ pub fn real_http_anthropic_streaming_test() {
   let assert Ok(call_id) = types.call_id("call_99")
   let assert Ok(tool_name) = types.tool_name("calc")
   case outcome {
-    stream_types.CompletedToolCalls(_, calls, _response_id) -> {
+    stream_types.CompletedToolCalls(_, calls, _response_id, []) -> {
       calls
       |> should.equal([
         types.ToolCall(call_id, tool_name, "{\"x\": 42}", Some("call_99"), None),

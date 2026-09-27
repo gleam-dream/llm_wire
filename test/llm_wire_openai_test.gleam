@@ -354,7 +354,7 @@ pub fn openai_interleaved_tool_calls_test() {
   let assert Some(stream_types.StreamFinished(outcome, _)) =
     openai.terminal(reducer)
   case outcome {
-    stream_types.CompletedToolCalls(_text, calls, response_id) -> {
+    stream_types.CompletedToolCalls(_text, calls, response_id, []) -> {
       response_id |> should.equal(Some("resp_1"))
       calls
       |> should.equal([
@@ -393,38 +393,6 @@ pub fn openai_provider_cancellation_is_not_attributed_to_local_owner_test() {
       should.be_true(True)
     _ -> should.fail()
   }
-}
-
-pub fn openai_invalid_json_arguments_test() {
-  let tool = tool_fixtures.int_field_tool("calc", "x")
-  let assert Ok(reducer) = openai.new_with_tools(types.default_limits(), [tool])
-  let ev1 =
-    sse.ServerSentEvent(
-      event: Some("response.output_item.added"),
-      data: "{\"output_index\": 0, \"item\": {\"id\": \"item_1\", \"type\": \"function_call\", \"call_id\": \"call_1\", \"name\": \"calc\"}}",
-      id: None,
-      retry: None,
-    )
-  let assert Ok(#(reducer, _)) = openai.step(reducer, ev1)
-
-  let ev2 =
-    sse.ServerSentEvent(
-      event: Some("response.function_call_arguments.delta"),
-      data: "{\"output_index\": 0, \"item_id\": \"item_1\", \"delta\": \"{not valid json\"}",
-      id: None,
-      retry: None,
-    )
-  let assert Ok(#(reducer, _)) = openai.step(reducer, ev2)
-
-  let ev3 =
-    sse.ServerSentEvent(
-      event: Some("response.output_item.done"),
-      data: "{\"output_index\": 0, \"item\": {\"id\": \"item_1\"}}",
-      id: None,
-      retry: None,
-    )
-  openai.step(reducer, ev3)
-  |> should.be_error
 }
 
 pub fn openai_provider_error_test() {

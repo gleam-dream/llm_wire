@@ -30,6 +30,7 @@ pub fn start_openai_stream_with_tools(
     deadlines,
     transport,
     tools,
+    types.RejectInvalidToolCalls,
   )
 }
 
@@ -50,5 +51,6 @@ pub fn start_anthropic_stream_with_tools(
     deadlines,
     transport,
     tools,
+    types.RejectInvalidToolCalls,
   )
 }

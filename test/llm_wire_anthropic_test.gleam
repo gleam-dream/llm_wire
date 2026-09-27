@@ -207,7 +207,7 @@ pub fn anthropic_tool_use_stream_test() {
   )
 
   case outcome {
-    stream_types.CompletedToolCalls(_text, calls, response_id) -> {
+    stream_types.CompletedToolCalls(_text, calls, response_id, []) -> {
       response_id |> should.equal(Some("msg_2"))
       calls
       |> should.equal([
@@ -222,39 +222,6 @@ pub fn anthropic_tool_use_stream_test() {
     }
     _ -> panic as "expected CompletedToolCalls"
   }
-}
-
-pub fn anthropic_invalid_json_arguments_test() {
-  let tool = tool_fixtures.string_field_tool("test", "value")
-  let assert Ok(reducer) =
-    anthropic.new_with_tools(types.default_limits(), [tool])
-  let ev1 =
-    sse.ServerSentEvent(
-      event: Some("content_block_start"),
-      data: "{\"type\": \"content_block_start\", \"index\": 0, \"content_block\": {\"type\": \"tool_use\", \"id\": \"toolu_1\", \"name\": \"test\"}}",
-      id: None,
-      retry: None,
-    )
-  let assert Ok(#(reducer, _)) = anthropic.step(reducer, ev1)
-
-  let ev2 =
-    sse.ServerSentEvent(
-      event: Some("content_block_delta"),
-      data: "{\"type\": \"content_block_delta\", \"index\": 0, \"delta\": {\"type\": \"input_json_delta\", \"partial_json\": \"{not valid\"}}",
-      id: None,
-      retry: None,
-    )
-  let assert Ok(#(reducer, _)) = anthropic.step(reducer, ev2)
-
-  let ev3 =
-    sse.ServerSentEvent(
-      event: Some("content_block_stop"),
-      data: "{\"type\": \"content_block_stop\", \"index\": 0}",
-      id: None,
-      retry: None,
-    )
-  anthropic.step(reducer, ev3)
-  |> should.be_error
 }
 
 pub fn anthropic_server_tool_test() {

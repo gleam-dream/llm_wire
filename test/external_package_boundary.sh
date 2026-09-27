@@ -84,9 +84,16 @@ pub fn scripts_a_provider_without_a_socket() {
   let assert Ok(model) = types.model_id("consumer-model")
   let script = testing.start([testing.text("scripted")])
   let request = types.new_request(model, [types.UserMessage("hello")])
-  let assert Ok(prepared) = session.prepare(testing.config(script), request)
-  let outcome = session.run(prepared)
-  #(outcome, testing.requests(script))
+  let settings =
+    testing.config(script)
+    |> config.with_tool_call_checks(types.ReportInvalidToolCalls)
+  let assert Ok(prepared) = session.prepare(settings, request)
+  let issues = case session.run(prepared) {
+    Ok(session.RunToolCalls(_, _, continuation, _)) ->
+      session.tool_call_issues(continuation)
+    _ -> []
+  }
+  #(issues, testing.requests(script))
 }
 
 pub fn observe_with_sinal(

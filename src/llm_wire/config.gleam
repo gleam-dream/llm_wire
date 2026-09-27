@@ -20,6 +20,7 @@ pub opaque type Config {
     pool: Option(pool.Pool),
     ca_cert_file: Option(String),
     connector: Option(transport.Connector),
+    tool_call_checks: types.ToolCallChecks,
   )
 }
 
@@ -33,6 +34,7 @@ pub fn openai(options: openai_provider.Options) -> Config {
     None,
     None,
     None,
+    types.RejectInvalidToolCalls,
   )
 }
 
@@ -46,6 +48,7 @@ pub fn anthropic(options: anthropic_provider.Options) -> Config {
     None,
     None,
     None,
+    types.RejectInvalidToolCalls,
   )
 }
 
@@ -60,6 +63,7 @@ pub fn google(options: google_provider.Options) -> Config {
     None,
     None,
     None,
+    types.RejectInvalidToolCalls,
   )
 }
 
@@ -73,6 +77,7 @@ pub fn from_provider(adapter: provider.Adapter) -> Config {
     None,
     None,
     None,
+    types.RejectInvalidToolCalls,
   )
 }
 
@@ -97,6 +102,22 @@ pub fn with_pool(config: Config, owned_pool: pool.Pool) -> Config {
 /// rejects an empty path or unsuitable endpoint. The file is read on connect.
 pub fn with_ca_cert_file(config: Config, path: String) -> Config {
   Config(..config, ca_cert_file: Some(path))
+}
+
+/// Selects how a finished response treats calls to undeclared tools or with
+/// invalid arguments. The default, `types.RejectInvalidToolCalls`, fails the
+/// response; `types.ReportInvalidToolCalls` returns every call and exposes the
+/// failures through `session.tool_call_issues`.
+pub fn with_tool_call_checks(
+  config: Config,
+  checks: types.ToolCallChecks,
+) -> Config {
+  Config(..config, tool_call_checks: checks)
+}
+
+@internal
+pub fn tool_call_checks(config: Config) -> types.ToolCallChecks {
+  config.tool_call_checks
 }
 
 /// Replaces the network connection; used by `llm_wire/testing`.

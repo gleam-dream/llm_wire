@@ -126,6 +126,7 @@ fn open_source(
     ca_override(settings),
     option.map(config.pool(settings), pool.pool_pid),
     config.connector(settings),
+    config.tool_call_checks(settings),
   )
 }
 
@@ -227,6 +228,14 @@ pub fn continuation_response_id(pending: Continuation) -> Option(String) {
   api.continuation_response_id(pending.replay)
 }
 
+/// The calls of this tool round that name an undeclared tool or carry invalid
+/// arguments, in call order. It is empty unless the settings selected
+/// `types.ReportInvalidToolCalls`. `prepare_continue` still requires one result
+/// per call, including each reported one.
+pub fn tool_call_issues(pending: Continuation) -> List(types.ToolCallIssue) {
+  api.continuation_issues(pending.replay)
+}
+
 /// The output codec stays with the prepared interaction across tool rounds.
 pub opaque type PreparedStructuredCall(output) {
   PreparedStructuredCall(
@@ -274,6 +283,13 @@ pub type StructuredTerminal(output) {
   StructuredFinished(StructuredRunResult(output))
   StructuredFailed(types.WireError, types.RetryEvidence)
   StructuredCancelled(types.RetryEvidence)
+}
+
+/// The structured counterpart of `tool_call_issues`.
+pub fn structured_tool_call_issues(
+  pending: StructuredContinuation(output),
+) -> List(types.ToolCallIssue) {
+  api.continuation_issues(pending.replay)
 }
 
 pub fn prepare_structured(

@@ -32,6 +32,18 @@ candidate API.
   provider-neutral scripted provider; `testing.with_script` routes any
   configuration, including built-in providers, through raw scripted SSE.
   Downstream packages no longer need a loopback HTTP stub.
+- Added `config.with_tool_call_checks` with `types.ToolCallChecks`. The default,
+  `RejectInvalidToolCalls`, keeps the documented contract: an undeclared tool
+  or invalid arguments fail the response with `ProtocolError`.
+  `ReportInvalidToolCalls` returns every call and exposes
+  `types.ToolCallIssue` values (`UnknownTool`, `InvalidArguments`) through
+  `session.tool_call_issues` and `session.structured_tool_call_issues`, so an
+  agent can answer each bad call instead of losing the turn. Exact result
+  coverage still includes reported calls. Built-in reducers no longer check
+  the catalog or arguments; the runtime admits every completed batch once, so
+  buffered, streamed, built-in, and custom paths apply one rule. Under the
+  default, a built-in provider's invalid call now fails when the response
+  completes rather than when its block closes.
 
 ### Current limits
 

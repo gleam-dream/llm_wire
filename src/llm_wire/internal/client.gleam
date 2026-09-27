@@ -45,11 +45,13 @@ pub fn open_prepared_stream_with_pool(
     tls_override,
     pool_pid,
     None,
+    types.RejectInvalidToolCalls,
   )
 }
 
 /// A connector, when present, replaces the network connection and the pool.
-/// Transport admission, the owner, and the reducer are unchanged.
+/// Transport admission, the owner, and the reducer are unchanged. `checks`
+/// selects how the owner admits a completed tool-call batch.
 pub fn open_prepared_stream_with(
   prepared: api.PreparedCall,
   limits: types.Limits,
@@ -57,6 +59,7 @@ pub fn open_prepared_stream_with(
   tls_override: Option(tls.TlsMode),
   pool_pid: Option(process.Pid),
   connector: Option(transport.Connector),
+  checks: types.ToolCallChecks,
 ) -> Result(owner.Stream, OpenFailure) {
   let tools = api.prepared_tools(prepared)
   let prepared_tls_mode = api.prepared_tls_mode(prepared)
@@ -65,7 +68,16 @@ pub fn open_prepared_stream_with(
     api.validate_prepared_transport(prepared, tls_mode)
     |> result.map_error(before_request),
   )
-  open_stream(prepared, limits, deadlines, tools, tls_mode, pool_pid, connector)
+  open_stream(
+    prepared,
+    limits,
+    deadlines,
+    tools,
+    tls_mode,
+    pool_pid,
+    connector,
+    checks,
+  )
 }
 
 fn open_stream(
@@ -76,12 +88,15 @@ fn open_stream(
   tls_mode: tls.TlsMode,
   pool_pid: Option(process.Pid),
   connector: Option(transport.Connector),
+  checks: types.ToolCallChecks,
 ) -> Result(owner.Stream, OpenFailure) {
   let overall_started_ms = transport.monotonic_millis()
   let dummy_transport =
     owner.TransportPort(request_more: fn() { Nil }, close: fn() { Nil })
 
-  case start_owner(prepared, limits, deadlines, dummy_transport, tools) {
+  case
+    start_owner(prepared, limits, deadlines, dummy_transport, tools, checks)
+  {
     Error(error) -> Error(error)
     Ok(stream) -> {
       case owner.owner_pid(stream) {
@@ -179,6 +194,7 @@ fn start_owner(
   deadlines: types.Deadlines,
   transport_port: owner.TransportPort,
   tools: List(types.ToolDefinition),
+  checks: types.ToolCallChecks,
 ) -> Result(owner.Stream, OpenFailure) {
   use adapter <- result.try(
     api.prepared_adapter(prepared) |> result.map_error(before_request),
@@ -194,6 +210,7 @@ fn start_owner(
     deadlines,
     transport_port,
     tools,
+    checks,
   )
   |> result.map_error(before_request)
 }

@@ -55,11 +55,18 @@ pub opaque type Continuation {
     response_id: Option(String),
     provider_continuation: Option(stream_types.ProviderContinuation),
     origin: reference.Reference,
+    issues: List(types.ToolCallIssue),
   )
 }
 
 pub fn continuation_response_id(continuation: Continuation) -> Option(String) {
   continuation.response_id
+}
+
+pub fn continuation_issues(
+  continuation: Continuation,
+) -> List(types.ToolCallIssue) {
+  continuation.issues
 }
 
 pub type RunResult {
@@ -555,6 +562,7 @@ pub fn prepare_continue(
         False -> {
           use Nil <- result.try(validate_continuation_calls(
             source_calls,
+            continuation.issues,
             prepared.request.tools,
             limits.argument_bytes_per_call_limit,
           ))
@@ -592,12 +600,18 @@ pub fn prepare_continue(
   }
 }
 
+/// Rechecks the retained calls against the catalog. A call the runtime
+/// reported as an issue is exempt: the caller answers it with a result.
 fn validate_continuation_calls(
   calls: List(types.ToolCall),
+  issues: List(types.ToolCallIssue),
   tools: List(types.ToolDefinition),
   max_argument_bytes: Int,
 ) -> Result(Nil, types.WireError) {
-  list.fold(calls, Ok(Nil), fn(acc, call) {
+  let reported = list.map(issues, fn(issue) { issue.call_id })
+  let checked =
+    list.filter(calls, fn(call) { !list.contains(reported, call.id) })
+  list.fold(checked, Ok(Nil), fn(acc, call) {
     use Nil <- result.try(acc)
     let name = types.tool_name_to_string(call.name)
     case
@@ -723,7 +737,7 @@ pub fn terminal_result(
     stream_types.StreamFinished(stream_types.CompletedText(text), usage) ->
       Ok(RunText(text, usage))
     stream_types.StreamFinished(
-      stream_types.CompletedToolCalls(text, calls, response_id),
+      stream_types.CompletedToolCalls(text, calls, response_id, issues),
       usage,
     ) -> {
       let continuation =
@@ -737,6 +751,7 @@ pub fn terminal_result(
           response_id,
           None,
           prepared.origin,
+          issues,
         )
       Ok(RunToolCalls(text, calls, continuation, usage))
     }
@@ -746,6 +761,7 @@ pub fn terminal_result(
         calls,
         response_id,
         provider_continuation,
+        issues,
       ),
       usage,
     ) -> {
@@ -760,6 +776,7 @@ pub fn terminal_result(
           response_id,
           Some(provider_continuation),
           prepared.origin,
+          issues,
         )
       Ok(RunToolCalls(text, calls, continuation, usage))
     }
@@ -2051,13 +2068,15 @@ fn map_builtin_terminal(
     Some(stream_types.StreamFinished(outcome, usage)) ->
       Some(case outcome {
         stream_types.CompletedText(text) -> provider.Text(text, usage)
-        stream_types.CompletedToolCalls(text, calls, response_id) ->
+        // A reducer reports no issues; the runtime admits the calls.
+        stream_types.CompletedToolCalls(text, calls, response_id, _) ->
           provider.ToolCalls(text, calls, response_id, None, usage)
         stream_types.CompletedToolCallsWithContinuation(
           text,
           calls,
           response_id,
           continuation,
+          _,
         ) ->
           provider.ToolCalls(
             text,

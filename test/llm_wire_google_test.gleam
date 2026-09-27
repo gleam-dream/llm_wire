@@ -93,6 +93,7 @@ pub fn google_tool_call_buffering_and_completion_test() {
         text: "",
         calls: [expected_call],
         response_id: Some("resp_tools"),
+        issues: [],
       ),
       usage: None,
     )),
@@ -130,6 +131,7 @@ pub fn google_tool_call_without_id_synthesizes_deterministic_id_test() {
         text: "",
         calls: [expected_call],
         response_id: None,
+        issues: [],
       ),
       usage: None,
     )),
@@ -146,44 +148,6 @@ pub fn google_tool_call_duplicate_id_fails_test() {
     Error(types.ProtocolError(msg)) ->
       msg
       |> should.equal("Duplicate tool call id: dup_id")
-    _ -> should.fail()
-  }
-}
-
-pub fn google_tool_call_argument_type_mismatch_fails_test() {
-  let tool = tool_fixtures.int_field_tool("calc", "x")
-  let assert Ok(reducer) = google.new_with_tools(types.default_limits(), [tool])
-
-  // Tool expects integer for 'x', but string is passed
-  let chunk1 =
-    "{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"name\":\"calc\",\"args\":{\"x\":\"string_val\"},\"id\":\"call_type_err\"}}]}}]}"
-  let assert Ok(#(reducer, [])) = google.step(reducer, event(chunk1))
-
-  // Finish reason triggers tool catalog validation
-  let chunk2 =
-    "{\"candidates\":[{\"finishReason\":\"STOP\",\"content\":{\"role\":\"model\",\"parts\":[]}}]}"
-  case google.step(reducer, event(chunk2)) {
-    Error(types.ProtocolError(msg)) ->
-      string.contains(msg, "failed schema validation")
-      |> should.equal(True)
-    _ -> should.fail()
-  }
-}
-
-pub fn google_tool_call_undeclared_name_fails_test() {
-  let tool = tool_fixtures.int_field_tool("calc", "x")
-  let assert Ok(reducer) = google.new_with_tools(types.default_limits(), [tool])
-
-  let chunk1 =
-    "{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"name\":\"unregistered_tool\",\"args\":{},\"id\":\"call_unreg\"}}]}}]}"
-  let assert Ok(#(reducer, [])) = google.step(reducer, event(chunk1))
-
-  let chunk2 =
-    "{\"candidates\":[{\"finishReason\":\"STOP\",\"content\":{\"role\":\"model\",\"parts\":[]}}]}"
-  case google.step(reducer, event(chunk2)) {
-    Error(types.ProtocolError(msg)) ->
-      string.contains(msg, "Tool not declared in admitted catalog")
-      |> should.equal(True)
     _ -> should.fail()
   }
 }
@@ -744,6 +708,7 @@ pub fn google_gemini_thought_signature_is_preserved_for_continuation_test() {
         provider_continuation: stream_types.GoogleProviderContinuation([
           "{\"functionCall\":{\"args\":{\"x\":1},\"id\":\"call_1\",\"name\":\"calc\"},\"thoughtSignature\":\"opaque\"}",
         ]),
+        issues: [],
       ),
       usage: None,
     )),
@@ -763,6 +728,7 @@ pub fn google_signed_non_tool_parts_are_retained_in_order_test() {
         _,
         _,
         stream_types.GoogleProviderContinuation(parts),
+        [],
       ),
       _,
     )) -> {
