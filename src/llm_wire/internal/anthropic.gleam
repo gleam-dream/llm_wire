@@ -307,7 +307,7 @@ fn handle_content_block_start(
                             True -> {
                               case
                                 types.call_id(id_str),
-                                types.tool_name(name_str)
+                                types.provider_tool_name(name_str)
                               {
                                 Ok(call_id), Ok(tool_name) -> {
                                   let updated_blocks =

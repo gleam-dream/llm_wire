@@ -1,4 +1,5 @@
 import gleam/option.{None, Some}
+import gleam/string
 import gleeunit/should
 import llm_wire/types
 
@@ -23,7 +24,28 @@ pub fn tool_name_validation_test() {
   |> should.be_ok
 
   types.tool_name("")
-  |> should.be_error
+  |> should.equal(Error(types.EmptyToolName))
+}
+
+pub fn tool_name_accepts_the_portable_provider_grammar_test() {
+  let at_limit = string.repeat("a", 64)
+  let assert Ok(name) = types.tool_name(at_limit)
+  types.tool_name_to_string(name) |> should.equal(at_limit)
+  let assert Ok(name) = types.tool_name("Get-Weather_v2")
+  types.tool_name_to_string(name) |> should.equal("Get-Weather_v2")
+}
+
+pub fn tool_name_rejects_names_providers_refuse_test() {
+  types.tool_name(string.repeat("a", 65))
+  |> should.equal(Error(types.ToolNameTooLong(65)))
+  types.tool_name("functions.lookup")
+  |> should.equal(Error(types.InvalidToolNameCharacter(".")))
+  types.tool_name("look up")
+  |> should.equal(Error(types.InvalidToolNameCharacter(" ")))
+  types.tool_name(" lookup")
+  |> should.equal(Error(types.InvalidToolNameCharacter(" ")))
+  types.tool_name("café")
+  |> should.equal(Error(types.InvalidToolNameCharacter("é")))
 }
 
 pub fn manual_tool_call_defaults_provider_metadata_test() {

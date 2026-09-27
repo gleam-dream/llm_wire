@@ -788,3 +788,15 @@ pub fn google_malformed_thought_signature_is_a_typed_protocol_error_test() {
     _ -> should.fail()
   }
 }
+
+pub fn google_tool_call_outside_the_name_grammar_is_a_protocol_error_test() {
+  let tool = tool_fixtures.int_field_tool("calc", "x")
+  let assert Ok(reducer) = google.new_with_tools(types.default_limits(), [tool])
+  let chunk =
+    "{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"name\":\"default_api.calc\",\"args\":{\"x\":1},\"id\":\"call_dot\"}}]}}]}"
+  case google.step(reducer, event(chunk)) {
+    Error(types.ProtocolError(message)) ->
+      string.contains(message, "invalid tool name") |> should.be_true
+    _ -> should.fail()
+  }
+}

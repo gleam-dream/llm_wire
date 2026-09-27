@@ -332,7 +332,10 @@ fn handle_output_item_added(
                                     "Tool call for unadmitted tool: " <> nm,
                                   ))
                                 True -> {
-                                  case types.call_id(cid), types.tool_name(nm) {
+                                  case
+                                    types.call_id(cid),
+                                    types.provider_tool_name(nm)
+                                  {
                                     Ok(call_id), Ok(tool_name) -> {
                                       let buffer =
                                         ToolBuffer(

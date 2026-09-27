@@ -224,7 +224,12 @@ fn parse_call(raw: String) -> Result(types.ToolCall, types.WireError) {
   case string.split(raw, "|") {
     [raw_id, raw_name, arguments_json] -> {
       use id <- result.try(types.call_id(raw_id))
-      use name <- result.try(types.tool_name(raw_name))
+      use name <- result.try(
+        types.tool_name(raw_name)
+        |> result.replace_error(types.ProtocolError(
+          "Malformed fixture tool name",
+        )),
+      )
       Ok(types.tool_call(id, name, arguments_json))
     }
     _ -> Error(types.ProtocolError("Malformed fixture tool event"))

@@ -397,7 +397,7 @@ fn process_function_call(
     |> result.try(get_string)
     |> result.replace_error(types.ProtocolError("functionCall missing name")),
   )
-  use tool_name <- result.try(types.tool_name(name_str))
+  use tool_name <- result.try(types.provider_tool_name(name_str))
 
   let args_json = case get_field(fc, "args") {
     Ok(args_val) ->

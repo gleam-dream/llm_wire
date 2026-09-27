@@ -44,11 +44,59 @@ pub opaque type ToolName {
   ToolName(String)
 }
 
-pub fn tool_name(raw: String) -> Result(ToolName, WireError) {
-  let trimmed = string.trim(raw)
-  case trimmed {
-    "" -> Error(ProtocolError("tool_name cannot be empty"))
-    _ -> Ok(ToolName(trimmed))
+/// Why a tool name falls outside the grammar every built-in provider accepts.
+pub type ToolNameError {
+  EmptyToolName
+  /// The first character outside ASCII letters, digits, `_`, and `-`.
+  InvalidToolNameCharacter(character: String)
+  /// The name has more than 64 characters.
+  ToolNameTooLong(length: Int)
+}
+
+const tool_name_max_length = 64
+
+/// Admits a name matching `^[a-zA-Z0-9_-]{1,64}$`, the intersection of the
+/// OpenAI, Anthropic, and Google tool-name rules. The name is not trimmed, so
+/// the provider receives exactly the declared value.
+pub fn tool_name(raw: String) -> Result(ToolName, ToolNameError) {
+  case raw {
+    "" -> Error(EmptyToolName)
+    _ ->
+      case
+        list.find(string.to_graphemes(raw), fn(c) { !is_tool_name_char(c) })
+      {
+        Ok(character) -> Error(InvalidToolNameCharacter(character))
+        Error(Nil) ->
+          case string.byte_size(raw) > tool_name_max_length {
+            True -> Error(ToolNameTooLong(string.byte_size(raw)))
+            False -> Ok(ToolName(raw))
+          }
+      }
+  }
+}
+
+/// Decoders admit provider-returned names with the same grammar; a name that
+/// cannot be represented or replayed is a protocol violation of the response.
+@internal
+pub fn provider_tool_name(raw: String) -> Result(ToolName, WireError) {
+  case tool_name(raw) {
+    Ok(name) -> Ok(name)
+    Error(error) ->
+      Error(ProtocolError(
+        "Provider returned an invalid tool name: " <> string.inspect(error),
+      ))
+  }
+}
+
+fn is_tool_name_char(grapheme: String) -> Bool {
+  case <<grapheme:utf8>> {
+    <<c>> ->
+      { c >= 0x61 && c <= 0x7A }
+      || { c >= 0x41 && c <= 0x5A }
+      || { c >= 0x30 && c <= 0x39 }
+      || c == 0x5F
+      || c == 0x2D
+    _ -> False
   }
 }
 

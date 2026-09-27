@@ -111,6 +111,11 @@ case first {
 }
 ```
 
+`types.tool_name` admits `^[a-zA-Z0-9_-]{1,64}$`, the name grammar shared by
+OpenAI, Anthropic, and Google. It does not trim, and it returns a typed
+`types.ToolNameError` (`EmptyToolName`, `InvalidToolNameCharacter`, or
+`ToolNameTooLong`) instead of a provider error.
+
 `types.tool_from_contract(name, description, runtime_contract)` constructs a
 schema-only tool from an admitted Blueprint `runtime.RuntimeContract` without a
 dummy native type. The selected provider projects its schema during
@@ -243,7 +248,10 @@ fn llm_tool_from_relay(
   let name = tool.definition_name(definition) |> tool.tool_name_to_string
   let metadata = tool.definition_metadata(definition)
   let description = option.unwrap(metadata.description, name)
-  use llm_name <- result.try(types.tool_name(name))
+  use llm_name <- result.try(
+    types.tool_name(name)
+    |> result.replace_error(types.PreparationError("Invalid tool name: " <> name)),
+  )
   types.tool_from_codec(
     llm_name,
     description,
@@ -272,6 +280,7 @@ shims in this cleanup.
 | Tool-call outcome omitted assistant text                               | `RunToolCalls(text, calls, continuation, usage)` preserves text and provider-authored replay                              |
 | Tool arguments parsed with Blueprint's 10 MiB default                  | Parser byte bounds now follow `argument_bytes_per_call_limit`; depth and number policy stay bounded                       |
 | Structured output parsed with Blueprint's 10 MiB default               | Parser byte bound follows the smaller admitted per-block and total text limits                                            |
+| `types.tool_name` returning `WireError`                                | Match `types.ToolNameError`; names must match `^[a-zA-Z0-9_-]{1,64}$`                                                     |
 | `types.with_provider_continuation`                                     | `session.prepare_continue` with the opaque continuation returned by `session.run`                                         |
 | Direct internal provider reducer and request hooks                     | Use `provider.Adapter`/`provider.Spec`/`provider.reducer`, then `config.from_provider`; internal transport is unsupported |
 

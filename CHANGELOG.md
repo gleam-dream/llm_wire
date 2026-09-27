@@ -13,6 +13,20 @@
 - Blueprint-backed tool and structured-output admission, including schema-only
   tools from finite runtime contracts. Sinal emits fixed lifecycle observations.
 
+### Changed from consumer evidence
+
+Fabric, the first agent-runtime consumer, reported these gaps against the
+candidate API.
+
+- **Breaking:** `types.tool_name` returns `Result(ToolName, ToolNameError)` and
+  admits only `^[a-zA-Z0-9_-]{1,64}$`, the grammar shared by the built-in
+  providers. It no longer trims. A name that every provider would refuse now
+  fails at construction instead of at the remote API. A separate typed error
+  is simpler than a `WireError` string because a name check has only local
+  outcomes. Callers that need a `WireError` map the error explicitly.
+  Provider-returned names use the same grammar; a response naming a tool
+  outside it fails with `ProtocolError`.
+
 ### Current limits
 
 - The built-in providers cover the documented text, tool, structured-output,
