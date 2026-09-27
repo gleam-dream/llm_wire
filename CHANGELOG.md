@@ -57,6 +57,37 @@ candidate API.
 - Provider replay closures contain adapter-owned state. Adapter authors must
   bound captured state and any wire-specific block structure themselves.
 
+### Known gaps
+
+Fabric reported both gaps. Neither has an accepted contract, so this candidate
+records them rather than guessing one.
+
+- **Persistable continuation.** `session.Continuation` lives only in memory.
+  It holds an Erlang reference that proves its origin, the retained `Config`
+  with credentials and any pool, the admitted catalog with native decode
+  closures, and provider replay state: Google raw signed parts and custom
+  `provider.Replay` closures. None of it survives a restart, and llm_wire does
+  not serialize private state. The design calls for an optional
+  provider-owned envelope with identity, version, codec, and compatibility
+  outcomes. Restoration must take fresh settings and catalog from the caller,
+  keep the pending call IDs and exact result coverage, preserve required
+  provider state or reject the envelope as incompatible, and exclude secrets
+  and live resources. Until then Fabric persists its own transcript of public
+  `types.Message` values, keeping `provider_id` and `provider_state` on each
+  call, and rebuilds every turn with `session.prepare`. That path loses Google
+  raw non-call parts of a tool turn, custom `Replay` closures (the adapter's
+  plain encoder rebuilds the request), and the coverage check of
+  `prepare_continue`, which Fabric enforces itself.
+- **Retry classification.** `RetryEvidence` states whether a request may have
+  reached the provider and whether response bytes or semantic progress were
+  observed. It does not state whether another attempt can succeed. Callers
+  derive that from `WireError`: Fabric treats `TransportError`,
+  `DeadlineExceeded`, and HTTP 408, 429, and 5xx as retryable and everything
+  else as final. A library classification would combine the error variant,
+  status, provider error codes, `Retry-After`, and retry evidence. It needs
+  provider-specific error-code evidence and a ruling on retry ownership, which
+  the design keeps separate from agent and workflow retry.
+
 ### Release preparation remaining
 
 - Select a version and convert local Blueprint and Sinal path dependencies to
