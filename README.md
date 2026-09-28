@@ -140,8 +140,12 @@ let issues = session.tool_call_issues(continuation)
 
 Every call stays in `calls`, and `prepare_continue` still needs one
 `ToolResult` per call, so the application returns an error result for each
-reported call. Argument byte limits, duplicate call IDs, and names outside the
-tool-name grammar still fail the response. Streamed terminals carry the same
+reported call. A reported call replays without caller rewriting, through
+`prepare_continue` or from persisted messages given to `session.prepare`.
+OpenAI receives the argument text verbatim; Anthropic and Google require an
+object, so text that is not a JSON object replays as
+`{"unparsed_arguments": text}`. Argument byte limits, duplicate call IDs, and
+names outside the tool-name grammar still fail the response. Streamed terminals carry the same
 continuation, and `session.structured_tool_call_issues` serves structured
 continuations.
 

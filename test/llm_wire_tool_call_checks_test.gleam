@@ -390,3 +390,252 @@ fn terminal(stream: session.Stream) -> session.Terminal {
     Error(_) -> panic as "stream read failed"
   }
 }
+
+// A call the runtime reported must replay to its provider on the next request,
+// through the continuation or from public messages, without caller rewriting.
+
+/// Truncated argument text, as a provider cut off mid-call returns it.
+const truncated = "{\"query\": "
+
+fn openai_text_body() -> String {
+  sse(
+    "response.completed",
+    "{\"response\":{\"id\":\"resp_2\",\"status\":\"completed\"}}",
+  )
+}
+
+fn anthropic_text_body() -> String {
+  sse(
+    "message_start",
+    "{\"type\":\"message_start\",\"message\":{\"id\":\"msg_2\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"m\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}",
+  )
+  <> sse(
+    "message_delta",
+    "{\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}",
+  )
+  <> sse("message_stop", "{\"type\":\"message_stop\"}")
+}
+
+fn google_text_body() -> String {
+  "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"\"}]},\"finishReason\":\"STOP\"}]}\n\n"
+}
+
+/// A provider, a reply holding one valid call and one invalid call, a text
+/// reply, and the wire form each call must take when replayed.
+type ReplayCase {
+  ReplayCase(
+    name: String,
+    settings: config.Config,
+    calls_body: String,
+    text_body: String,
+    replayed_valid: String,
+    replayed_invalid: String,
+  )
+}
+
+fn wrapped(text: String) -> String {
+  "{\"unparsed_arguments\":" <> json.to_string(json.string(text)) <> "}"
+}
+
+fn replay_cases() -> List(ReplayCase) {
+  let assert Ok(key) = types.api_key("sk-scripted")
+  let valid = testing.ScriptedCall("call_ok", "lookup", "{\"query\":\"gleam\"}")
+  let cut = testing.ScriptedCall("call_bad", "lookup", truncated)
+  // Google carries arguments as a JSON value, so its malformed form is a
+  // value that is not an object; the reducer keeps its JSON text.
+  let google_bad = json.to_string(json.string(truncated))
+  [
+    ReplayCase(
+      "openai",
+      config.openai(openai.options(key)),
+      openai_body([valid, cut]),
+      openai_text_body(),
+      "\"arguments\":" <> json.to_string(json.string("{\"query\":\"gleam\"}")),
+      "\"arguments\":" <> json.to_string(json.string(truncated)),
+    ),
+    ReplayCase(
+      "anthropic",
+      config.anthropic(anthropic.options(key)),
+      anthropic_body([valid, cut]),
+      anthropic_text_body(),
+      "\"input\":{\"query\":\"gleam\"}",
+      "\"input\":" <> wrapped(truncated),
+    ),
+    ReplayCase(
+      "google",
+      config.google(google.options(key)),
+      google_body([
+        valid,
+        testing.ScriptedCall("call_bad", "lookup", google_bad),
+      ]),
+      google_text_body(),
+      "\"args\":{\"query\":\"gleam\"}",
+      "\"args\":" <> wrapped(google_bad),
+    ),
+  ]
+}
+
+fn replay_results() -> List(types.ToolResult) {
+  [
+    types.ToolResult(call_id("call_ok"), "gleam.run"),
+    types.ToolResult(call_id("call_bad"), "{\"error\":\"invalid_arguments\"}"),
+  ]
+}
+
+fn assert_replayed(case_: ReplayCase, body: String) -> Nil {
+  case
+    string.contains(body, case_.replayed_valid),
+    string.contains(body, case_.replayed_invalid)
+  {
+    True, True -> Nil
+    _, _ -> panic as { case_.name <> " replayed: " <> body }
+  }
+}
+
+fn assert_reported_bad_call(
+  case_: ReplayCase,
+  issues: List(types.ToolCallIssue),
+) -> Nil {
+  let bad = call_id("call_bad")
+  case issues {
+    [types.InvalidArguments(id, _)] if id == bad -> Nil
+    _ -> panic as { case_.name <> " issues: " <> string.inspect(issues) }
+  }
+}
+
+pub fn reported_calls_replay_through_the_buffered_continuation_test() {
+  list.each(replay_cases(), fn(case_) {
+    let script =
+      testing.start([
+        testing.Events([case_.calls_body]),
+        testing.Events([case_.text_body]),
+      ])
+    let settings = case_.settings |> testing.with_script(script) |> report
+    let assert Ok(prepared) = session.prepare(settings, lookup_request())
+    let assert Ok(session.RunToolCalls(_, _, continuation, _)) =
+      session.run(prepared)
+    assert_reported_bad_call(case_, session.tool_call_issues(continuation))
+
+    case session.prepare_continue(continuation, replay_results()) {
+      Ok(next) -> {
+        let assert Ok(session.RunText(_, _)) = session.run(next)
+        let assert [_, second] = testing.requests(script)
+        assert_replayed(case_, second.body)
+      }
+      Error(error) -> panic as { case_.name <> ": " <> string.inspect(error) }
+    }
+  })
+}
+
+pub fn reported_calls_replay_through_the_streamed_continuation_test() {
+  list.each(replay_cases(), fn(case_) {
+    let script =
+      testing.start([
+        testing.Events([case_.calls_body]),
+        testing.Events([case_.text_body]),
+      ])
+    let settings = case_.settings |> testing.with_script(script) |> report
+    let assert Ok(prepared) = session.prepare(settings, lookup_request())
+    let assert Ok(stream) = session.stream(prepared)
+    let assert session.Finished(session.RunToolCalls(_, _, continuation, _)) =
+      terminal(stream)
+    assert_reported_bad_call(case_, session.tool_call_issues(continuation))
+
+    case session.prepare_continue(continuation, replay_results()) {
+      Ok(next) -> {
+        let assert Ok(stream) = session.stream(next)
+        let assert session.Finished(session.RunText(_, _)) = terminal(stream)
+        let assert [_, second] = testing.requests(script)
+        assert_replayed(case_, second.body)
+      }
+      Error(error) -> panic as { case_.name <> ": " <> string.inspect(error) }
+    }
+  })
+}
+
+pub fn reported_calls_replay_from_public_messages_test() {
+  list.each(replay_cases(), fn(case_) {
+    // The caller persisted the first round's calls and rebuilds the request.
+    let first = testing.start([testing.Events([case_.calls_body])])
+    let assert Ok(prepared) =
+      session.prepare(
+        case_.settings |> testing.with_script(first) |> report,
+        lookup_request(),
+      )
+    let assert Ok(session.RunToolCalls(text, calls, _, _)) =
+      session.run(prepared)
+
+    let script = testing.start([testing.Events([case_.text_body])])
+    let assert Ok(model) = types.model_id("checks-model")
+    let request =
+      types.new_request(model, [
+        types.UserMessage("Find gleam"),
+        types.AssistantToolCallsWithText(text, calls),
+        ..list.map(replay_results(), fn(result) {
+          types.ToolResultMessage(result.call_id, result.content)
+        })
+      ])
+      |> types.with_tools([tool_fixtures.string_field_tool("lookup", "query")])
+    case
+      session.prepare(
+        case_.settings |> testing.with_script(script) |> report,
+        request,
+      )
+    {
+      Ok(next) -> {
+        let assert Ok(session.RunText(_, _)) = session.run(next)
+        let assert [recorded] = testing.requests(script)
+        assert_replayed(case_, recorded.body)
+      }
+      Error(error) -> panic as { case_.name <> ": " <> string.inspect(error) }
+    }
+  })
+}
+
+pub fn reported_call_replies_still_fail_default_checks_test() {
+  list.each(replay_cases(), fn(case_) {
+    let script = testing.start([testing.Events([case_.calls_body])])
+    let assert Ok(prepared) =
+      session.prepare(
+        case_.settings |> testing.with_script(script),
+        lookup_request(),
+      )
+    case session.run(prepared) {
+      Error(session.RunFailure(types.ProtocolError(_), _)) -> Nil
+      other -> panic as { case_.name <> ": " <> string.inspect(other) }
+    }
+  })
+}
+
+/// The replay encoding belongs to the transcript, not to response admission:
+/// a rebuilt request encodes the same way under either checks setting.
+pub fn replay_encoding_does_not_depend_on_the_checks_setting_test() {
+  list.each(replay_cases(), fn(case_) {
+    let assert Ok(model) = types.model_id("checks-model")
+    let calls = [
+      types.tool_call(
+        call_id("call_ok"),
+        lookup_name(),
+        "{\"query\":\"gleam\"}",
+      ),
+      types.tool_call(call_id("call_bad"), lookup_name(), truncated),
+    ]
+    let request =
+      types.new_request(model, [
+        types.UserMessage("Find gleam"),
+        types.AssistantToolCalls(calls),
+        ..list.map(replay_results(), fn(result) {
+          types.ToolResultMessage(result.call_id, result.content)
+        })
+      ])
+    let assert Ok(strict) = session.prepare(case_.settings, request)
+    let assert Ok(reported) = session.prepare(report(case_.settings), request)
+    session.prepared_request_json(strict)
+    |> should.equal(session.prepared_request_json(reported))
+  })
+}
+
+fn lookup_name() -> types.ToolName {
+  let assert Ok(name) = types.tool_name("lookup")
+  name
+}

@@ -1303,22 +1303,16 @@ fn single_google_turn(
       use encoded <- result.try(google_content_parts(parts))
       Ok("{\"role\":\"model\",\"parts\":[" <> string.join(encoded, ",") <> "]}")
     }
-    types.AssistantToolCalls(calls) -> google_tool_turn("", calls)
+    types.AssistantToolCalls(calls) -> Ok(google_tool_turn("", calls))
     types.AssistantToolCallsWithText(text, calls) ->
-      google_tool_turn(text, calls)
+      Ok(google_tool_turn(text, calls))
     types.ToolResultMessage(..) -> Ok("{}")
   }
 }
 
-fn google_tool_turn(
-  text: String,
-  calls: List(types.ToolCall),
-) -> Result(String, types.WireError) {
-  let empty: Result(List(String), types.WireError) = Ok([])
-  use parts <- result.try(
-    list.fold(calls, empty, fn(acc, call) {
-      use prior <- result.try(acc)
-      use input <- result.try(canonical_json(call.arguments_json))
+fn google_tool_turn(text: String, calls: List(types.ToolCall)) -> String {
+  let parts =
+    list.map(calls, fn(call) {
       let id_part = case call.provider_id {
         None -> ""
         Some(provider_id) ->
@@ -1333,22 +1327,18 @@ fn google_tool_turn(
         "{\"name\":"
         <> json.to_string(json.string(types.tool_name_to_string(call.name)))
         <> ",\"args\":"
-        <> input
+        <> replayable_arguments_object(call.arguments_json)
         <> id_part
         <> "}"
-      let part = "{\"functionCall\":" <> fc <> thought_signature_part <> "}"
-      Ok(list.append(prior, [part]))
-    }),
-  )
+      "{\"functionCall\":" <> fc <> thought_signature_part <> "}"
+    })
   let text_parts = case text {
     "" -> []
     _ -> ["{\"text\":" <> json.to_string(json.string(text)) <> "}"]
   }
-  Ok(
-    "{\"role\":\"model\",\"parts\":["
-    <> string.join(list.append(text_parts, parts), ",")
-    <> "]}",
-  )
+  "{\"role\":\"model\",\"parts\":["
+  <> string.join(list.append(text_parts, parts), ",")
+  <> "]}"
 }
 
 fn google_content_parts(
@@ -1497,43 +1487,32 @@ fn anthropic_message_json(
           ]),
         ),
       )
-    types.AssistantToolCalls(calls) -> anthropic_tool_message("", calls)
+    types.AssistantToolCalls(calls) -> Ok(anthropic_tool_message("", calls))
     types.AssistantToolCallsWithText(text, calls) ->
-      anthropic_tool_message(text, calls)
+      Ok(anthropic_tool_message(text, calls))
   }
 }
 
-fn anthropic_tool_message(
-  text: String,
-  calls: List(types.ToolCall),
-) -> Result(String, types.WireError) {
-  let empty: Result(List(String), types.WireError) = Ok([])
-  use blocks <- result.try(
-    list.fold(calls, empty, fn(acc, call) {
-      use prior <- result.try(acc)
-      use input <- result.try(canonical_json(call.arguments_json))
-      let block =
-        "{\"type\":\"tool_use\",\"id\":"
-        <> json.to_string(json.string(types.call_id_to_string(call.id)))
-        <> ",\"name\":"
-        <> json.to_string(json.string(types.tool_name_to_string(call.name)))
-        <> ",\"input\":"
-        <> input
-        <> "}"
-      Ok(list.append(prior, [block]))
-    }),
-  )
+fn anthropic_tool_message(text: String, calls: List(types.ToolCall)) -> String {
+  let blocks =
+    list.map(calls, fn(call) {
+      "{\"type\":\"tool_use\",\"id\":"
+      <> json.to_string(json.string(types.call_id_to_string(call.id)))
+      <> ",\"name\":"
+      <> json.to_string(json.string(types.tool_name_to_string(call.name)))
+      <> ",\"input\":"
+      <> replayable_arguments_object(call.arguments_json)
+      <> "}"
+    })
   let text_blocks = case text {
     "" -> []
     _ -> [
       "{\"type\":\"text\",\"text\":" <> json.to_string(json.string(text)) <> "}",
     ]
   }
-  Ok(
-    "{\"role\":\"assistant\",\"content\":["
-    <> string.join(list.append(text_blocks, blocks), ",")
-    <> "]}",
-  )
+  "{\"role\":\"assistant\",\"content\":["
+  <> string.join(list.append(text_blocks, blocks), ",")
+  <> "]}"
 }
 
 fn anthropic_content_json(
@@ -1579,13 +1558,17 @@ fn anthropic_content_json(
   Ok(json.array(encoded, fn(value) { value }))
 }
 
-fn canonical_json(raw: String) -> Result(String, types.WireError) {
-  case json.parse(raw, decode.dynamic) {
+/// Anthropic `input` and Google `args` must be JSON objects, while a call's
+/// arguments are the text the model produced. Object text replays verbatim.
+/// Any other text, such as truncated JSON the runtime reported as
+/// `InvalidArguments`, replays as `{"unparsed_arguments": text}`, so the
+/// provider accepts the turn and the model still sees what it sent. OpenAI
+/// carries arguments as a string and needs no such encoding.
+fn replayable_arguments_object(raw: String) -> String {
+  case json.parse(raw, decode.dict(decode.string, decode.dynamic)) {
+    Ok(_) -> raw
     Error(_) ->
-      Error(types.PreparationError(
-        "Continuation contains invalid tool argument JSON",
-      ))
-    Ok(_) -> Ok(raw)
+      json.to_string(json.object([#("unparsed_arguments", json.string(raw))]))
   }
 }
 

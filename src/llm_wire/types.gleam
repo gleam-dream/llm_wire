@@ -431,7 +431,10 @@ pub type ToolCallChecks {
   /// Fail the whole response with `ProtocolError`. This is the default.
   RejectInvalidToolCalls
   /// Return every call and report each failing one as a `ToolCallIssue`. The
-  /// caller answers such calls with a `ToolResult` like any other call.
+  /// caller answers such calls with a `ToolResult` like any other call, and
+  /// the call replays on the next request without rewriting. Providers that
+  /// take an object (Anthropic, Google) receive argument text that is not a
+  /// JSON object as `{"unparsed_arguments": text}`.
   ReportInvalidToolCalls
 }
 

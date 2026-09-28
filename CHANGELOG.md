@@ -44,6 +44,18 @@ candidate API.
   buffered, streamed, built-in, and custom paths apply one rule. Under the
   default, a built-in provider's invalid call now fails when the response
   completes rather than when its block closes.
+- A reported call now replays to every built-in provider, through
+  `prepare_continue` or from public messages given to `session.prepare`.
+  Anthropic `input` and Google `args` must be JSON objects, so their encoders
+  send argument text that is not a JSON object, such as truncated JSON, as
+  `{"unparsed_arguments": text}`. The model still sees what it sent, and the
+  caller no longer rewrites the call. OpenAI carries arguments as a string and
+  replays the text verbatim, as before. Preparation no longer fails with
+  `PreparationError("Continuation contains invalid tool argument JSON")`, and
+  a valid non-object value such as `[1]` is wrapped rather than sent to a
+  provider that refuses it. The encoding does not depend on
+  `ToolCallChecks`; under the default, responses are admitted and
+  `prepare_continue` rechecks unreported calls exactly as before.
 
 ### Current limits
 
