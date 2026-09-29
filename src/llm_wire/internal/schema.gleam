@@ -121,6 +121,7 @@ pub fn provider_schema(
 
 fn provider_schema_supported(schema: codec.Schema) -> Bool {
   case schema {
+    codec.DescribedSchema(_, inner) -> provider_schema_supported(inner)
     codec.StringSchema
     | codec.StringEnumSchema(_)
     | codec.IntSchema
@@ -156,12 +157,20 @@ pub fn strict_output_schema(
   schema: codec.Schema,
 ) -> Result(json.Json, types.WireError) {
   let normalized = normalize_object_equivalence(schema)
-  case normalized {
-    codec.ObjectSchema(_) -> strict_schema(normalized)
-    _ ->
+  case object_root(normalized) {
+    True -> strict_schema(normalized)
+    False ->
       Error(types.PreparationError(
         "Structured output requires an object root schema",
       ))
+  }
+}
+
+fn object_root(schema: codec.Schema) -> Bool {
+  case schema {
+    codec.DescribedSchema(_, inner) -> object_root(inner)
+    codec.ObjectSchema(_) -> True
+    _ -> False
   }
 }
 
@@ -170,6 +179,8 @@ pub fn strict_output_schema(
 /// admission, including inside arrays and other objects.
 fn normalize_object_equivalence(schema: codec.Schema) -> codec.Schema {
   case schema {
+    codec.DescribedSchema(description, inner) ->
+      codec.DescribedSchema(description, normalize_object_equivalence(inner))
     codec.FieldSchema(name, inner) ->
       codec.ObjectSchema([
         codec.PropertySchema(name, True, normalize_object_equivalence(inner)),
@@ -200,6 +211,7 @@ fn validate_strict_schema(
   schema: codec.Schema,
 ) -> Result(Nil, types.WireError) {
   case schema {
+    codec.DescribedSchema(_, inner) -> validate_strict_schema(inner)
     codec.StringSchema
     | codec.StringEnumSchema(_)
     | codec.IntSchema
@@ -235,9 +247,9 @@ pub fn google_strict_output_schema(
   schema: codec.Schema,
 ) -> Result(json.Json, types.WireError) {
   let normalized = normalize_object_equivalence(schema)
-  case normalized {
-    codec.ObjectSchema(_) -> google_strict_schema(normalized)
-    _ ->
+  case object_root(normalized) {
+    True -> google_strict_schema(normalized)
+    False ->
       Error(types.PreparationError(
         "Structured output requires an object root schema",
       ))
@@ -255,6 +267,7 @@ fn validate_google_strict_schema(
   schema: codec.Schema,
 ) -> Result(Nil, types.WireError) {
   case schema {
+    codec.DescribedSchema(_, inner) -> validate_google_strict_schema(inner)
     codec.NullableSchema(_) ->
       Error(types.PreparationError(
         "Google structured output does not support nullable/anyOf schema",

@@ -1,7 +1,9 @@
 import gleam/json
+import gleam/list
 import gleam/string
 import gleeunit/should
 import json/blueprint/codec
+import json/blueprint/runtime
 import llm_wire/config
 import llm_wire/internal/schema
 import llm_wire/provider/anthropic as anthropic_provider
@@ -16,6 +18,58 @@ fn single_field_schema() -> codec.Schema {
 
 fn equivalent_object_schema() -> codec.Schema {
   codec.ObjectSchema([codec.PropertySchema("answer", True, codec.IntSchema)])
+}
+
+pub fn described_tool_schema_survives_contract_and_provider_projection_test() {
+  let input =
+    codec.field("city", codec.describe(codec.string(), "City to look up"))
+    |> codec.describe("Weather request")
+  let assert Ok(contract) = runtime.from_codec(input)
+  let assert Ok(name) = types.tool_name("lookup_weather")
+  let tool = types.tool_from_contract(name, "Look up weather", contract)
+  let assert Ok(projected) = schema.provider_schema(types.tool_schema(tool))
+  projected
+  |> should.equal(
+    json.object([
+      #("description", json.string("Weather request")),
+      #("type", json.string("object")),
+      #(
+        "properties",
+        json.object([
+          #(
+            "city",
+            json.object([
+              #("description", json.string("City to look up")),
+              #("type", json.string("string")),
+            ]),
+          ),
+        ]),
+      ),
+      #("required", json.array([json.string("city")], fn(item) { item })),
+      #("additionalProperties", json.bool(False)),
+    ]),
+  )
+  schema.strict_output_schema(types.tool_schema(tool)) |> should.be_ok
+  schema.google_strict_output_schema(types.tool_schema(tool)) |> should.be_ok
+
+  let assert Ok(key) = types.api_key("test-key")
+  let assert Ok(model) = types.model_id("model-test")
+  let request =
+    types.new_request(model, [types.UserMessage("weather")])
+    |> types.with_tools([tool])
+  let assert Ok(openai) =
+    session.prepare(config.openai(openai_provider.options(key)), request)
+  let assert Ok(anthropic) =
+    session.prepare(config.anthropic(anthropic_provider.options(key)), request)
+  let assert Ok(google) =
+    session.prepare(config.google(google_provider.options(key)), request)
+  [openai, anthropic, google]
+  |> list.all(fn(prepared) {
+    let wire = session.prepared_request_json(prepared)
+    string.contains(wire, "\"description\":\"Weather request\"")
+    && string.contains(wire, "\"description\":\"City to look up\"")
+  })
+  |> should.be_true
 }
 
 pub fn strict_admission_normalizes_field_and_object_schema_test() {
