@@ -5,7 +5,7 @@
 //// runtime would send over the network takes the next reply instead, and the
 //// script records the admitted request. Replies enter the same stream owner,
 //// SSE framer, reducer, bounds, deadlines, and terminal admission as a real
-//// response, so `session.prepare`, `run`, `stream`, and `prepare_continue`
+//// response, so `session.prepare`, `run`, and `stream`
 //// behave as they do against a provider.
 ////
 //// Two uses share the script:
@@ -26,6 +26,7 @@ import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
+import gleam/result
 import gleam/string
 import llm_wire/config
 import llm_wire/internal/api
@@ -41,14 +42,31 @@ pub type Reply {
   Events(chunks: List(String))
   /// These chunks followed by a transport failure before end of stream.
   Interrupted(chunks: List(String))
-  /// A non-success HTTP status; no stream opens.
+  /// An HTTP status other than the expected 200; no stream opens.
   Status(code: Int, body: String)
 }
 
 /// A request the runtime delivered to the script: the admitted request, and
 /// the route and body the provider adapter encoded for it.
 pub type Recorded {
-  Recorded(request: types.Request, path: String, body: String)
+  Recorded(
+    request: types.Request,
+    method: String,
+    endpoint: String,
+    path: String,
+    body: String,
+  )
+}
+
+/// Exact transport identity, excluding headers. `endpoint` is the configured
+/// endpoint, including its base path; `path` is the effective request path.
+pub type ExpectedRequest {
+  ExpectedRequest(method: String, endpoint: String, path: String, body: String)
+}
+
+/// A reply that can be taken only by its expected request.
+pub type Exchange {
+  Exchange(request: ExpectedRequest, reply: Reply)
 }
 
 /// A tool call the scripted provider returns. Its fields are wire values: the
@@ -62,17 +80,35 @@ pub opaque type Script {
 }
 
 type Message {
-  Take(request: Recorded, reply_to: process.Subject(Result(Reply, Nil)))
+  Take(request: Recorded, reply_to: process.Subject(Result(Reply, String)))
   Requests(reply_to: process.Subject(List(Recorded)))
   Remaining(reply_to: process.Subject(Int))
 }
 
 type ScriptState {
-  ScriptState(replies: List(Reply), recorded: List(Recorded))
+  ScriptState(replies: List(QueuedReply), recorded: List(Recorded))
+}
+
+type QueuedReply {
+  QueuedReply(expected: Option(ExpectedRequest), reply: Reply)
 }
 
 /// Starts a script that serves `replies` in order, one per request.
 pub fn start(replies: List(Reply)) -> Script {
+  start_queue(list.map(replies, fn(reply) { QueuedReply(None, reply) }))
+}
+
+/// Starts an ordered script with exact request matching. A mismatch fails
+/// without consuming the next exchange. Matching never contacts the network.
+pub fn start_matched(exchanges: List(Exchange)) -> Script {
+  start_queue(
+    list.map(exchanges, fn(exchange) {
+      QueuedReply(Some(exchange.request), exchange.reply)
+    }),
+  )
+}
+
+fn start_queue(replies: List(QueuedReply)) -> Script {
   let assert Ok(started) =
     actor.new(ScriptState(replies, []))
     |> actor.on_message(handle_message)
@@ -89,11 +125,25 @@ fn handle_message(
       let recorded = [request, ..state.recorded]
       case state.replies {
         [next, ..rest] -> {
-          process.send(reply_to, Ok(next))
-          actor.continue(ScriptState(rest, recorded))
+          case matches(next.expected, request) {
+            True -> {
+              process.send(reply_to, Ok(next.reply))
+              actor.continue(ScriptState(rest, recorded))
+            }
+            False -> {
+              process.send(
+                reply_to,
+                Error("Test script request does not match its next exchange"),
+              )
+              actor.continue(ScriptState(state.replies, recorded))
+            }
+          }
         }
         [] -> {
-          process.send(reply_to, Error(Nil))
+          process.send(
+            reply_to,
+            Error("Test script has no reply left for this request"),
+          )
           actor.continue(ScriptState([], recorded))
         }
       }
@@ -106,6 +156,17 @@ fn handle_message(
       process.send(reply_to, list.length(state.replies))
       actor.continue(state)
     }
+  }
+}
+
+fn matches(expected: Option(ExpectedRequest), request: Recorded) -> Bool {
+  case expected {
+    None -> True
+    Some(expected) ->
+      expected.method == request.method
+      && expected.endpoint == request.endpoint
+      && expected.path == request.path
+      && expected.body == request.body
   }
 }
 
@@ -255,21 +316,33 @@ fn connect(
   on_eof: fn() -> Nil,
   on_error: fn(transport_failure.Failure) -> Nil,
   on_request_sent: fn() -> Nil,
-) -> Result(transport.TransportHandle, types.WireError) {
+) -> Result(transport.TransportHandle, transport.ConnectFailure) {
+  use adapter <- result.try(
+    api.prepared_adapter(prepared)
+    |> result.map_error(fn(error) {
+      transport.ConnectFailure(error, types.initial_retry_evidence())
+    }),
+  )
   let recorded =
     Recorded(
       api.prepared_request(prepared),
+      "POST",
+      provider.endpoint(adapter) |> types.endpoint_to_string,
       api.prepared_path(prepared),
       api.prepared_request_json(prepared),
     )
   case process.call(script.subject, 5000, Take(recorded, _)) {
-    Error(Nil) ->
-      Error(types.ConfigurationError(
-        "Test script has no reply left for this request",
+    Error(message) ->
+      Error(transport.ConnectFailure(
+        types.ConfigurationError(message),
+        types.initial_retry_evidence(),
       ))
     Ok(Status(code, body)) -> {
       on_request_sent()
-      Error(types.HttpStatusError(code, body, None))
+      Error(transport.ConnectFailure(
+        types.HttpStatusError(code, body, None),
+        types.RetryEvidence(types.RequestMayHaveReachedProvider, True, False),
+      ))
     }
     Ok(Events(chunks)) -> {
       on_request_sent()
@@ -428,6 +501,7 @@ fn encode_message(message: types.Message) -> json.Json {
     types.AssistantMessage(content) -> role_text("assistant", content)
     types.UserContent(parts) -> role_parts("user", parts)
     types.AssistantContent(parts) -> role_parts("assistant", parts)
+    types.AssistantTurnMessage(turn) -> assistant_calls(turn.text, turn.calls)
     types.AssistantToolCalls(calls) -> assistant_calls("", calls)
     types.AssistantToolCallsWithText(text, calls) ->
       assistant_calls(text, calls)

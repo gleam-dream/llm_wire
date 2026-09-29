@@ -77,25 +77,36 @@ pub fn scripted_tool_round_continues_with_exact_results_test() {
     ])
   let assert Ok(prepared) =
     session.prepare(testing.config(script), lookup_request())
-  let assert Ok(session.RunToolCalls("Looking.", [call], continuation, None)) =
-    session.run(prepared)
+  let assert Ok(session.RunToolCalls(turn, None)) = session.run(prepared)
+  turn.text |> should.equal("Looking.")
+  let assert [call] = turn.calls
   types.call_id_to_string(call.id) |> should.equal("call_1")
   types.tool_name_to_string(call.name) |> should.equal("lookup")
   call.arguments_json |> should.equal("{\"query\":\"gleam\"}")
 
   // Coverage is checked before the second scripted reply is consumed.
-  session.prepare_continue(continuation, []) |> should.be_error
-  let assert Ok(next) =
-    session.prepare_continue(continuation, [
-      types.ToolResult(call.id, "gleam.run"),
-    ])
+  let source = lookup_request()
+  let pending =
+    types.Request(
+      ..source,
+      messages: list.append(source.messages, [types.AssistantTurnMessage(turn)]),
+    )
+  session.prepare(testing.config(script), pending) |> should.be_error
+  let ready =
+    types.Request(
+      ..pending,
+      messages: list.append(pending.messages, [
+        types.ToolResultMessage(call.id, "gleam.run"),
+      ]),
+    )
+  let assert Ok(next) = session.prepare(testing.config(script), ready)
   session.run(next) |> should.equal(Ok(session.RunText("Found it.", None)))
 
   let assert [_, second] = testing.requests(script)
   second.request.messages
   |> should.equal([
     types.UserMessage("Find gleam"),
-    types.AssistantToolCallsWithText("Looking.", [call]),
+    types.AssistantTurnMessage(turn),
     types.ToolResultMessage(call.id, "gleam.run"),
   ])
 }

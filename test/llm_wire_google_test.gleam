@@ -1,7 +1,10 @@
+import conversation_fixture
 import fake_server
 import gleam/bit_array
+import gleam/dynamic/decode
 import gleam/erlang/process
 import gleam/int
+import gleam/json
 import gleam/option.{None, Some}
 import gleam/string
 import gleeunit/should
@@ -89,10 +92,13 @@ pub fn google_tool_call_buffering_and_completion_test() {
   google.terminal(reducer)
   |> should.equal(
     Some(stream_types.StreamFinished(
-      outcome: stream_types.CompletedToolCalls(
+      outcome: stream_types.CompletedToolCallsWithData(
         text: "",
         calls: [expected_call],
         response_id: Some("resp_tools"),
+        provider_data: encode_parts([
+          "{\"functionCall\":{\"args\":{\"x\":42},\"id\":\"call_calc_1\",\"name\":\"calc\"}}",
+        ]),
         issues: [],
       ),
       usage: None,
@@ -127,10 +133,13 @@ pub fn google_tool_call_without_id_synthesizes_deterministic_id_test() {
   google.terminal(reducer)
   |> should.equal(
     Some(stream_types.StreamFinished(
-      outcome: stream_types.CompletedToolCalls(
+      outcome: stream_types.CompletedToolCallsWithData(
         text: "",
         calls: [expected_call],
         response_id: None,
+        provider_data: encode_parts([
+          "{\"functionCall\":{\"args\":{\"x\":99},\"name\":\"calc\"}}",
+        ]),
         issues: [],
       ),
       usage: None,
@@ -452,7 +461,7 @@ pub fn google_loopback_integration_text_stream_test() {
   fake_server.stop(server)
 }
 
-pub fn google_loopback_integration_tool_continuation_test() {
+pub fn google_loopback_integration_caller_owned_tool_round_test() {
   let assert Ok(server) = fake_server.start()
   process.spawn_unlinked(fn() {
     // 1st request: return tool call
@@ -475,7 +484,7 @@ pub fn google_loopback_integration_tool_continuation_test() {
     ]
     let _ = fake_server.send_sse_stream(socket1, tool_chunks, True)
 
-    // 2nd request: verify continuation body and return final text
+    // 2nd request: verify caller-owned history and return final text
     let assert Ok(socket2) = fake_server.accept_connection(server, 2000)
     let assert Ok(_req2) = fake_server.read_request_headers(socket2, 2000)
     let answer_chunks = [
@@ -510,23 +519,22 @@ pub fn google_loopback_integration_tool_continuation_test() {
   let assert Ok(prepared) = api.prepare(config, request, types.default_limits())
 
   // Run 1: returns tool call
-  let assert Ok(api.RunToolCalls(_, calls, continuation, _)) =
+  let assert Ok(api.RunToolCalls(turn, _)) =
     runtime.run(prepared, types.default_limits(), types.default_deadlines())
 
-  let assert [call] = calls
+  let assert [call] = turn.calls
   call.arguments_json |> should.equal("{\"x\":7}")
 
-  // Execute tool locally and prepare continuation
+  // Execute tool locally and append its result to the caller-owned history
   let tool_results = [types.ToolResult(call.id, "{\"result\":14}")]
   let assert Ok(continued_prepared) =
-    api.prepare_continue(
-      prepared,
-      continuation,
-      tool_results,
+    api.prepare(
+      config,
+      conversation_fixture.append_results(request, turn, tool_results),
       types.default_limits(),
     )
 
-  // Verify continuation payload
+  // Verify next request payload
   let cont_json = api.prepared_request_json(continued_prepared)
   string.contains(
     cont_json,
@@ -584,7 +592,7 @@ pub fn google_loopback_integration_refusal_test() {
   fake_server.stop(server)
 }
 
-pub fn google_missing_provider_id_is_omitted_from_continuation_test() {
+pub fn google_missing_provider_id_is_omitted_from_next_request_test() {
   let assert Ok(server) = fake_server.start()
   process.spawn_unlinked(fn() {
     let assert Ok(socket1) = fake_server.accept_connection(server, 2000)
@@ -644,14 +652,16 @@ pub fn google_missing_provider_id_is_omitted_from_continuation_test() {
     types.new_request(model, [types.UserMessage("double 7")])
     |> types.with_tools([tool])
   let assert Ok(prepared) = api.prepare(config, request, types.default_limits())
-  let assert Ok(api.RunToolCalls(_, [call], continuation, _)) =
+  let assert Ok(api.RunToolCalls(turn, _)) =
     runtime.run(prepared, types.default_limits(), types.default_deadlines())
+  let assert [call] = turn.calls
   call.id |> types.call_id_to_string |> should.equal("call_0")
   let assert Ok(next) =
-    api.prepare_continue(
-      prepared,
-      continuation,
-      [types.ToolResult(call.id, "{\"result\":14}")],
+    api.prepare(
+      config,
+      conversation_fixture.append_results(request, turn, [
+        types.ToolResult(call.id, "{\"result\":14}"),
+      ]),
       types.default_limits(),
     )
   let body = api.prepared_request_json(next)
@@ -682,7 +692,7 @@ fn list_for_each(items: List(a), f: fn(a) -> Nil) -> Nil {
   }
 }
 
-pub fn google_gemini_thought_signature_is_preserved_for_continuation_test() {
+pub fn google_gemini_thought_signature_is_preserved_in_assistant_data_test() {
   let tool = tool_fixtures.int_field_tool("calc", "x")
   let assert Ok(reducer) = google.new_with_tools(types.default_limits(), [tool])
   let payload =
@@ -693,7 +703,7 @@ pub fn google_gemini_thought_signature_is_preserved_for_continuation_test() {
   google.terminal(reducer)
   |> should.equal(
     Some(stream_types.StreamFinished(
-      outcome: stream_types.CompletedToolCallsWithContinuation(
+      outcome: stream_types.CompletedToolCallsWithData(
         text: "",
         calls: [
           types.ToolCall(
@@ -705,7 +715,7 @@ pub fn google_gemini_thought_signature_is_preserved_for_continuation_test() {
           ),
         ],
         response_id: None,
-        provider_continuation: stream_types.GoogleProviderContinuation([
+        provider_data: encode_parts([
           "{\"functionCall\":{\"args\":{\"x\":1},\"id\":\"call_1\",\"name\":\"calc\"},\"thoughtSignature\":\"opaque\"}",
         ]),
         issues: [],
@@ -723,16 +733,11 @@ pub fn google_signed_non_tool_parts_are_retained_in_order_test() {
   let assert Ok(#(reducer, _)) = google.step(reducer, event(payload))
   case google.terminal(reducer) {
     Some(stream_types.StreamFinished(
-      stream_types.CompletedToolCallsWithContinuation(
-        _,
-        _,
-        _,
-        stream_types.GoogleProviderContinuation(parts),
-        [],
-      ),
+      stream_types.CompletedToolCallsWithData(_, _, _, saved_parts, []),
       _,
     )) -> {
-      let assert [text_part, call_part] = parts
+      let assert Ok([text_part, call_part]) =
+        json.parse(saved_parts, decode.list(decode.string))
       text_part
       |> string.contains("\"thoughtSignature\":\"text-sig\"")
       |> should.be_true
@@ -765,4 +770,8 @@ pub fn google_tool_call_outside_the_name_grammar_is_a_protocol_error_test() {
       string.contains(message, "invalid tool name") |> should.be_true
     _ -> should.fail()
   }
+}
+
+fn encode_parts(parts: List(String)) -> String {
+  json.array(parts, json.string) |> json.to_string
 }

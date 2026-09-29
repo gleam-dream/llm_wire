@@ -1,3 +1,4 @@
+import conversation_fixture
 import fake_server
 import gleam/bit_array
 import gleam/bytes_tree
@@ -64,7 +65,7 @@ pub fn prepared_client_rejects_caller_ca_for_remote_host_test() {
   }
 }
 
-pub fn continuation_is_opaque_and_bound_to_its_prepared_interaction_test() {
+pub fn caller_owned_assistant_turn_requires_exact_local_result_coverage_test() {
   let assert Ok(server) = fake_server.start()
   process.spawn_unlinked(fn() {
     let assert Ok(socket) = fake_server.accept_connection(server, 2000)
@@ -110,57 +111,51 @@ pub fn continuation_is_opaque_and_bound_to_its_prepared_interaction_test() {
     |> types.with_tools([tool])
   let assert Ok(first_prepared) =
     api.prepare(config, request, types.default_limits())
-  let assert Ok(second_prepared) =
-    api.prepare(config, request, types.default_limits())
 
-  let assert Ok(api.RunToolCalls(_, calls, continuation, _usage)) =
+  let assert Ok(api.RunToolCalls(turn, _usage)) =
     runtime.run(
       first_prepared,
       types.default_limits(),
       types.default_deadlines(),
     )
-  api.continuation_response_id(continuation)
+  turn.response_id
   |> should.equal(Some("resp_1"))
-  let assert [call] = calls
+  let assert [call] = turn.calls
   let assert Ok(unknown_id) = types.call_id("call_unknown")
   let results = [types.ToolResult(call.id, "42")]
 
-  api.prepare_continue(first_prepared, continuation, [], types.default_limits())
-  |> should.be_error
-  api.prepare_continue(
-    first_prepared,
-    continuation,
-    [types.ToolResult(call.id, "42"), types.ToolResult(call.id, "42")],
+  api.prepare(
+    config,
+    conversation_fixture.append_results(request, turn, []),
     types.default_limits(),
   )
   |> should.be_error
-  api.prepare_continue(
-    first_prepared,
-    continuation,
-    [types.ToolResult(unknown_id, "42")],
+  api.prepare(
+    config,
+    conversation_fixture.append_results(request, turn, [
+      types.ToolResult(call.id, "42"),
+      types.ToolResult(call.id, "42"),
+    ]),
+    types.default_limits(),
+  )
+  |> should.be_error
+  api.prepare(
+    config,
+    conversation_fixture.append_results(request, turn, [
+      types.ToolResult(unknown_id, "42"),
+    ]),
     types.default_limits(),
   )
   |> should.be_error
 
-  api.prepare_continue(
-    second_prepared,
-    continuation,
-    results,
-    types.default_limits(),
-  )
-  |> should.be_error
-
-  api.prepare_continue(
-    first_prepared,
-    continuation,
-    results,
-    types.default_limits(),
-  )
-  |> should.be_ok
+  // Preparing the same valid data twice is allowed: no origin-bound handle.
+  let completed = conversation_fixture.append_results(request, turn, results)
+  api.prepare(config, completed, types.default_limits()) |> should.be_ok
+  api.prepare(config, completed, types.default_limits()) |> should.be_ok
   fake_server.stop(server)
 }
 
-pub fn anthropic_continuation_restores_typed_tool_use_input_test() {
+pub fn anthropic_assistant_turn_preserves_typed_tool_use_input_test() {
   let assert Ok(server) = fake_server.start()
   let stream =
     "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-test\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n"
@@ -191,13 +186,15 @@ pub fn anthropic_continuation_restores_typed_tool_use_input_test() {
     types.new_request(model, [types.UserMessage("calculate")])
     |> types.with_tools([tool])
   let assert Ok(prepared) = api.prepare(config, request, types.default_limits())
-  let assert Ok(api.RunToolCalls(_, [call], continuation, _)) =
+  let assert Ok(api.RunToolCalls(turn, _)) =
     runtime.run(prepared, types.default_limits(), types.default_deadlines())
+  let assert [call] = turn.calls
   let assert Ok(follow_up) =
-    api.prepare_continue(
-      prepared,
-      continuation,
-      [types.ToolResult(call.id, "{\"result\":42}")],
+    api.prepare(
+      config,
+      conversation_fixture.append_results(request, turn, [
+        types.ToolResult(call.id, "{\"result\":42}"),
+      ]),
       types.default_limits(),
     )
   let body = api.prepared_request_json(follow_up)

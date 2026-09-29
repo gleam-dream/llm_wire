@@ -10,24 +10,14 @@ import llm_wire/internal/tls
 import llm_wire/pool
 import llm_wire/types
 
-/// An admitted interaction with its execution settings retained.
+/// One admitted request with its transport and response settings.
 pub opaque type PreparedCall {
   PreparedCall(call: api.PreparedCall, settings: config.Config)
 }
 
-/// Provider replay state and the exact interaction that produced it.
-pub opaque type Continuation {
-  Continuation(source: PreparedCall, replay: api.Continuation)
-}
-
 pub type RunResult {
   RunText(text: String, usage: Option(types.Usage))
-  RunToolCalls(
-    text: String,
-    calls: List(types.ToolCall),
-    continuation: Continuation,
-    usage: Option(types.Usage),
-  )
+  RunToolCalls(turn: types.AssistantTurn, usage: Option(types.Usage))
   RunOutputLimited(
     partial_text: String,
     partial_calls: List(types.ToolCall),
@@ -93,21 +83,6 @@ fn validate_ca_policy(
   }
 }
 
-pub fn prepare_continue(
-  pending: Continuation,
-  results: List(types.ToolResult),
-) -> Result(PreparedCall, types.WireError) {
-  let PreparedCall(source, settings) = pending.source
-  use Nil <- result.try(config.validate(settings))
-  use call <- result.try(api.prepare_continue(
-    source,
-    pending.replay,
-    results,
-    config.limits(settings),
-  ))
-  Ok(PreparedCall(call, settings))
-}
-
 pub fn stream(prepared: PreparedCall) -> Result(Stream, RunFailure) {
   let PreparedCall(call, settings) = prepared
   open_source(call, settings)
@@ -135,8 +110,7 @@ pub fn run(prepared: PreparedCall) -> Result(RunResult, RunFailure) {
   collect(stream)
 }
 
-/// The stream carries its originating prepared call, so collection cannot
-/// stamp a continuation with another interaction's identity.
+/// Collect one response from the owned stream.
 pub fn collect(stream: Stream) -> Result(RunResult, RunFailure) {
   case next(stream) {
     Ok(NextProgress(_)) -> collect(stream)
@@ -176,11 +150,10 @@ fn read_error_wire(error: ReadError) -> types.WireError {
   }
 }
 
-fn wrap_result(prepared: PreparedCall, outcome: api.RunResult) -> RunResult {
+fn wrap_result(outcome: api.RunResult) -> RunResult {
   case outcome {
     api.RunText(text, usage) -> RunText(text, usage)
-    api.RunToolCalls(text, calls, replay, usage) ->
-      RunToolCalls(text, calls, Continuation(prepared, replay), usage)
+    api.RunToolCalls(turn, usage) -> RunToolCalls(turn, usage)
     api.RunOutputLimited(text, calls, usage) ->
       RunOutputLimited(text, calls, usage)
     api.RunRefusal(reason, usage) -> RunRefusal(reason, usage)
@@ -204,8 +177,7 @@ pub fn next(stream: Stream) -> Result(ReadResult, ReadError) {
     Ok(stream_types.StreamTerminal(terminal)) -> {
       let PreparedCall(call, _) = prepared
       case api.terminal_result(call, terminal) {
-        Ok(outcome) ->
-          Ok(StreamTerminal(Finished(wrap_result(prepared, outcome))))
+        Ok(outcome) -> Ok(StreamTerminal(Finished(wrap_result(outcome))))
         Error(error) -> Error(TerminalConversionError(error))
       }
     }
@@ -224,19 +196,7 @@ pub fn prepared_request_json(prepared: PreparedCall) -> String {
   api.prepared_request_json(prepared.call)
 }
 
-pub fn continuation_response_id(pending: Continuation) -> Option(String) {
-  api.continuation_response_id(pending.replay)
-}
-
-/// The calls of this tool round that name an undeclared tool or carry invalid
-/// arguments, in call order. It is empty unless the settings selected
-/// `types.ReportInvalidToolCalls`. `prepare_continue` still requires one result
-/// per call, including each reported one.
-pub fn tool_call_issues(pending: Continuation) -> List(types.ToolCallIssue) {
-  api.continuation_issues(pending.replay)
-}
-
-/// The output codec stays with the prepared interaction across tool rounds.
+/// The output codec applies to this prepared request.
 pub opaque type PreparedStructuredCall(output) {
   PreparedStructuredCall(
     call: api.PreparedStructuredCall(output),
@@ -244,21 +204,9 @@ pub opaque type PreparedStructuredCall(output) {
   )
 }
 
-pub opaque type StructuredContinuation(output) {
-  StructuredContinuation(
-    source: PreparedStructuredCall(output),
-    replay: api.Continuation,
-  )
-}
-
 pub type StructuredRunResult(output) {
   StructuredValue(value: output, raw_json: String, usage: Option(types.Usage))
-  StructuredNeedsTools(
-    text: String,
-    calls: List(types.ToolCall),
-    continuation: StructuredContinuation(output),
-    usage: Option(types.Usage),
-  )
+  StructuredNeedsTools(turn: types.AssistantTurn, usage: Option(types.Usage))
   StructuredOutputLimited(
     partial_text: String,
     partial_calls: List(types.ToolCall),
@@ -285,13 +233,6 @@ pub type StructuredTerminal(output) {
   StructuredCancelled(types.RetryEvidence)
 }
 
-/// The structured counterpart of `tool_call_issues`.
-pub fn structured_tool_call_issues(
-  pending: StructuredContinuation(output),
-) -> List(types.ToolCallIssue) {
-  api.continuation_issues(pending.replay)
-}
-
 pub fn prepare_structured(
   settings: config.Config,
   request: types.Request,
@@ -309,21 +250,6 @@ pub fn prepare_structured(
   use Nil <- result.try(validate_ca_policy(
     api.structured_prepared_call(call),
     settings,
-  ))
-  Ok(PreparedStructuredCall(call, settings))
-}
-
-pub fn prepare_structured_continue(
-  pending: StructuredContinuation(output),
-  results: List(types.ToolResult),
-) -> Result(PreparedStructuredCall(output), types.WireError) {
-  let PreparedStructuredCall(source, settings) = pending.source
-  use Nil <- result.try(config.validate(settings))
-  use call <- result.try(api.prepare_structured_continue(
-    source,
-    pending.replay,
-    results,
-    config.limits(settings),
   ))
   Ok(PreparedStructuredCall(call, settings))
 }
@@ -370,13 +296,7 @@ fn wrap_structured_result(
       use value <- result.try(api.decode_structured_output(call, text))
       Ok(StructuredValue(value, text, usage))
     }
-    api.RunToolCalls(text, calls, replay, usage) ->
-      Ok(StructuredNeedsTools(
-        text,
-        calls,
-        StructuredContinuation(prepared, replay),
-        usage,
-      ))
+    api.RunToolCalls(turn, usage) -> Ok(StructuredNeedsTools(turn, usage))
     api.RunOutputLimited(text, calls, usage) ->
       Ok(StructuredOutputLimited(text, calls, usage))
     api.RunRefusal(reason, usage) -> Ok(StructuredRefusal(reason, usage))

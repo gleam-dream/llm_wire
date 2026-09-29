@@ -14,6 +14,11 @@ pub type TransportHandle {
   )
 }
 
+/// Explicit delivery evidence from a substituted transport's opening phase.
+pub type ConnectFailure {
+  ConnectFailure(error: types.WireError, retry: types.RetryEvidence)
+}
+
 /// Replaces the network connection for one prepared call. `llm_wire/testing`
 /// uses it to deliver scripted bytes to the same stream owner, reducer, and
 /// session path as a real response; the runtime never opens a socket for it.
@@ -27,7 +32,7 @@ pub type Connector {
       fn() -> Nil,
       fn(transport_failure.Failure) -> Nil,
       fn() -> Nil,
-    ) -> Result(TransportHandle, types.WireError),
+    ) -> Result(TransportHandle, ConnectFailure),
   )
 }
 

@@ -6,6 +6,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/result
 import gleam/string
+import llm_wire/internal/call_admission
 import llm_wire/internal/sse
 import llm_wire/internal/stream_types
 import llm_wire/internal/transport_failure
@@ -932,10 +933,8 @@ fn terminal_name(terminal: stream_types.TerminalOutcome) -> String {
     stream_types.StreamFinished(stream_types.Refused(_), _) -> "refused"
     stream_types.StreamFinished(stream_types.CompletedToolCalls(..), _) ->
       "completed_tools"
-    stream_types.StreamFinished(
-      stream_types.CompletedToolCallsWithContinuation(..),
-      _,
-    ) -> "completed_tools"
+    stream_types.StreamFinished(stream_types.CompletedToolCallsWithData(..), _) ->
+      "completed_tools"
     stream_types.StreamFinished(stream_types.OutputLimited(_, _), _) ->
       "output_limited"
     stream_types.StreamFailed(_, _) -> "failed"
@@ -1011,22 +1010,28 @@ fn terminal_provider(
   case provider.terminal(state.provider) {
     None -> Ok(None)
     Some(provider.Text(text, usage)) ->
-      result.map(validate_terminal_text(state.limits, text), fn(_) {
+      result.map(call_admission.validate_text(state.limits, text), fn(_) {
         Some(stream_types.StreamFinished(
           stream_types.CompletedText(text),
           usage,
         ))
       })
-    Some(provider.ToolCalls(text, calls, response_id, replay, usage)) -> {
-      use Nil <- result.try(validate_terminal_text(state.limits, text))
-      use Nil <- result.try(validate_terminal_metadata(
+    Some(provider.ToolCalls(text, calls, response_id, provider_data, usage)) -> {
+      use Nil <- result.try(call_admission.validate_text(state.limits, text))
+      use Nil <- result.try(call_admission.validate_metadata(
         state.limits,
         calls,
         response_id,
+        provider_data,
       ))
-      use issues <- result.try(admit_terminal_calls(state, calls))
+      use issues <- result.try(call_admission.admit(
+        calls,
+        state.admitted_tools,
+        state.limits,
+        state.tool_call_checks,
+      ))
       Ok(
-        Some(case replay {
+        Some(case provider_data {
           None ->
             stream_types.StreamFinished(
               stream_types.CompletedToolCalls(text, calls, response_id, issues),
@@ -1034,11 +1039,11 @@ fn terminal_provider(
             )
           Some(value) ->
             stream_types.StreamFinished(
-              stream_types.CompletedToolCallsWithContinuation(
+              stream_types.CompletedToolCallsWithData(
                 text,
                 calls,
                 response_id,
-                stream_types.CustomProviderContinuation(value),
+                value,
                 issues,
               ),
               usage,
@@ -1047,10 +1052,11 @@ fn terminal_provider(
       )
     }
     Some(provider.OutputLimited(text, calls, usage)) -> {
-      use Nil <- result.try(validate_terminal_text(state.limits, text))
-      use Nil <- result.try(validate_terminal_metadata(
+      use Nil <- result.try(call_admission.validate_text(state.limits, text))
+      use Nil <- result.try(call_admission.validate_metadata(
         state.limits,
         calls,
+        None,
         None,
       ))
       use Nil <- result.try(validate_partial_calls(state.limits, calls))
@@ -1062,7 +1068,7 @@ fn terminal_provider(
       )
     }
     Some(provider.Refusal(reason, usage)) ->
-      result.map(validate_terminal_text(state.limits, reason), fn(_) {
+      result.map(call_admission.validate_text(state.limits, reason), fn(_) {
         Some(stream_types.StreamFinished(stream_types.Refused(reason), usage))
       })
     Some(provider.Failure(error, retry)) ->
@@ -1089,134 +1095,6 @@ fn terminal_provider(
         ),
       )
   }
-}
-
-fn validate_terminal_text(
-  limits: types.Limits,
-  text: String,
-) -> Result(Nil, types.WireError) {
-  let size = string.byte_size(text)
-  case size > limits.total_text_bytes_limit {
-    True ->
-      Error(types.ResourceLimitExceeded(
-        "total_text_bytes_limit",
-        limits.total_text_bytes_limit,
-        size,
-      ))
-    False -> Ok(Nil)
-  }
-}
-
-fn validate_terminal_metadata(
-  limits: types.Limits,
-  calls: List(types.ToolCall),
-  response_id: Option(String),
-) -> Result(Nil, types.WireError) {
-  let response_bytes = case response_id {
-    Some(id) -> string.byte_size(id)
-    None -> 0
-  }
-  let bytes =
-    list.fold(calls, response_bytes, fn(total, call) {
-      total
-      + string.byte_size(types.call_id_to_string(call.id))
-      + string.byte_size(types.tool_name_to_string(call.name))
-      + option_string_bytes(call.provider_id)
-      + option_string_bytes(call.provider_state)
-    })
-  case bytes > limits.provider_metadata_bytes_limit {
-    True ->
-      Error(types.ResourceLimitExceeded(
-        "provider_metadata_bytes_limit",
-        limits.provider_metadata_bytes_limit,
-        bytes,
-      ))
-    False -> Ok(Nil)
-  }
-}
-
-fn option_string_bytes(value: Option(String)) -> Int {
-  case value {
-    Some(text) -> string.byte_size(text)
-    None -> 0
-  }
-}
-
-/// Admits a completed tool-call batch. Duplicate IDs and byte bounds always
-/// fail the response. An undeclared tool or invalid arguments fail it under
-/// `RejectInvalidToolCalls` and become per-call issues under
-/// `ReportInvalidToolCalls`; every call stays in provider order either way.
-fn admit_terminal_calls(
-  state: State,
-  calls: List(types.ToolCall),
-) -> Result(List(types.ToolCallIssue), types.WireError) {
-  let count = list.length(calls)
-  use Nil <- result.try(case count > state.limits.active_blocks_limit {
-    True ->
-      Error(types.ResourceLimitExceeded(
-        "active_blocks_limit",
-        state.limits.active_blocks_limit,
-        count,
-      ))
-    False -> Ok(Nil)
-  })
-  let empty: Result(
-    #(List(types.CallId), Int, List(types.ToolCallIssue)),
-    types.WireError,
-  ) = Ok(#([], 0, []))
-  use #(_, _, issues) <- result.try(
-    list.fold(calls, empty, fn(acc, call) {
-      use #(seen, bytes, issues) <- result.try(acc)
-      use Nil <- result.try(case list.contains(seen, call.id) {
-        True -> Error(types.ProtocolError("Duplicate tool call ID"))
-        False -> Ok(Nil)
-      })
-      let max_bytes = state.limits.argument_bytes_per_call_limit
-      use Nil <- result.try(types.check_argument_bytes(
-        max_bytes,
-        call.arguments_json,
-      ))
-      let total = bytes + string.byte_size(call.arguments_json)
-      use Nil <- result.try(
-        case total > state.limits.total_argument_bytes_limit {
-          True ->
-            Error(types.ResourceLimitExceeded(
-              "total_argument_bytes_limit",
-              state.limits.total_argument_bytes_limit,
-              total,
-            ))
-          False -> Ok(Nil)
-        },
-      )
-      let issue = case
-        list.find(state.admitted_tools, fn(tool) {
-          types.tool_name_of(tool) == call.name
-        })
-      {
-        Error(Nil) -> Some(types.UnknownTool(call.id))
-        Ok(tool) ->
-          case
-            types.check_tool_arguments(tool, max_bytes, call.arguments_json)
-          {
-            Ok(Nil) -> None
-            Error(reason) -> Some(types.InvalidArguments(call.id, reason))
-          }
-      }
-      use issues <- result.try(case issue, state.tool_call_checks {
-        None, _ -> Ok(issues)
-        Some(issue), types.ReportInvalidToolCalls -> Ok([issue, ..issues])
-        Some(types.UnknownTool(_)), types.RejectInvalidToolCalls ->
-          Error(types.ProtocolError(
-            "Tool not declared in admitted catalog: "
-            <> types.tool_name_to_string(call.name),
-          ))
-        Some(types.InvalidArguments(_, reason)), types.RejectInvalidToolCalls ->
-          Error(types.ProtocolError(reason))
-      })
-      Ok(#([call.id, ..seen], total, issues))
-    }),
-  )
-  Ok(list.reverse(issues))
 }
 
 fn validate_partial_calls(

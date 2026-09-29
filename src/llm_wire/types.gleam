@@ -270,12 +270,27 @@ pub type Content {
   InlineImageContent(mime_type: String, base64_data: String)
 }
 
+/// One completed provider tool response. This is message data only: it has no
+/// configuration, conversation, codec, callback, or execution lifecycle.
+/// Keep provider_data with this turn when supplying it in a later request.
+pub type AssistantTurn {
+  AssistantTurn(
+    provider: Provider,
+    text: String,
+    calls: List(ToolCall),
+    response_id: Option(String),
+    provider_data: Option(String),
+    issues: List(ToolCallIssue),
+  )
+}
+
 pub type Message {
   SystemMessage(content: String)
   UserMessage(content: String)
   UserContent(parts: List(Content))
   AssistantMessage(content: String)
   AssistantContent(parts: List(Content))
+  AssistantTurnMessage(turn: AssistantTurn)
   AssistantToolCalls(calls: List(ToolCall))
   AssistantToolCallsWithText(text: String, calls: List(ToolCall))
   ToolResultMessage(call_id: CallId, content: String)

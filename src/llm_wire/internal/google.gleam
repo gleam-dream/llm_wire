@@ -26,7 +26,6 @@ pub opaque type Reducer {
     response_id: Option(String),
     usage: Option(types.Usage),
     provider_parts: List(String),
-    has_thought_signature: Bool,
   )
 }
 
@@ -55,7 +54,6 @@ pub fn new(limits: types.Limits) -> Reducer {
     response_id: None,
     usage: None,
     provider_parts: [],
-    has_thought_signature: False,
   )
 }
 
@@ -303,18 +301,14 @@ fn process_part(
   use encoded_part <- result.try(
     dynamic_json(part)
     |> result.replace_error(types.ProtocolError(
-      "Gemini model part cannot be retained for continuation",
+      "Gemini model part cannot be retained in the assistant turn",
     )),
   )
   let with_provider_part =
-    Reducer(
-      ..reducer,
-      provider_parts: [json.to_string(encoded_part), ..reducer.provider_parts],
-      has_thought_signature: case thought_signature {
-        Some(_) -> True
-        None -> reducer.has_thought_signature
-      },
-    )
+    Reducer(..reducer, provider_parts: [
+      json.to_string(encoded_part),
+      ..reducer.provider_parts
+    ])
   case get_field(part, "functionCall") {
     Ok(function_call) ->
       process_function_call(
@@ -506,31 +500,18 @@ fn apply_finish_reason(
         }
         _ -> {
           use calls <- result.try(build_tool_calls(reducer))
-          let outcome = case reducer.has_thought_signature {
-            True ->
-              stream_types.StreamFinished(
-                stream_types.CompletedToolCallsWithContinuation(
-                  reducer.text_buffer,
-                  calls,
-                  reducer.response_id,
-                  stream_types.GoogleProviderContinuation(list.reverse(
-                    reducer.provider_parts,
-                  )),
-                  [],
-                ),
-                reducer.usage,
-              )
-            False ->
-              stream_types.StreamFinished(
-                stream_types.CompletedToolCalls(
-                  reducer.text_buffer,
-                  calls,
-                  reducer.response_id,
-                  [],
-                ),
-                reducer.usage,
-              )
-          }
+          let outcome =
+            stream_types.StreamFinished(
+              stream_types.CompletedToolCallsWithData(
+                reducer.text_buffer,
+                calls,
+                reducer.response_id,
+                json.array(list.reverse(reducer.provider_parts), json.string)
+                  |> json.to_string,
+                [],
+              ),
+              reducer.usage,
+            )
           Ok(Reducer(..reducer, terminal_outcome: Some(outcome)))
         }
       }

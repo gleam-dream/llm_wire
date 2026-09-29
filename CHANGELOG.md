@@ -4,12 +4,21 @@
 
 ### Included
 
+- **Breaking:** removed `Continuation`, `StructuredContinuation`, all
+  `prepare_*continue` and checkpoint APIs, and provider replay closures/codecs.
+  `RunToolCalls(turn, usage)` and `StructuredNeedsTools(turn, usage)` return
+  `types.AssistantTurn` data. Callers append `AssistantTurnMessage` plus results
+  and prepare the next request explicitly. Fabric owns agent state and storage.
+- Added bounded version-1 disk cassette playback with strict ordered request
+  matching, no network fallback, typed load/format errors, and explicit delivery
+  evidence for local mismatches. The same flow uses production or playback
+  settings; live recording is deferred.
 - Erlang/OTP HTTP and SSE calls through OpenAI Responses, Anthropic Messages,
   Google GenerateContent, and public application-defined provider adapters.
 - Pure provider options and common configuration; local admission before
   transport; bounded request, response, progress, metadata, and deadline paths.
 - Buffered and owned streaming outcomes, typed retry evidence, exact tool
-  continuation, and an optional caller-owned connection pool.
+  response messages, and an optional caller-owned connection pool.
 - Blueprint-backed tool and structured-output admission, including schema-only
   tools from finite runtime contracts. Sinal emits fixed lifecycle observations.
 
@@ -37,7 +46,7 @@ candidate API.
   or invalid arguments fail the response with `ProtocolError`.
   `ReportInvalidToolCalls` returns every call and exposes
   `types.ToolCallIssue` values (`UnknownTool`, `InvalidArguments`) through
-  `session.tool_call_issues` and `session.structured_tool_call_issues`, so an
+  `AssistantTurn.issues`, so an
   agent can answer each bad call instead of losing the turn. Exact result
   coverage still includes reported calls. Built-in reducers no longer check
   the catalog or arguments; the runtime admits every completed batch once, so
@@ -45,7 +54,7 @@ candidate API.
   default, a built-in provider's invalid call now fails when the response
   completes rather than when its block closes.
 - A reported call now replays to every built-in provider, through
-  `prepare_continue` or from public messages given to `session.prepare`.
+  caller-owned messages given to `session.prepare`.
   Anthropic `input` and Google `args` must be JSON objects, so their encoders
   send argument text that is not a JSON object, such as truncated JSON, as
   `{"unparsed_arguments": text}`. The model still sees what it sent, and the
@@ -55,50 +64,34 @@ candidate API.
   a valid non-object value such as `[1]` is wrapped rather than sent to a
   provider that refuses it. The encoding does not depend on
   `ToolCallChecks`; under the default, responses are admitted and
-  `prepare_continue` rechecks unreported calls exactly as before.
+  new responses are checked against the current catalog.
 
 ### Current limits
 
 - The built-in providers cover the documented text, tool, structured-output,
   and selected image profiles. Audio, video, embeddings, realtime/WebSocket,
-  batch/background jobs, durable continuation, automatic retries, and remote
+  batch/background jobs, automatic retries, and remote
   cancellation acknowledgement are outside this candidate.
 - Strict response-header rejection is tested, but Gun 2.6.0 has no proven
   16 KiB **pre-allocation** bound on complete headers. The transport decision
   recorded in `DESIGN-COVERAGE.md` remains open before release acceptance.
-- Provider replay closures contain adapter-owned state. Adapter authors must
-  bound captured state and any wire-specific block structure themselves.
+- Adapter authors must bound reducer state and wire-specific block structure.
+  Returned provider data is bounded by the runtime.
 
-### Known gaps
+### Provider messages and retry assessment
 
-Fabric reported both gaps. Neither has an accepted contract, so this candidate
-records them rather than guessing one.
-
-- **Persistable continuation.** `session.Continuation` lives only in memory.
-  It holds an Erlang reference that proves its origin, the retained `Config`
-  with credentials and any pool, the admitted catalog with native decode
-  closures, and provider replay state: Google raw signed parts and custom
-  `provider.Replay` closures. None of it survives a restart, and llm_wire does
-  not serialize private state. The design calls for an optional
-  provider-owned envelope with identity, version, codec, and compatibility
-  outcomes. Restoration must take fresh settings and catalog from the caller,
-  keep the pending call IDs and exact result coverage, preserve required
-  provider state or reject the envelope as incompatible, and exclude secrets
-  and live resources. Until then Fabric persists its own transcript of public
-  `types.Message` values, keeping `provider_id` and `provider_state` on each
-  call, and rebuilds every turn with `session.prepare`. That path loses Google
-  raw non-call parts of a tool turn, custom `Replay` closures (the adapter's
-  plain encoder rebuilds the request), and the coverage check of
-  `prepare_continue`, which Fabric enforces itself.
-- **Retry classification.** `RetryEvidence` states whether a request may have
-  reached the provider and whether response bytes or semantic progress were
-  observed. It does not state whether another attempt can succeed. Callers
-  derive that from `WireError`: Fabric treats `TransportError`,
-  `DeadlineExceeded`, and HTTP 408, 429, and 5xx as retryable and everything
-  else as final. A library classification would combine the error variant,
-  status, provider error codes, `Retry-After`, and retry evidence. It needs
-  provider-specific error-code evidence and a ruling on retry ownership, which
-  the design keeps separate from agent and workflow retry.
+- Google raw signed parts stay with their own assistant turn. Multiple caller-
+  supplied turns retain their signatures, including signed text followed by an
+  unsigned round. Repeated call IDs resolve result names and provider IDs within
+  their own round. Invalid raw/normalized combinations fail preparation.
+- Request-local validation rejects missing, duplicate, unknown and orphan tool
+  results before transport. Reported invalid arguments keep their established
+  provider encoding. There is no retained source request or implicit agent loop.
+- `retry.assess` returns `MayHelp`, `WillNotHelpUnchanged`, or `Unknown`. The
+  caller owns retry policy and repeated effects.
+- Updated Dream/ReqCassette oracle mappings to cassette behavior. Added
+  [Fabric migration notes](docs/fabric-migration.md) for caller-owned histories,
+  persistence, tool result association and injectable test configuration.
 
 ### Release preparation remaining
 

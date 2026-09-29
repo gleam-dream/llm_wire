@@ -3,7 +3,7 @@ version = "0.1.0"
 target = "erlang"
 gleam = ">= 1.18.0"
 licenses = ["Apache-2.0"]
-description = "A bounded HTTP/SSE LLM client for Gleam with typed provider adapters, streaming, and tool continuation."
+description = "A bounded HTTP/SSE LLM client for Gleam with typed provider adapters, streaming, and caller-owned conversations."
 
 internal_modules = ["llm_wire/internal", "llm_wire/internal/*"]
 

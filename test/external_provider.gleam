@@ -1,5 +1,6 @@
 // This module deliberately imports only public package modules. The boundary
 // gate also compiles it as source in a separate consumer package.
+import gleam/dynamic/decode
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -24,26 +25,31 @@ type State {
 }
 
 pub fn adapter(endpoint: types.Endpoint) -> provider.Adapter {
-  configured_adapter(endpoint, False)
+  configured_adapter(endpoint, False, types.Custom("scripted-fourth"))
 }
 
 pub fn failing_adapter(endpoint: types.Endpoint) -> provider.Adapter {
-  configured_adapter(endpoint, True)
+  configured_adapter(endpoint, True, types.Custom("scripted-fourth"))
+}
+
+pub fn google_identified_adapter(endpoint: types.Endpoint) -> provider.Adapter {
+  configured_adapter(endpoint, False, types.Google)
 }
 
 fn configured_adapter(
   endpoint: types.Endpoint,
   fail_reducer: Bool,
+  identity: types.Provider,
 ) -> provider.Adapter {
   provider.adapter(
     provider.Spec(
-      identity: types.Custom("scripted-fourth"),
+      identity: identity,
       endpoint: endpoint,
       headers: [
         #("X-Fixture", "fourth"),
       ],
       encode: fn(request, tools, format) {
-        Ok(encode_request(request, tools, format, None))
+        encode_request(request, tools, format)
       },
       project_tool_schema: provider.blueprint_schema,
       project_output_schema: provider.blueprint_schema,
@@ -74,9 +80,8 @@ fn encode_request(
   request: types.Request,
   tools: List(provider.ProjectedTool),
   format: Option(provider.OutputFormat),
-  replay: Option(Turn),
-) -> provider.EncodedRequest {
-  let messages = list.map(request.messages, encode_message)
+) -> Result(provider.EncodedRequest, types.WireError) {
+  use messages <- result.try(list.try_map(request.messages, encode_message))
   let projected =
     list.map(tools, fn(tool) {
       let provider.ProjectedTool(name, description, schema_json) = tool
@@ -93,19 +98,7 @@ fn encode_request(
       #("output_schema", schema_json),
     ]
   }
-  let replay_fields = case replay {
-    None -> []
-    Some(Turn(text, calls)) -> [
-      #("replay_text", json.string(text)),
-      #(
-        "replay_call_ids",
-        json.array(calls, fn(call) {
-          json.string(types.call_id_to_string(call.id))
-        }),
-      ),
-    ]
-  }
-  provider.EncodedRequest(
+  Ok(provider.EncodedRequest(
     "/events",
     json.to_string(
       json.object(list.append(
@@ -114,28 +107,61 @@ fn encode_request(
           #("messages", json.array(messages, fn(value) { value })),
           #("tools", json.array(projected, fn(value) { value })),
         ],
-        list.append(format_fields, replay_fields),
+        format_fields,
       )),
     ),
-  )
+  ))
 }
 
-fn encode_message(message: types.Message) -> json.Json {
+fn encode_message(
+  message: types.Message,
+) -> Result(json.Json, types.WireError) {
   case message {
-    types.SystemMessage(text) -> message_json("system", text)
-    types.UserMessage(text) -> message_json("user", text)
-    types.UserContent(_) -> message_json("user", "[content]")
-    types.AssistantMessage(text) -> message_json("assistant", text)
-    types.AssistantContent(_) -> message_json("assistant", "[content]")
-    types.AssistantToolCalls(calls) -> assistant_calls("", calls)
+    types.SystemMessage(text) -> Ok(message_json("system", text))
+    types.UserMessage(text) -> Ok(message_json("user", text))
+    types.UserContent(_) -> Ok(message_json("user", "[content]"))
+    types.AssistantMessage(text) -> Ok(message_json("assistant", text))
+    types.AssistantContent(_) -> Ok(message_json("assistant", "[content]"))
+    types.AssistantToolCalls(calls) -> Ok(assistant_calls("", calls))
     types.AssistantToolCallsWithText(text, calls) ->
-      assistant_calls(text, calls)
+      Ok(assistant_calls(text, calls))
+    types.AssistantTurnMessage(turn) -> {
+      case turn.provider_data {
+        None -> Ok(assistant_calls(turn.text, turn.calls))
+        Some(saved) -> {
+          use retained <- result.try(restore_state(saved))
+          case retained.text == turn.text && retained.calls == turn.calls {
+            False ->
+              Error(types.PreparationError(
+                "Fixture provider data differs from its assistant turn",
+              ))
+            True ->
+              Ok(
+                json.object([
+                  #("role", json.string("assistant")),
+                  #("text", json.string(turn.text)),
+                  #("replay_text", json.string(retained.text)),
+                  #(
+                    "replay_call_ids",
+                    json.array(retained.calls, fn(call) {
+                      json.string(types.call_id_to_string(call.id))
+                    }),
+                  ),
+                  #("turn", assistant_calls(turn.text, turn.calls)),
+                ]),
+              )
+          }
+        }
+      }
+    }
     types.ToolResultMessage(id, content) ->
-      json.object([
-        #("role", json.string("tool")),
-        #("call_id", json.string(types.call_id_to_string(id))),
-        #("content", json.string(content)),
-      ])
+      Ok(
+        json.object([
+          #("role", json.string("tool")),
+          #("call_id", json.string(types.call_id_to_string(id))),
+          #("content", json.string(content)),
+        ]),
+      )
   }
 }
 
@@ -249,20 +275,44 @@ fn terminal(state: State) -> Option(provider.Terminal) {
       Some(provider.OutputLimited(state.text, state.calls, None))
     True, None, None, False, [] -> Some(provider.Text(state.text, None))
     True, None, None, False, calls -> {
-      let replay =
-        provider.replay(
-          Turn(state.text, calls),
-          fn(turn, request, tools, format) {
-            Ok(encode_request(request, tools, format, Some(turn)))
-          },
-        )
       Some(provider.ToolCalls(
         state.text,
         calls,
         Some("response-fourth"),
-        Some(replay),
+        Some(assistant_calls(state.text, calls) |> json.to_string),
         None,
       ))
     }
   }
+}
+
+fn restore_state(saved: String) -> Result(Turn, types.WireError) {
+  let call_decoder = {
+    use id <- decode.field("id", decode.string)
+    use name <- decode.field("name", decode.string)
+    use arguments <- decode.field("arguments", decode.string)
+    decode.success(#(id, name, arguments))
+  }
+  let decoder = {
+    use text <- decode.field("text", decode.string)
+    use calls <- decode.field("calls", decode.list(call_decoder))
+    decode.success(#(text, calls))
+  }
+  use state <- result.try(
+    json.parse(saved, decoder)
+    |> result.replace_error(types.PreparationError("Invalid fixture replay")),
+  )
+  let #(text, raw_calls) = state
+  use calls <- result.try(
+    list.try_map(raw_calls, fn(raw) {
+      let #(id, name, arguments) = raw
+      use id <- result.try(types.call_id(id))
+      use name <- result.try(
+        types.tool_name(name)
+        |> result.replace_error(types.PreparationError("Invalid fixture tool")),
+      )
+      Ok(types.tool_call(id, name, arguments))
+    }),
+  )
+  Ok(Turn(text, calls))
 }

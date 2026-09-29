@@ -1,6 +1,5 @@
 import gleam/dynamic/decode
 import gleam/erlang/process
-import gleam/erlang/reference
 import gleam/float
 import gleam/int
 import gleam/json
@@ -12,7 +11,9 @@ import gleam/string
 import json/blueprint/codec
 import json/blueprint/runtime
 import llm_wire/internal/anthropic
+import llm_wire/internal/call_admission
 import llm_wire/internal/google
+import llm_wire/internal/json_bounds
 import llm_wire/internal/openai
 import llm_wire/internal/owner
 import llm_wire/internal/schema
@@ -25,8 +26,7 @@ import llm_wire/telemetry
 import llm_wire/types
 
 /// A provider-bound request whose options and Blueprint tool schemas have been
-/// checked locally. It retains the original adapter configuration so callers
-/// cannot switch providers while preparing a continuation.
+/// checked locally. Configuration applies only to this request.
 pub opaque type PreparedCall {
   PreparedCall(
     config: provider.Adapter,
@@ -40,43 +40,12 @@ pub opaque type PreparedCall {
     headers: List(#(String, String)),
     body: String,
     structured_format: Option(StructuredFormat),
-    origin: reference.Reference,
   )
-}
-
-pub opaque type Continuation {
-  Continuation(
-    provider: types.Provider,
-    model: types.ModelId,
-    expected_calls: List(types.CallId),
-    source_calls: List(types.ToolCall),
-    assistant_text: String,
-    conversation: List(types.Message),
-    response_id: Option(String),
-    provider_continuation: Option(stream_types.ProviderContinuation),
-    origin: reference.Reference,
-    issues: List(types.ToolCallIssue),
-  )
-}
-
-pub fn continuation_response_id(continuation: Continuation) -> Option(String) {
-  continuation.response_id
-}
-
-pub fn continuation_issues(
-  continuation: Continuation,
-) -> List(types.ToolCallIssue) {
-  continuation.issues
 }
 
 pub type RunResult {
   RunText(text: String, usage: Option(types.Usage))
-  RunToolCalls(
-    text: String,
-    calls: List(types.ToolCall),
-    continuation: Continuation,
-    usage: Option(types.Usage),
-  )
+  RunToolCalls(turn: types.AssistantTurn, usage: Option(types.Usage))
   RunOutputLimited(
     partial_text: String,
     partial_calls: List(types.ToolCall),
@@ -100,11 +69,7 @@ pub opaque type PreparedStructuredCall(output) {
 
 pub type StructuredRunResult(output) {
   StructuredValue(output: output, raw_json: String, usage: Option(types.Usage))
-  StructuredNeedsTools(
-    calls: List(types.ToolCall),
-    continuation: Continuation,
-    usage: Option(types.Usage),
-  )
+  StructuredNeedsTools(turn: types.AssistantTurn, usage: Option(types.Usage))
   StructuredOutputLimited(
     partial_text: String,
     partial_calls: List(types.ToolCall),
@@ -333,7 +298,7 @@ pub fn prepare(
   request: types.Request,
   limits: types.Limits,
 ) -> Result(PreparedCall, types.WireError) {
-  prepare_with_format(config, request, limits, None, None)
+  prepare_with_format(config, request, limits, None)
 }
 
 pub fn prepare_structured(
@@ -370,32 +335,11 @@ pub fn prepare_structured(
             request,
             limits,
             Some(format),
-            None,
           ))
           Ok(PreparedStructuredCall(prepared, contract, output_codec, limits))
         }
       }
   }
-}
-
-pub fn prepare_structured_continue(
-  prepared: PreparedStructuredCall(output),
-  continuation: Continuation,
-  results: List(types.ToolResult),
-  limits: types.Limits,
-) -> Result(PreparedStructuredCall(output), types.WireError) {
-  use next_call <- result.try(prepare_continue(
-    prepared.prepared,
-    continuation,
-    results,
-    limits,
-  ))
-  Ok(PreparedStructuredCall(
-    next_call,
-    prepared.contract,
-    prepared.output_codec,
-    limits,
-  ))
 }
 
 pub fn structured_prepared_call(
@@ -427,9 +371,14 @@ fn prepare_with_format(
   request: types.Request,
   limits: types.Limits,
   structured_format: Option(StructuredFormat),
-  provider_continuation: Option(stream_types.ProviderContinuation),
 ) -> Result(PreparedCall, types.WireError) {
   let adapter = config
+  use messages <- result.try(admit_messages(
+    request.messages,
+    provider.identity(adapter),
+    limits,
+  ))
+  let request = types.Request(..request, messages: messages)
   use admitted_tools <- result.try(types.admit_tool_catalog(request.tools))
   use projected_tools <- result.try(
     list.fold(admitted_tools, Ok([]), fn(acc, tool) {
@@ -458,16 +407,11 @@ fn prepare_with_format(
       Some(provider.OutputFormat(name, schema_json))
     None -> None
   }
-  let replay = case provider_continuation {
-    Some(stream_types.CustomProviderContinuation(value)) -> Some(value)
-    _ -> None
-  }
   use encoded <- result.try(provider.encode(
     adapter,
     request,
     projected_tools,
     format,
-    replay,
   ))
   let provider.EncodedRequest(provider_path, body_text) = encoded
   let #(host, port, base_path, tls_mode) = endpoint_parts
@@ -501,7 +445,6 @@ fn prepare_with_format(
               headers,
               body_text,
               structured_format,
-              reference.new(),
             )
           use Nil <- result.try(validate_prepared_transport(prepared, tls_mode))
           let _ =
@@ -528,133 +471,6 @@ pub fn close(
   stream: owner.Stream,
 ) -> Result(types.CloseOutcome, types.ReadError) {
   owner.close(stream)
-}
-
-/// Validates exact tool-result coverage before preparing a provider-bound
-/// follow-up call. Results may arrive in any order; the wire transcript follows
-/// the provider's original outstanding-call order.
-pub fn prepare_continue(
-  prepared: PreparedCall,
-  continuation: Continuation,
-  results: List(types.ToolResult),
-  limits: types.Limits,
-) -> Result(PreparedCall, types.WireError) {
-  case
-    continuation.origin == prepared.origin
-    && continuation.provider == prepared.provider
-    && continuation.model == prepared.model
-  {
-    False ->
-      Error(types.PreparationError(
-        "Continuation belongs to a different prepared interaction",
-      ))
-    True -> {
-      let source_calls = continuation.source_calls
-      case
-        source_calls == []
-        || list.map(source_calls, fn(call) { call.id })
-        != continuation.expected_calls
-      {
-        True ->
-          Error(types.PreparationError(
-            "Continuation is stale or missing its original tool calls",
-          ))
-        False -> {
-          use Nil <- result.try(validate_continuation_calls(
-            source_calls,
-            continuation.issues,
-            prepared.request.tools,
-            limits.argument_bytes_per_call_limit,
-          ))
-          use ordered <- result.try(validate_tool_results(
-            continuation.expected_calls,
-            results,
-          ))
-          let messages =
-            list.append(continuation.conversation, [
-              types.AssistantToolCallsWithText(
-                continuation.assistant_text,
-                source_calls,
-              ),
-              ..list.map(ordered, fn(tool_result) {
-                types.ToolResultMessage(
-                  tool_result.call_id,
-                  tool_result.content,
-                )
-              })
-            ])
-          let request =
-            types.new_request(continuation.model, messages)
-            |> types.with_tools(prepared.request.tools)
-            |> copy_options(prepared.request)
-          prepare_with_format(
-            prepared.config,
-            request,
-            limits,
-            prepared.structured_format,
-            continuation.provider_continuation,
-          )
-        }
-      }
-    }
-  }
-}
-
-/// Rechecks the retained calls against the catalog. A call the runtime
-/// reported as an issue is exempt: the caller answers it with a result.
-fn validate_continuation_calls(
-  calls: List(types.ToolCall),
-  issues: List(types.ToolCallIssue),
-  tools: List(types.ToolDefinition),
-  max_argument_bytes: Int,
-) -> Result(Nil, types.WireError) {
-  let reported = list.map(issues, fn(issue) { issue.call_id })
-  let checked =
-    list.filter(calls, fn(call) { !list.contains(reported, call.id) })
-  list.fold(checked, Ok(Nil), fn(acc, call) {
-    use Nil <- result.try(acc)
-    let name = types.tool_name_to_string(call.name)
-    case
-      list.find(tools, fn(tool) {
-        types.tool_name_to_string(types.tool_name_of(tool)) == name
-      })
-    {
-      Error(Nil) ->
-        Error(types.PreparationError(
-          "Continuation call names an unadmitted tool: " <> name,
-        ))
-      Ok(tool) ->
-        types.validate_tool_arguments(
-          tool,
-          max_argument_bytes,
-          call.arguments_json,
-        )
-    }
-  })
-}
-
-fn copy_options(
-  request: types.Request,
-  original: types.Request,
-) -> types.Request {
-  let with_max = case original.max_tokens {
-    Some(value) -> types.with_max_tokens(request, value)
-    None -> request
-  }
-  let with_temperature = case original.temperature {
-    Some(value) -> types.with_temperature(with_max, value)
-    None -> with_max
-  }
-  let with_top_p = case original.top_p {
-    Some(value) -> types.with_top_p(with_temperature, value)
-    None -> with_temperature
-  }
-  let with_stops =
-    types.with_stop_sequences(with_top_p, original.stop_sequences)
-  case original.prompt_cache {
-    Some(cache) -> types.with_prompt_cache(with_stops, cache)
-    None -> with_stops
-  }
 }
 
 fn validate_tool_results(
@@ -739,47 +555,39 @@ pub fn terminal_result(
     stream_types.StreamFinished(
       stream_types.CompletedToolCalls(text, calls, response_id, issues),
       usage,
-    ) -> {
-      let continuation =
-        Continuation(
+    ) ->
+      Ok(RunToolCalls(
+        types.AssistantTurn(
           prepared.provider,
-          prepared.model,
-          list.map(calls, fn(call) { call.id }),
-          calls,
           text,
-          prepared.request.messages,
+          calls,
           response_id,
           None,
-          prepared.origin,
           issues,
-        )
-      Ok(RunToolCalls(text, calls, continuation, usage))
-    }
+        ),
+        usage,
+      ))
     stream_types.StreamFinished(
-      stream_types.CompletedToolCallsWithContinuation(
+      stream_types.CompletedToolCallsWithData(
         text,
         calls,
         response_id,
-        provider_continuation,
+        data,
         issues,
       ),
       usage,
-    ) -> {
-      let continuation =
-        Continuation(
+    ) ->
+      Ok(RunToolCalls(
+        types.AssistantTurn(
           prepared.provider,
-          prepared.model,
-          list.map(calls, fn(call) { call.id }),
-          calls,
           text,
-          prepared.request.messages,
+          calls,
           response_id,
-          Some(provider_continuation),
-          prepared.origin,
+          Some(data),
           issues,
-        )
-      Ok(RunToolCalls(text, calls, continuation, usage))
-    }
+        ),
+        usage,
+      ))
     stream_types.StreamFinished(stream_types.OutputLimited(text, calls), usage) ->
       Ok(RunOutputLimited(text, calls, usage))
     stream_types.StreamFinished(stream_types.Refused(reason), usage) ->
@@ -1076,7 +884,6 @@ fn encode_google_request(
   request: types.Request,
   tools: List(json.Json),
   structured_format: Option(StructuredFormat),
-  provider_continuation: Option(stream_types.ProviderContinuation),
 ) -> Result(String, types.WireError) {
   let system_parts =
     list.filter_map(request.messages, fn(message) {
@@ -1093,11 +900,7 @@ fn encode_google_request(
     ]
   }
 
-  use contents <- result.try(build_google_contents(
-    request.messages,
-    request.messages,
-    provider_continuation,
-  ))
+  use contents <- result.try(build_google_contents(request.messages))
 
   let base = [#("contents", "[" <> string.join(contents, ",") <> "]")]
   let cache_fields = case request.prompt_cache {
@@ -1165,8 +968,6 @@ fn google_generation_config(
 
 fn build_google_contents(
   messages: List(types.Message),
-  all_messages: List(types.Message),
-  provider_continuation: Option(stream_types.ProviderContinuation),
 ) -> Result(List(String), types.WireError) {
   let non_system =
     list.filter(messages, fn(m) {
@@ -1175,19 +976,13 @@ fn build_google_contents(
         _ -> True
       }
     })
-  build_google_contents_loop(
-    non_system,
-    all_messages,
-    [],
-    provider_continuation,
-  )
+  build_google_contents_loop(non_system, [], [])
 }
 
 fn build_google_contents_loop(
   remaining: List(types.Message),
-  all_messages: List(types.Message),
+  preceding_turn: List(types.Message),
   acc: List(String),
-  provider_continuation: Option(stream_types.ProviderContinuation),
 ) -> Result(List(String), types.WireError) {
   case remaining {
     [] -> Ok(acc)
@@ -1199,7 +994,7 @@ fn build_google_contents_loop(
           use parts_so_far <- result.try(p_acc)
           case tr {
             types.ToolResultMessage(call_id, content) -> {
-              let tool_name = find_tool_call_name(all_messages, call_id)
+              let tool_name = find_tool_call_name(preceding_turn, call_id)
               let response_json = case
                 json.parse(content, decode.dict(decode.string, decode.dynamic))
               {
@@ -1208,7 +1003,7 @@ fn build_google_contents_loop(
                   "{\"output\":" <> json.to_string(json.string(content)) <> "}"
               }
               let id_part = case
-                find_tool_call_provider_id(all_messages, call_id)
+                find_tool_call_provider_id(preceding_turn, call_id)
               {
                 None -> ""
                 Some(provider_id) ->
@@ -1232,37 +1027,11 @@ fn build_google_contents_loop(
         "{\"role\":\"user\",\"parts\":["
         <> string.join(response_parts, ",")
         <> "]}"
-      build_google_contents_loop(
-        rest,
-        all_messages,
-        list.append(acc, [turn]),
-        provider_continuation,
-      )
+      build_google_contents_loop(rest, [], list.append(acc, [turn]))
     }
     [message, ..rest] -> {
-      let #(turn_result, remaining_continuation) = case
-        provider_continuation,
-        message
-      {
-        Some(stream_types.GoogleProviderContinuation(parts)),
-          types.AssistantToolCalls(_)
-        | Some(stream_types.GoogleProviderContinuation(parts)),
-          types.AssistantToolCallsWithText(_, _)
-        -> #(
-          Ok(
-            "{\"role\":\"model\",\"parts\":[" <> string.join(parts, ",") <> "]}",
-          ),
-          None,
-        )
-        _, _ -> #(single_google_turn(message), provider_continuation)
-      }
-      use turn <- result.try(turn_result)
-      build_google_contents_loop(
-        rest,
-        all_messages,
-        list.append(acc, [turn]),
-        remaining_continuation,
-      )
+      use turn <- result.try(single_google_turn(message))
+      build_google_contents_loop(rest, [message], list.append(acc, [turn]))
     }
   }
 }
@@ -1303,6 +1072,7 @@ fn single_google_turn(
       use encoded <- result.try(google_content_parts(parts))
       Ok("{\"role\":\"model\",\"parts\":[" <> string.join(encoded, ",") <> "]}")
     }
+    types.AssistantTurnMessage(turn) -> google_assistant_turn(turn)
     types.AssistantToolCalls(calls) -> Ok(google_tool_turn("", calls))
     types.AssistantToolCallsWithText(text, calls) ->
       Ok(google_tool_turn(text, calls))
@@ -1379,7 +1149,8 @@ fn find_tool_call_name(
     list.find_map(messages, fn(msg) {
       case msg {
         types.AssistantToolCalls(calls)
-        | types.AssistantToolCallsWithText(_, calls) ->
+        | types.AssistantToolCallsWithText(_, calls)
+        | types.AssistantTurnMessage(types.AssistantTurn(calls: calls, ..)) ->
           case list.find(calls, fn(c) { c.id == call_id }) {
             Ok(c) -> Ok(types.tool_name_to_string(c.name))
             Error(Nil) -> Error(Nil)
@@ -1401,7 +1172,8 @@ fn find_tool_call_provider_id(
     list.find_map(messages, fn(msg) {
       case msg {
         types.AssistantToolCalls(calls)
-        | types.AssistantToolCallsWithText(_, calls) ->
+        | types.AssistantToolCallsWithText(_, calls)
+        | types.AssistantTurnMessage(types.AssistantTurn(calls: calls, ..)) ->
           case list.find(calls, fn(c) { c.id == call_id }) {
             Ok(c) -> Ok(c.provider_id)
             Error(Nil) -> Error(Nil)
@@ -1487,6 +1259,10 @@ fn anthropic_message_json(
           ]),
         ),
       )
+    types.AssistantTurnMessage(turn) -> {
+      use Nil <- result.try(require_canonical_data(turn))
+      Ok(anthropic_tool_message(turn.text, turn.calls))
+    }
     types.AssistantToolCalls(calls) -> Ok(anthropic_tool_message("", calls))
     types.AssistantToolCallsWithText(text, calls) ->
       Ok(anthropic_tool_message(text, calls))
@@ -1708,6 +1484,11 @@ fn openai_message_items(message: types.Message) -> List(json.Json) {
         ),
       ]),
     ]
+    types.AssistantTurnMessage(turn) ->
+      openai_message_items(types.AssistantToolCallsWithText(
+        turn.text,
+        turn.calls,
+      ))
     types.AssistantToolCalls(calls) ->
       list.map(calls, fn(call) {
         json.object([
@@ -1860,6 +1641,14 @@ pub fn openai_adapter(
     endpoint: endpoint,
     headers: request_headers(types.OpenAI, key, optional_headers),
     encode: fn(request, tools, format) {
+      use _ <- result.try(
+        list.try_map(request.messages, fn(message) {
+          case message {
+            types.AssistantTurnMessage(turn) -> require_canonical_data(turn)
+            _ -> Ok(Nil)
+          }
+        }),
+      )
       use body <- result.try(encode_openai_request(
         request,
         projected_tool_json(types.OpenAI, tools),
@@ -1918,7 +1707,6 @@ pub fn google_adapter(
         request,
         projected_tool_json(types.Google, tools),
         internal_format(format),
-        None,
       ))
       Ok(provider.EncodedRequest(google_path(request), body))
     },
@@ -1985,9 +1773,7 @@ fn openai_reducer(
   Ok(provider.reducer(
     state,
     fn(current, event) { openai.step(current, event_for_builtin(event)) },
-    fn(current) {
-      map_builtin_terminal(openai.terminal(current), fn(_) { None })
-    },
+    fn(current) { map_builtin_terminal(openai.terminal(current)) },
     openai.retry_evidence,
   ))
 }
@@ -2000,9 +1786,7 @@ fn anthropic_reducer(
   Ok(provider.reducer(
     state,
     fn(current, event) { anthropic.step(current, event_for_builtin(event)) },
-    fn(current) {
-      map_builtin_terminal(anthropic.terminal(current), fn(_) { None })
-    },
+    fn(current) { map_builtin_terminal(anthropic.terminal(current)) },
     anthropic.retry_evidence,
   ))
 }
@@ -2015,36 +1799,13 @@ fn google_reducer(
   Ok(provider.reducer(
     state,
     fn(current, event) { google.step(current, event_for_builtin(event)) },
-    fn(current) {
-      map_builtin_terminal(google.terminal(current), google_replay)
-    },
+    fn(current) { map_builtin_terminal(google.terminal(current)) },
     google.retry_evidence,
   ))
 }
 
-fn google_replay(
-  continuation: stream_types.ProviderContinuation,
-) -> Option(provider.Replay) {
-  case continuation {
-    stream_types.GoogleProviderContinuation(parts) ->
-      Some(
-        provider.replay(parts, fn(saved_parts, request, tools, format) {
-          use body <- result.try(encode_google_request(
-            request,
-            projected_tool_json(types.Google, tools),
-            internal_format(format),
-            Some(stream_types.GoogleProviderContinuation(saved_parts)),
-          ))
-          Ok(provider.EncodedRequest(google_path(request), body))
-        }),
-      )
-    stream_types.CustomProviderContinuation(_) -> None
-  }
-}
-
 fn map_builtin_terminal(
   terminal: Option(stream_types.TerminalOutcome),
-  make_replay: fn(stream_types.ProviderContinuation) -> Option(provider.Replay),
 ) -> Option(provider.Terminal) {
   case terminal {
     None -> None
@@ -2054,20 +1815,13 @@ fn map_builtin_terminal(
         // A reducer reports no issues; the runtime admits the calls.
         stream_types.CompletedToolCalls(text, calls, response_id, _) ->
           provider.ToolCalls(text, calls, response_id, None, usage)
-        stream_types.CompletedToolCallsWithContinuation(
+        stream_types.CompletedToolCallsWithData(
           text,
           calls,
           response_id,
-          continuation,
+          data,
           _,
-        ) ->
-          provider.ToolCalls(
-            text,
-            calls,
-            response_id,
-            make_replay(continuation),
-            usage,
-          )
+        ) -> provider.ToolCalls(text, calls, response_id, Some(data), usage)
         stream_types.OutputLimited(text, calls) ->
           provider.OutputLimited(text, calls, usage)
         stream_types.Refused(reason) -> provider.Refusal(reason, usage)
@@ -2076,5 +1830,197 @@ fn map_builtin_terminal(
       Some(provider.Failure(error, retry))
     Some(stream_types.StreamCancelledLocally(retry)) ->
       Some(provider.Cancellation(retry))
+  }
+}
+
+fn require_canonical_data(
+  turn: types.AssistantTurn,
+) -> Result(Nil, types.WireError) {
+  case turn.provider_data {
+    None -> Ok(Nil)
+    Some(_) ->
+      Error(types.PreparationError(
+        "This provider does not accept opaque assistant data",
+      ))
+  }
+}
+
+/// Admit only the transcript supplied for this request. No live or retained
+/// execution state participates in pairing calls with their results.
+fn admit_messages(
+  messages: List(types.Message),
+  identity: types.Provider,
+  limits: types.Limits,
+) -> Result(List(types.Message), types.WireError) {
+  case messages {
+    [] -> Ok([])
+    [types.ToolResultMessage(..), ..] ->
+      Error(types.PreparationError(
+        "Tool result has no preceding assistant calls",
+      ))
+    [message, ..rest] -> {
+      let calls = case message {
+        types.AssistantToolCalls(calls)
+        | types.AssistantToolCallsWithText(_, calls) -> Some(calls)
+        types.AssistantTurnMessage(turn) -> Some(turn.calls)
+        _ -> None
+      }
+      use Nil <- result.try(case message {
+        types.AssistantTurnMessage(turn) -> {
+          use Nil <- result.try(case turn.provider == identity {
+            True -> Ok(Nil)
+            False ->
+              Error(types.PreparationError(
+                "Assistant turn belongs to a different provider",
+              ))
+          })
+          use Nil <- result.try(call_admission.validate_text(limits, turn.text))
+          call_admission.validate_metadata(
+            limits,
+            turn.calls,
+            turn.response_id,
+            turn.provider_data,
+          )
+        }
+        types.AssistantToolCalls(calls) ->
+          call_admission.validate_metadata(limits, calls, None, None)
+        types.AssistantToolCallsWithText(text, calls) -> {
+          use Nil <- result.try(call_admission.validate_text(limits, text))
+          call_admission.validate_metadata(limits, calls, None, None)
+        }
+        _ -> Ok(Nil)
+      })
+      case calls {
+        None -> {
+          use following <- result.try(admit_messages(rest, identity, limits))
+          Ok([message, ..following])
+        }
+        Some(calls) -> {
+          // Historical calls need not name tools available in the current request.
+          use _ <- result.try(call_admission.admit(
+            calls,
+            [],
+            limits,
+            types.ReportInvalidToolCalls,
+          ))
+          let #(result_messages, remaining) =
+            collect_consecutive_tool_results(rest, [])
+          let results =
+            list.filter_map(result_messages, fn(item) {
+              case item {
+                types.ToolResultMessage(id, content) ->
+                  Ok(types.ToolResult(id, content))
+                _ -> Error(Nil)
+              }
+            })
+          use ordered <- result.try(validate_tool_results(
+            list.map(calls, fn(call) { call.id }),
+            results,
+          ))
+          use following <- result.try(admit_messages(
+            remaining,
+            identity,
+            limits,
+          ))
+          Ok([
+            message,
+            ..list.append(
+              list.map(ordered, fn(item) {
+                types.ToolResultMessage(item.call_id, item.content)
+              }),
+              following,
+            )
+          ])
+        }
+      }
+    }
+  }
+}
+
+fn google_assistant_turn(
+  turn: types.AssistantTurn,
+) -> Result(String, types.WireError) {
+  use data <- result.try(case turn.provider_data {
+    None ->
+      Error(types.PreparationError(
+        "Google assistant turn is missing provider data",
+      ))
+    Some(data) -> Ok(data)
+  })
+  use Nil <- result.try(
+    json_bounds.check_depth(data)
+    |> result.replace_error(types.PreparationError(
+      "Google data nesting exceeds 64",
+    )),
+  )
+  use parts <- result.try(
+    json.parse(data, decode.list(decode.string))
+    |> result.replace_error(types.PreparationError(
+      "Invalid Google assistant data",
+    )),
+  )
+  use _ <- result.try(
+    list.try_map(parts, fn(part) {
+      use Nil <- result.try(
+        json_bounds.check_depth(part)
+        |> result.replace_error(types.PreparationError(
+          "Google part nesting exceeds 64",
+        )),
+      )
+      json.parse(part, decode.dict(decode.string, decode.dynamic))
+      |> result.replace_error(types.PreparationError(
+        "Google part is not an object",
+      ))
+    }),
+  )
+  let payload =
+    "{\"candidates\":[{\"finishReason\":\"STOP\",\"content\":{\"parts\":["
+    <> string.join(parts, ",")
+    <> "]}}]}"
+  // Request admission already checked caller limits. This pass verifies wire
+  // meaning using the same reducer, with bounds derived from the bounded data.
+  let bytes = string.byte_size(payload) + 1
+  let limits =
+    types.Limits(
+      ..types.default_limits(),
+      active_blocks_limit: bytes,
+      text_bytes_per_block_limit: bytes,
+      total_text_bytes_limit: bytes,
+      argument_bytes_per_call_limit: bytes,
+      total_argument_bytes_limit: bytes,
+      provider_metadata_bytes_limit: bytes,
+    )
+  use #(reducer, _) <- result.try(google.step(
+    google.new(limits),
+    sse.ServerSentEvent(None, payload, None, None),
+  ))
+  use Nil <- result.try(case google.terminal(reducer) {
+    Some(stream_types.StreamFinished(
+      stream_types.CompletedToolCallsWithData(text, calls, _, _, _),
+      _,
+    ))
+      if text == turn.text && calls == turn.calls
+    -> Ok(Nil)
+    _ ->
+      Error(types.PreparationError(
+        "Google raw parts disagree with assistant text or calls",
+      ))
+  })
+  let signed =
+    list.any(parts, fn(part) {
+      case
+        json.parse(
+          part,
+          decode.field("thoughtSignature", decode.string, decode.success),
+        )
+      {
+        Ok(_) -> True
+        Error(_) -> False
+      }
+    })
+  case signed {
+    True ->
+      Ok("{\"role\":\"model\",\"parts\":[" <> string.join(parts, ",") <> "]}")
+    False -> Ok(google_tool_turn(turn.text, turn.calls))
   }
 }

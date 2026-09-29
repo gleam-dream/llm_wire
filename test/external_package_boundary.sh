@@ -28,11 +28,13 @@ make_consumer "$positive"
 cp "$package_root/test/external_provider.gleam" "$positive/src/external_provider.gleam"
 cat >"$positive/src/consumer.gleam" <<'EOF'
 import external_provider
+import gleam/list
 import json/blueprint/codec
 import json/blueprint/runtime
 import llm_wire/config
 import llm_wire/provider/openai
 import llm_wire/session
+import llm_wire/retry
 import llm_wire/telemetry
 import llm_wire/testing
 import llm_wire/types
@@ -74,10 +76,26 @@ pub fn prepares_schema_only_tool_and_structured_output() {
 }
 
 pub fn prepare_next_round(
-  pending: session.Continuation,
+  settings: config.Config,
+  source: types.Request,
+  turn: types.AssistantTurn,
   results: List(types.ToolResult),
 ) -> Result(session.PreparedCall, types.WireError) {
-  session.prepare_continue(pending, results)
+  let messages = list.append(source.messages, [
+    types.AssistantTurnMessage(turn),
+    ..list.map(results, fn(result) {
+      types.ToolResultMessage(result.call_id, result.content)
+    })
+  ])
+  session.prepare(settings, types.Request(..source, messages: messages))
+}
+
+pub fn pending_work(turn: types.AssistantTurn) -> List(types.ToolCall) {
+  turn.calls
+}
+
+pub fn assesses_failure(provider: types.Provider, error: types.WireError) {
+  retry.assess(provider, error)
 }
 
 pub fn scripts_a_provider_without_a_socket() {
@@ -89,8 +107,7 @@ pub fn scripts_a_provider_without_a_socket() {
     |> config.with_tool_call_checks(types.ReportInvalidToolCalls)
   let assert Ok(prepared) = session.prepare(settings, request)
   let issues = case session.run(prepared) {
-    Ok(session.RunToolCalls(_, _, continuation, _)) ->
-      session.tool_call_issues(continuation)
+    Ok(session.RunToolCalls(turn, _)) -> turn.issues
     _ -> []
   }
   #(issues, testing.requests(script))
@@ -180,3 +197,28 @@ fi
 
 rg -n -A 3 -B 1 'error:' "$scratch/negative.log" || true
 printf '%s\n' "Configured consumer compiled; raw-call consumer failed at the prepared-call boundary."
+
+removed_negative="$scratch/removed_negative"
+make_consumer "$removed_negative"
+cat >"$removed_negative/src/consumer.gleam" <<'EOF'
+import llm_wire/session
+
+pub fn stateful_continuation_api_is_absent() {
+  session.prepare_continue
+}
+
+pub fn checkpoint_api_is_absent() {
+  session.export_continuation
+}
+EOF
+if (cd "$removed_negative" && gleam check --target erlang) >"$scratch/removed_negative.log" 2>&1; then
+  printf '%s\n' "The removed continuation API unexpectedly compiled." >&2
+  exit 1
+fi
+if ! rg -q 'prepare_continue' "$scratch/removed_negative.log" \
+  || ! rg -q 'export_continuation' "$scratch/removed_negative.log"; then
+  cat "$scratch/removed_negative.log" >&2
+  printf '%s\n' "The removed API probe failed before reaching each boundary." >&2
+  exit 1
+fi
+printf '%s\n' "Caller-owned history is public; continuation and checkpoint APIs are absent."

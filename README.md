@@ -55,8 +55,7 @@ Update fields by name and attach them with `config.with_limits` and
 `config.with_deadlines`. `request_bytes_limit` bounds the outgoing JSON body;
 `event_bytes_limit` independently bounds each incoming SSE event.
 `provider_metadata_bytes_limit` bounds retained call IDs, tool names, provider
-IDs/state, and response IDs. Opaque adapter replay closure state belongs to its
-adapter. Preparation validates all limit and deadline fields before transport.
+IDs/state, response IDs, and each response's opaque provider data. Preparation validates all limit and deadline fields before transport.
 
 For a local HTTPS server signed by a private CA, compose an endpoint and CA
 file:
@@ -72,16 +71,13 @@ Preparation rejects an empty CA path, a plaintext endpoint with a CA file,
 and remote hosts with a caller CA. Certificate and hostname verification apply
 when streaming.
 
-## Continue a tool call
+## Build a conversation with tool results
 
-The tool catalog is declared with a Blueprint codec. A `RunToolCalls` outcome
-contains full `types.ToolCall` values and an opaque continuation. Return
-`types.ToolResult` values with the exact call IDs. The continuation validates
-the result set and restores the original call order, request, provider replay
-state, and settings. For manually authored history, `types.tool_call(id, name,
-arguments_json)` starts with absent provider metadata; a full `types.ToolCall`
-record preserves provider IDs and state when importing a provider-originated
-call.
+`RunToolCalls(turn, usage)` returns an immutable `types.AssistantTurn` with text,
+calls, response ID, provider data, and reported issues. It holds no conversation,
+configuration, or callback. Your application owns the message list and tool loop.
+Keep the returned turn intact as an `AssistantTurnMessage` so signed provider
+parts remain attached to the correct response.
 
 ```gleam
 import gleam/list
@@ -97,19 +93,29 @@ let request =
   types.new_request(model, [types.UserMessage("Echo hello")])
   |> types.with_tools([echo_tool])
 let assert Ok(prepared) = session.prepare(settings, request)
-let first = session.run(prepared)
-case first {
-  Ok(session.RunToolCalls(_text, calls, continuation, _usage)) -> {
-    // The application executes each call and supplies the exact call IDs.
-    let results = list.map(calls, fn(call) {
-      types.ToolResult(call.id, "hello")
+case session.run(prepared) {
+  Ok(session.RunToolCalls(turn, _usage)) -> {
+    // Your application executes the calls and creates their result messages.
+    let results = list.map(turn.calls, fn(call) {
+      types.ToolResultMessage(call.id, "hello")
     })
-    let assert Ok(next) = session.prepare_continue(continuation, results)
+    let next_request = types.Request(
+      ..request,
+      messages: list.append(request.messages, [
+        types.AssistantTurnMessage(turn), ..results
+      ]),
+    )
+    let assert Ok(next) = session.prepare(settings, next_request)
     session.run(next)
   }
   other -> other
 }
 ```
+
+Each assistant tool batch must be followed by exactly one result per call.
+Preparation rejects missing, duplicate, unknown, and orphan results before I/O
+and orders results within each batch. Call IDs may recur in different turns.
+Historical calls need not name a tool present in the current catalog.
 
 `types.tool_name` admits `^[a-zA-Z0-9_-]{1,64}$`, the name grammar shared by
 OpenAI, Anthropic, and Google. It does not trim, and it returns a typed
@@ -122,7 +128,7 @@ dummy native type. The selected provider projects its schema during
 preparation; unsupported variants fail there. Returned argument JSON receives
 the same bounded schema validation as a codec-backed tool.
 
-Handle another `RunToolCalls` result with another continuation round if your
+Handle another `RunToolCalls` result by extending the conversation again if your
 application permits it. Set an application limit on tool rounds.
 
 By default a response whose call names an undeclared tool, or whose arguments
@@ -133,29 +139,25 @@ that answers such calls itself selects reporting instead:
 let settings =
   config.openai(openai.options(key))
   |> config.with_tool_call_checks(types.ReportInvalidToolCalls)
-// After session.run returns RunToolCalls(_, calls, continuation, _):
-let issues = session.tool_call_issues(continuation)
+// After session.run returns RunToolCalls(turn, _):
+let issues = turn.issues
 // [types.UnknownTool(call_id), types.InvalidArguments(call_id, reason), ...]
 ```
 
-Every call stays in `calls`, and `prepare_continue` still needs one
-`ToolResult` per call, so the application returns an error result for each
-reported call. A reported call replays without caller rewriting, through
-`prepare_continue` or from persisted messages given to `session.prepare`.
-OpenAI receives the argument text verbatim; Anthropic and Google require an
-object, so text that is not a JSON object replays as
-`{"unparsed_arguments": text}`. Argument byte limits, duplicate call IDs, and
-names outside the tool-name grammar still fail the response. Streamed terminals carry the same
-continuation, and `session.structured_tool_call_issues` serves structured
-continuations.
+Every call stays in `turn.calls`. Supply an error result for each reported call
+when building the next request. OpenAI receives argument text verbatim;
+Anthropic and Google require an object, so unsigned argument text that is not a
+JSON object is sent as `{"unparsed_arguments": text}`. Signed Google parts remain
+unchanged. Argument bounds, duplicate call IDs, and invalid tool names still
+fail the response. Streamed and structured tool responses expose the same turn.
 
 ## Structured output and streaming
 
-`session.prepare_structured(settings, request, name, codec)` keeps the output
-codec through tool continuation. Use `session.run_structured` for a decoded
-`StructuredValue`, or match `StructuredNeedsTools`,
-`StructuredOutputLimited`, and `StructuredRefusal`. Continue tools with
-`session.prepare_structured_continue(continuation, results)`.
+`session.prepare_structured(settings, request, name, codec)` selects the output
+codec for one request. Use `session.run_structured` for a decoded
+`StructuredValue`, or match `StructuredNeedsTools(turn, usage)`,
+`StructuredOutputLimited`, and `StructuredRefusal`. After tools run, build a new
+request and call `prepare_structured` with the desired codec again.
 
 ```gleam
 let output_codec = codec.field("answer", codec.int())
@@ -191,10 +193,32 @@ let terminal = read_stream(stream)
 ```
 
 `session.next` takes its read timeout from the prepared config. A stream
-retains its prepared call, so a tool terminal carries the correct continuation.
+retains its prepared call for transport settings and response interpretation.
 Use `session.close(stream)` when abandoning a stream. Structured streaming uses
 `session.stream_structured`, `session.next_structured`, and
 `session.close_structured` with the same ownership pattern.
+
+## Conversation ownership
+
+Fabric or another consumer owns agent progress, storage, pause/resume, and
+protection against duplicate tool effects. LLM Wire has no continuation handles,
+checkpoint export/import, or durable execution format. Its prepared values belong
+to one request. Supply the complete conversation explicitly on every request.
+
+An `AssistantTurn` is response data, not an execution record. Provider data is
+interpreted by the configured adapter and must remain with its original text and
+calls. Cross-provider turns and contradictory Google raw parts fail preparation.
+See the [boundary contract](docs/caller-owned-conversation.md) and
+[Fabric migration notes](docs/fabric-migration.md).
+
+## Assess another attempt
+
+`retry.assess(provider, error)` returns `MayHelp`, `WillNotHelpUnchanged`, or
+`Unknown`. It interprets known status and provider error codes without scheduling
+an attempt. `RetryEvidence` continues to describe reachability and progress.
+Applications combine both with tool effects, Retry-After hints, deadlines, and
+budgets when deciding whether to retry. A `MayHelp` result does not establish
+that repeating an operation is safe.
 
 ## Own a connection pool
 
@@ -216,8 +240,10 @@ An application can build `provider.adapter(provider.Spec(...))` and pass it to
 `config.from_provider(adapter)`. The spec supplies provider identity, endpoint,
 auth or extra headers, request encoding, schema projection, and a reducer
 factory. `provider.reducer(state, step, terminal, retry)` keeps application
-state typed inside closures; `provider.replay(turn, encode)` keeps the complete
-provider-authored assistant turn for tool continuation. The external consumer
+reducer state typed inside closures for one response. A `provider.ToolCalls`
+terminal supplies optional data as a string; the encoder reads it from each
+`AssistantTurnMessage` in subsequent requests. The adapter owns the data format
+and its semantic validation. The external consumer
 fixture in [external_provider.gleam](test/external_provider.gleam) implements a
 fourth provider using only public modules and runs against a real local
 HTTP/SSE server.
@@ -227,9 +253,8 @@ The runtime supplies `Content-Type: application/json`,
 Provider headers add authentication and other provider-specific fields;
 attempts to override those fixed protocol headers fail preparation. The
 runtime owns transport, deadlines, queue limits, retry evidence, tool catalog
-validation, and terminal admission. Adapters must retain bounded opaque replay
-state and enforce any wire-specific block limits when they emit aggregate-only
-terminals; the runtime cannot inspect a closure's captured memory.
+validation, and terminal admission. The runtime bounds returned provider data. Adapters must also bound reducer
+state and enforce wire-specific block limits while accumulating a response.
 
 ## Test without a network
 
@@ -251,10 +276,12 @@ let script =
     testing.text("Found it.") |> testing.with_usage(types.Usage(12, 3, 15)),
   ])
 let assert Ok(prepared) = session.prepare(testing.config(script), request)
-let assert Ok(session.RunToolCalls(_, [call], continuation, _)) =
-  session.run(prepared)
-let assert Ok(next) =
-  session.prepare_continue(continuation, [types.ToolResult(call.id, "gleam.run")])
+let assert Ok(session.RunToolCalls(turn, _)) = session.run(prepared)
+let assert [call] = turn.calls
+let next_request = types.Request(..request, messages: list.append(request.messages, [
+  types.AssistantTurnMessage(turn), types.ToolResultMessage(call.id, "gleam.run")
+]))
+let assert Ok(next) = session.prepare(testing.config(script), next_request)
 let assert Ok(session.RunText("Found it.", _)) = session.run(next)
 let assert [_, second] = testing.requests(script)
 // second.request.messages ends with the assistant calls and the tool result.
@@ -268,6 +295,38 @@ SSE bytes in `testing.Events(chunks)`. `testing.Interrupted(chunks)` ends with
 a transport failure, and `testing.Status(code, body)` fails before a stream
 opens. A request with no reply left fails with `ConfigurationError` and is
 still recorded.
+
+## Play a cassette from disk
+
+Choose the transport once when configuring a flow. The flow keeps its ordinary
+`session.prepare`, `run`, and `stream` calls in both environments:
+
+```gleam
+import llm_wire/cassette
+
+// Production:
+let production_settings = config.openai(openai.options(key))
+
+// Local playback:
+let assert Ok(recording) = cassette.load("fixtures/lookup.json", 8_388_608)
+let script = cassette.start(recording)
+let local_settings = testing.with_script(production_settings, script)
+// Pass either settings value to the same application flow.
+```
+
+Version 1 cassettes store ordered exchanges. Each expected request matches the
+POST method, configured endpoint, effective path, and exact body. Configured
+headers and their credentials are excluded; request and response bodies are
+retained verbatim. Repeated identical requests can have different
+responses. A mismatch leaves the expected exchange unconsumed; mismatches and
+exhaustion return errors with no network fallback. `testing.remaining(script)`
+lets a test assert that it used every exchange.
+
+`cassette.parse` and `to_json` support application-controlled fixture storage;
+`load` bounds file reads before allocating the complete file. Malformed,
+unsupported, oversized, and excessively nested data return typed cassette errors.
+Replies preserve SSE chunk boundaries, HTTP status failures and interruptions.
+This release adds playback; automatic live recording is not implemented.
 
 ## Observe and integrate
 
@@ -330,21 +389,21 @@ The application still owns dispatch, tool execution, output encoding, and
 The earlier root and wire APIs were never released. They have no compatibility
 shims in this cleanup.
 
-| Earlier call or type                                                   | Current public path                                                                                                       |
-| ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `llm_wire.prepare` / `run` / `stream` / `prepare_continue`             | `session.prepare` / `run` / `stream` / `prepare_continue`, with `config.Config` retaining settings                        |
-| Root `Message`, reduced `ToolCall`, `ToolResult`, `RunResult`          | `types.Message`, full `types.ToolCall`, `types.ToolResult`, `session.RunResult`                                           |
-| `config.openai(key)` / `anthropic(key)` / `google(key)`                | `config.openai(openai.options(key))` and analogous provider option builders                                               |
-| Fallible `config.with_openai_*` / `with_anthropic_*` / `with_google_*` | Compose typed options in the matching `llm_wire/provider/*` module before common configuration                            |
-| `types.new_limits` / `new_deadlines`                                   | Update `types.default_limits()` / `default_deadlines()` records; `session.prepare` validates the whole config             |
-| Outgoing request checked against `event_bytes_limit`                   | Set `request_bytes_limit` independently; event and request defaults remain 1 MiB                                          |
-| Buffered execution or stream opening returns `WireError` directly      | Match `session.RunFailure(error, retry)`; preparation still returns `WireError`                                           |
-| Tool-call outcome omitted assistant text                               | `RunToolCalls(text, calls, continuation, usage)` preserves text and provider-authored replay                              |
-| Tool arguments parsed with Blueprint's 10 MiB default                  | Parser byte bounds now follow `argument_bytes_per_call_limit`; depth and number policy stay bounded                       |
-| Structured output parsed with Blueprint's 10 MiB default               | Parser byte bound follows the smaller admitted per-block and total text limits                                            |
-| `types.tool_name` returning `WireError`                                | Match `types.ToolNameError`; names must match `^[a-zA-Z0-9_-]{1,64}$`                                                     |
-| `types.with_provider_continuation`                                     | `session.prepare_continue` with the opaque continuation returned by `session.run`                                         |
-| Direct internal provider reducer and request hooks                     | Use `provider.Adapter`/`provider.Spec`/`provider.reducer`, then `config.from_provider`; internal transport is unsupported |
+| Earlier call or type                                                       | Current public path                                                                                                       |
+| -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `llm_wire.prepare` / `run` / `stream`                                      | `session.prepare` / `run` / `stream`, with `config.Config` retaining settings                                             |
+| Root `Message`, reduced `ToolCall`, `ToolResult`, `RunResult`              | `types.Message`, full `types.ToolCall`, `types.ToolResult`, `session.RunResult`                                           |
+| `config.openai(key)` / `anthropic(key)` / `google(key)`                    | `config.openai(openai.options(key))` and analogous provider option builders                                               |
+| Fallible `config.with_openai_*` / `with_anthropic_*` / `with_google_*`     | Compose typed options in the matching `llm_wire/provider/*` module before common configuration                            |
+| `types.new_limits` / `new_deadlines`                                       | Update `types.default_limits()` / `default_deadlines()` records; `session.prepare` validates the whole config             |
+| Outgoing request checked against `event_bytes_limit`                       | Set `request_bytes_limit` independently; event and request defaults remain 1 MiB                                          |
+| Buffered execution or stream opening returns `WireError` directly          | Match `session.RunFailure(error, retry)`; preparation still returns `WireError`                                           |
+| Tool-call outcome omitted assistant text                                   | `RunToolCalls(turn, usage)` carries reusable assistant response data                                                      |
+| Tool arguments parsed with Blueprint's 10 MiB default                      | Parser byte bounds now follow `argument_bytes_per_call_limit`; depth and number policy stay bounded                       |
+| Structured output parsed with Blueprint's 10 MiB default                   | Parser byte bound follows the smaller admitted per-block and total text limits                                            |
+| `types.tool_name` returning `WireError`                                    | Match `types.ToolNameError`; names must match `^[a-zA-Z0-9_-]{1,64}$`                                                     |
+| `Continuation`, `prepare_continue`, checkpoint APIs, and `provider.Replay` | Append `AssistantTurnMessage(turn)` and results; prepare a new request explicitly                                         |
+| Direct internal provider reducer and request hooks                         | Use `provider.Adapter`/`provider.Spec`/`provider.reducer`, then `config.from_provider`; internal transport is unsupported |
 
 ## Local release checks
 

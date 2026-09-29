@@ -2,6 +2,8 @@
 //// default and per-call issues when the caller opts in. Scripted transports
 //// replace the network; the built-in reducers still decode their own SSE.
 
+import conversation_fixture
+
 import gleam/int
 import gleam/json
 import gleam/list
@@ -89,30 +91,38 @@ pub fn reported_issues_keep_every_call_in_order_test() {
   let assert Ok(prepared) =
     session.prepare(report(testing.config(script)), lookup_request())
 
-  let assert Ok(session.RunToolCalls("Checking.", calls, continuation, None)) =
-    session.run(prepared)
-  list.map(calls, fn(call) { types.call_id_to_string(call.id) })
+  let assert Ok(session.RunToolCalls(turn, None)) = session.run(prepared)
+  turn.text |> should.equal("Checking.")
+  list.map(turn.calls, fn(call) { types.call_id_to_string(call.id) })
   |> should.equal(["call_ok", "call_unknown", "call_bad"])
-  assert_mixed_issues(session.tool_call_issues(continuation))
+  assert_mixed_issues(turn.issues)
 
   // Every call, including an invalid one, needs exactly one result.
   let partial = [
     types.ToolResult(call_id("call_ok"), "gleam.run"),
     types.ToolResult(call_id("call_unknown"), "{\"error\":\"unknown_tool\"}"),
   ]
-  session.prepare_continue(continuation, partial) |> should.be_error
+  session.prepare(
+    report(testing.config(script)),
+    conversation_fixture.append_results(lookup_request(), turn, partial),
+  )
+  |> should.be_error
   let results =
     list.append(partial, [
       types.ToolResult(call_id("call_bad"), "{\"error\":\"invalid_arguments\"}"),
     ])
-  let assert Ok(next) = session.prepare_continue(continuation, results)
+  let assert Ok(next) =
+    session.prepare(
+      report(testing.config(script)),
+      conversation_fixture.append_results(lookup_request(), turn, results),
+    )
   session.run(next) |> should.equal(Ok(session.RunText("Done.", None)))
 
   let assert [_, second] = testing.requests(script)
   second.request.messages
   |> should.equal([
     types.UserMessage("Find gleam"),
-    types.AssistantToolCallsWithText("Checking.", calls),
+    types.AssistantTurnMessage(turn),
     ..list.map(results, fn(result) {
       types.ToolResultMessage(result.call_id, result.content)
     })
@@ -129,9 +139,9 @@ pub fn valid_calls_report_no_issues_test() {
   let assert Ok(prepared) =
     session.prepare(report(testing.config(script)), lookup_request())
 
-  let assert Ok(session.RunToolCalls(_, [_], continuation, _)) =
-    session.run(prepared)
-  session.tool_call_issues(continuation) |> should.equal([])
+  let assert Ok(session.RunToolCalls(turn, _)) = session.run(prepared)
+  list.length(turn.calls) |> should.equal(1)
+  turn.issues |> should.equal([])
 }
 
 pub fn streamed_and_buffered_paths_report_the_same_issues_test() {
@@ -144,20 +154,15 @@ pub fn streamed_and_buffered_paths_report_the_same_issues_test() {
   let assert Ok(buffered) = session.prepare(settings, lookup_request())
   let assert Ok(streamed) = session.prepare(settings, lookup_request())
 
-  let assert Ok(session.RunToolCalls(_, buffered_calls, buffered_next, _)) =
-    session.run(buffered)
+  let assert Ok(session.RunToolCalls(buffered_turn, _)) = session.run(buffered)
   let assert Ok(stream) = session.stream(streamed)
-  let assert session.Finished(session.RunToolCalls(
-    _,
-    streamed_calls,
-    streamed_next,
-    _,
-  )) = terminal(stream)
+  let assert session.Finished(session.RunToolCalls(streamed_turn, _)) =
+    terminal(stream)
 
-  streamed_calls |> should.equal(buffered_calls)
-  session.tool_call_issues(streamed_next)
-  |> should.equal(session.tool_call_issues(buffered_next))
-  assert_mixed_issues(session.tool_call_issues(streamed_next))
+  streamed_turn.calls |> should.equal(buffered_turn.calls)
+  streamed_turn.issues
+  |> should.equal(buffered_turn.issues)
+  assert_mixed_issues(streamed_turn.issues)
 }
 
 pub fn structured_calls_report_issues_test() {
@@ -170,10 +175,10 @@ pub fn structured_calls_report_issues_test() {
       codec.field("answer", codec.string()),
     )
 
-  let assert Ok(session.StructuredNeedsTools(_, calls, continuation, _)) =
+  let assert Ok(session.StructuredNeedsTools(turn, _)) =
     session.run_structured(prepared)
-  list.length(calls) |> should.equal(3)
-  assert_mixed_issues(session.structured_tool_call_issues(continuation))
+  list.length(turn.calls) |> should.equal(3)
+  assert_mixed_issues(turn.issues)
 }
 
 pub fn reporting_keeps_bounds_and_identity_fatal_test() {
@@ -330,10 +335,10 @@ pub fn built_in_providers_report_per_call_issues_test() {
         lookup_request(),
       )
     case session.run(prepared) {
-      Ok(session.RunToolCalls(_, calls, continuation, _)) -> {
-        list.map(calls, fn(call) { types.call_id_to_string(call.id) })
+      Ok(session.RunToolCalls(turn, _)) -> {
+        list.map(turn.calls, fn(call) { types.call_id_to_string(call.id) })
         |> should.equal(["call_ok", "call_unknown", "call_bad"])
-        assert_mixed_issues(session.tool_call_issues(continuation))
+        assert_mixed_issues(turn.issues)
       }
       other -> panic as { provider_name <> ": " <> string.inspect(other) }
     }
@@ -370,9 +375,8 @@ pub fn invalid_json_arguments_follow_the_selected_checks_test() {
     let assert Error(session.RunFailure(types.ProtocolError(reason), _)) =
       session.run(rejected)
     reason |> should.equal("Invalid JSON in tool call arguments")
-    let assert Ok(session.RunToolCalls(_, [_], continuation, _)) =
-      session.run(reported)
-    session.tool_call_issues(continuation)
+    let assert Ok(session.RunToolCalls(turn, _)) = session.run(reported)
+    turn.issues
     |> should.equal([
       types.InvalidArguments(
         call_id("call_1"),
@@ -392,7 +396,7 @@ fn terminal(stream: session.Stream) -> session.Terminal {
 }
 
 // A call the runtime reported must replay to its provider on the next request,
-// through the continuation or from public messages, without caller rewriting.
+// from the returned assistant turn, without caller rewriting.
 
 /// Truncated argument text, as a provider cut off mid-call returns it.
 const truncated = "{\"query\": "
@@ -503,7 +507,7 @@ fn assert_reported_bad_call(
   }
 }
 
-pub fn reported_calls_replay_through_the_buffered_continuation_test() {
+pub fn reported_calls_replay_from_buffered_assistant_turn_test() {
   list.each(replay_cases(), fn(case_) {
     let script =
       testing.start([
@@ -512,11 +516,19 @@ pub fn reported_calls_replay_through_the_buffered_continuation_test() {
       ])
     let settings = case_.settings |> testing.with_script(script) |> report
     let assert Ok(prepared) = session.prepare(settings, lookup_request())
-    let assert Ok(session.RunToolCalls(_, _, continuation, _)) =
-      session.run(prepared)
-    assert_reported_bad_call(case_, session.tool_call_issues(continuation))
+    let assert Ok(session.RunToolCalls(turn, _)) = session.run(prepared)
+    assert_reported_bad_call(case_, turn.issues)
 
-    case session.prepare_continue(continuation, replay_results()) {
+    case
+      session.prepare(
+        settings,
+        conversation_fixture.append_results(
+          lookup_request(),
+          turn,
+          replay_results(),
+        ),
+      )
+    {
       Ok(next) -> {
         let assert Ok(session.RunText(_, _)) = session.run(next)
         let assert [_, second] = testing.requests(script)
@@ -527,7 +539,7 @@ pub fn reported_calls_replay_through_the_buffered_continuation_test() {
   })
 }
 
-pub fn reported_calls_replay_through_the_streamed_continuation_test() {
+pub fn reported_calls_replay_from_streamed_assistant_turn_test() {
   list.each(replay_cases(), fn(case_) {
     let script =
       testing.start([
@@ -537,11 +549,20 @@ pub fn reported_calls_replay_through_the_streamed_continuation_test() {
     let settings = case_.settings |> testing.with_script(script) |> report
     let assert Ok(prepared) = session.prepare(settings, lookup_request())
     let assert Ok(stream) = session.stream(prepared)
-    let assert session.Finished(session.RunToolCalls(_, _, continuation, _)) =
+    let assert session.Finished(session.RunToolCalls(turn, _)) =
       terminal(stream)
-    assert_reported_bad_call(case_, session.tool_call_issues(continuation))
+    assert_reported_bad_call(case_, turn.issues)
 
-    case session.prepare_continue(continuation, replay_results()) {
+    case
+      session.prepare(
+        settings,
+        conversation_fixture.append_results(
+          lookup_request(),
+          turn,
+          replay_results(),
+        ),
+      )
+    {
       Ok(next) -> {
         let assert Ok(stream) = session.stream(next)
         let assert session.Finished(session.RunText(_, _)) = terminal(stream)
@@ -562,15 +583,14 @@ pub fn reported_calls_replay_from_public_messages_test() {
         case_.settings |> testing.with_script(first) |> report,
         lookup_request(),
       )
-    let assert Ok(session.RunToolCalls(text, calls, _, _)) =
-      session.run(prepared)
+    let assert Ok(session.RunToolCalls(turn, _)) = session.run(prepared)
 
     let script = testing.start([testing.Events([case_.text_body])])
     let assert Ok(model) = types.model_id("checks-model")
     let request =
       types.new_request(model, [
         types.UserMessage("Find gleam"),
-        types.AssistantToolCallsWithText(text, calls),
+        types.AssistantTurnMessage(turn),
         ..list.map(replay_results(), fn(result) {
           types.ToolResultMessage(result.call_id, result.content)
         })

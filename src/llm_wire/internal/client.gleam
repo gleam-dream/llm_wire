@@ -121,6 +121,9 @@ fn open_stream(
                 on_error,
                 on_request_sent,
               )
+              |> result.map_error(fn(failure) {
+                OpenFailure(failure.error, failure.retry)
+              })
             None ->
               transport.connect_and_stream_with_pool(
                 pool_pid,
@@ -138,11 +141,12 @@ fn open_stream(
                 on_error,
                 on_request_sent,
               )
+              |> result.map_error(after_transport_attempt)
           }
           case connected {
             Error(error) -> {
               let _ = owner.close(stream)
-              Error(after_transport_attempt(error))
+              Error(error)
             }
             Ok(handle) -> {
               let real_transport =

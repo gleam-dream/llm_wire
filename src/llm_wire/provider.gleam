@@ -1,5 +1,5 @@
 import gleam/json
-import gleam/option.{type Option, None, Some}
+import gleam/option.{type Option}
 import gleam/result
 import json/blueprint/codec
 import llm_wire/internal/schema as schema_bridge
@@ -41,33 +41,6 @@ pub type ProjectedTool {
   ProjectedTool(name: types.ToolName, description: String, schema: json.Json)
 }
 
-/// A complete provider-authored assistant turn can be captured in a typed
-/// closure. The shared continuation checks origin and exact result coverage
-/// before this encoder is invoked.
-pub opaque type Replay {
-  Replay(
-    encode: fn(types.Request, List(ProjectedTool), Option(OutputFormat)) ->
-      Result(EncodedRequest, types.WireError),
-  )
-}
-
-pub fn replay(
-  state: state,
-  encode: fn(state, types.Request, List(ProjectedTool), Option(OutputFormat)) ->
-    Result(EncodedRequest, types.WireError),
-) -> Replay {
-  Replay(fn(request, tools, format) { encode(state, request, tools, format) })
-}
-
-pub fn encode_replay(
-  replay: Replay,
-  request: types.Request,
-  tools: List(ProjectedTool),
-  format: Option(OutputFormat),
-) -> Result(EncodedRequest, types.WireError) {
-  replay.encode(request, tools, format)
-}
-
 pub type Event {
   Event(
     event: Option(String),
@@ -83,7 +56,7 @@ pub type Terminal {
     text: String,
     calls: List(types.ToolCall),
     response_id: Option(String),
-    replay: Option(Replay),
+    provider_data: Option(String),
     usage: Option(types.Usage),
   )
   OutputLimited(
@@ -149,7 +122,7 @@ pub fn headers(adapter: Adapter) -> List(#(String, String)) {
 }
 
 pub fn with_endpoint(adapter: Adapter, endpoint: types.Endpoint) -> Adapter {
-  Adapter(Spec(..adapter.spec, endpoint: endpoint))
+  Adapter(spec: Spec(..adapter.spec, endpoint: endpoint))
 }
 
 pub fn encode(
@@ -157,12 +130,8 @@ pub fn encode(
   request: types.Request,
   tools: List(ProjectedTool),
   format: Option(OutputFormat),
-  replay: Option(Replay),
 ) -> Result(EncodedRequest, types.WireError) {
-  case replay {
-    Some(value) -> encode_replay(value, request, tools, format)
-    None -> adapter.spec.encode(request, tools, format)
-  }
+  adapter.spec.encode(request, tools, format)
 }
 
 pub fn project_tool_schema(

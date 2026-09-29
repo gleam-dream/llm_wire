@@ -1,3 +1,4 @@
+import conversation_fixture
 import fake_server
 import gleam/bit_array
 import gleam/erlang/process
@@ -172,7 +173,7 @@ pub fn configured_ca_rejects_plaintext_and_empty_path_at_prepare_test() {
   }
 }
 
-pub fn ordinary_buffered_continuation_retains_configured_limits_test() {
+pub fn caller_owned_buffered_round_applies_configured_limits_test() {
   let assert Ok(server) = fake_server.start()
   process.spawn_unlinked(fn() {
     let assert Ok(socket) = fake_server.accept_connection(server, 2000)
@@ -195,10 +196,15 @@ pub fn ordinary_buffered_continuation_retains_configured_limits_test() {
     )
   let settings = config.with_limits(base, constrained_limits)
   let assert Ok(prepared) = session.prepare(settings, request())
-  let assert Ok(session.RunToolCalls(_, [call], continuation, _)) =
-    session.run(prepared)
+  let assert Ok(session.RunToolCalls(turn, _)) = session.run(prepared)
+  let assert [call] = turn.calls
   case
-    session.prepare_continue(continuation, [types.ToolResult(call.id, "42")])
+    session.prepare(
+      settings,
+      conversation_fixture.append_results(request(), turn, [
+        types.ToolResult(call.id, "42"),
+      ]),
+    )
   {
     Error(types.ResourceLimitExceeded("request_bytes_limit", _, _)) ->
       should.be_true(True)
@@ -207,7 +213,7 @@ pub fn ordinary_buffered_continuation_retains_configured_limits_test() {
   fake_server.stop(server)
 }
 
-pub fn ordinary_stream_continuation_retains_deadline_and_failure_evidence_test() {
+pub fn caller_owned_stream_round_applies_deadline_and_failure_evidence_test() {
   let assert Ok(server) = fake_server.start()
   process.spawn_unlinked(fn() {
     let assert Ok(first) = fake_server.accept_connection(server, 2000)
@@ -244,10 +250,15 @@ pub fn ordinary_stream_continuation_retains_deadline_and_failure_evidence_test()
   let settings = config.with_deadlines(local_config(server.port), deadlines)
   let assert Ok(prepared) = session.prepare(settings, request())
   let assert Ok(opened) = session.stream(prepared)
-  let assert session.Finished(session.RunToolCalls(_, [call], continuation, _)) =
-    terminal(opened)
+  let assert session.Finished(session.RunToolCalls(turn, _)) = terminal(opened)
+  let assert [call] = turn.calls
   let assert Ok(next) =
-    session.prepare_continue(continuation, [types.ToolResult(call.id, "42")])
+    session.prepare(
+      settings,
+      conversation_fixture.append_results(request(), turn, [
+        types.ToolResult(call.id, "42"),
+      ]),
+    )
   let assert Ok(resumed) = session.stream(next)
   let assert session.Failed(
     types.DeadlineExceeded(types.OverallDeadline),
@@ -284,7 +295,7 @@ pub fn configured_refusal_keeps_usage_test() {
   fake_server.stop(server)
 }
 
-pub fn configured_structured_continuation_preserves_codec_and_correlated_calls_test() {
+pub fn caller_supplied_structured_codec_and_correlated_calls_test() {
   let assert Ok(server) = fake_server.start()
   process.spawn_unlinked(fn() {
     let assert Ok(first) = fake_server.accept_connection(server, 2000)
@@ -320,28 +331,33 @@ pub fn configured_structured_continuation_preserves_codec_and_correlated_calls_t
       output_codec,
     )
   let assert Ok(opened) = session.stream_structured(prepared)
-  let assert session.StructuredFinished(session.StructuredNeedsTools(
-    _,
-    [call],
-    continuation,
-    _,
-  )) = structured_terminal(opened)
+  let assert session.StructuredFinished(session.StructuredNeedsTools(turn, _)) =
+    structured_terminal(opened)
   session.structured_request_json(prepared)
   |> string.contains("\"type\":\"json_schema\"")
   |> should.be_true
+  let assert [call] = turn.calls
   let assert Ok(unknown_id) = types.call_id("other")
-  session.prepare_structured_continue(continuation, []) |> should.be_error
-  session.prepare_structured_continue(continuation, [
+  let prepare_next = fn(results) {
+    session.prepare_structured(
+      settings,
+      conversation_fixture.append_results(request(), turn, results),
+      "answer_shape",
+      output_codec,
+    )
+  }
+  prepare_next([]) |> should.be_error
+  prepare_next([
     types.ToolResult(unknown_id, "42"),
   ])
   |> should.be_error
-  session.prepare_structured_continue(continuation, [
+  prepare_next([
     types.ToolResult(call.id, "42"),
     types.ToolResult(call.id, "42"),
   ])
   |> should.be_error
   let assert Ok(next) =
-    session.prepare_structured_continue(continuation, [
+    prepare_next([
       types.ToolResult(call.id, "42"),
     ])
   session.structured_request_json(next)

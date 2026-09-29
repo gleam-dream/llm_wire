@@ -1,3 +1,4 @@
+import conversation_fixture
 import external_provider
 import fake_server
 import gleam/bit_array
@@ -91,7 +92,7 @@ pub fn external_provider_text_over_real_http_test() {
   fake_server.stop(server)
 }
 
-pub fn external_provider_replay_preserves_text_and_exact_tool_results_test() {
+pub fn external_provider_data_preserves_text_and_exact_tool_results_test() {
   let assert Ok(server) = fake_server.start()
   process.spawn_unlinked(fn() {
     let assert Ok(first) = fake_server.accept_connection(server, 2000)
@@ -128,16 +129,22 @@ pub fn external_provider_replay_preserves_text_and_exact_tool_results_test() {
   })
   let assert Ok(prepared) =
     session.prepare(settings(server.port), request(True))
-  let assert Ok(session.RunToolCalls("Before tool", [call], pending, None)) =
-    session.run(prepared)
-  session.prepare_continue(pending, []) |> should.be_error
-  session.prepare_continue(pending, [
+  let assert Ok(session.RunToolCalls(turn, None)) = session.run(prepared)
+  turn.text |> should.equal("Before tool")
+  let assert [call] = turn.calls
+  let prepare_next = fn(results) {
+    session.prepare(
+      settings(server.port),
+      conversation_fixture.append_results(request(True), turn, results),
+    )
+  }
+  prepare_next([]) |> should.be_error
+  prepare_next([
     types.ToolResult(call.id, "14"),
     types.ToolResult(call.id, "14"),
   ])
   |> should.be_error
-  let assert Ok(next) =
-    session.prepare_continue(pending, [types.ToolResult(call.id, "14")])
+  let assert Ok(next) = prepare_next([types.ToolResult(call.id, "14")])
   let body = session.prepared_request_json(next)
   string.contains(body, "\"replay_text\":\"Before tool\"") |> should.be_true
   string.contains(body, "\"text\":\"Before tool\"") |> should.be_true

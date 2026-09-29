@@ -87,8 +87,7 @@ pub fn run_structured(
       use output <- result.try(api.decode_structured_output(prepared, text))
       Ok(api.StructuredValue(output, text, usage))
     }
-    api.RunToolCalls(_, calls, continuation, usage) ->
-      Ok(api.StructuredNeedsTools(calls, continuation, usage))
+    api.RunToolCalls(turn, usage) -> Ok(api.StructuredNeedsTools(turn, usage))
     api.RunOutputLimited(text, calls, usage) ->
       Ok(api.StructuredOutputLimited(text, calls, usage))
     api.RunRefusal(reason, _) -> Ok(api.StructuredRefusal(reason))
@@ -112,8 +111,7 @@ pub fn run_structured_with_pool(
       use output <- result.try(api.decode_structured_output(prepared, text))
       Ok(api.StructuredValue(output, text, usage))
     }
-    api.RunToolCalls(_, calls, continuation, usage) ->
-      Ok(api.StructuredNeedsTools(calls, continuation, usage))
+    api.RunToolCalls(turn, usage) -> Ok(api.StructuredNeedsTools(turn, usage))
     api.RunOutputLimited(text, calls, usage) ->
       Ok(api.StructuredOutputLimited(text, calls, usage))
     api.RunRefusal(reason, _) -> Ok(api.StructuredRefusal(reason))
