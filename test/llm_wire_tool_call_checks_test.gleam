@@ -2,6 +2,8 @@
 //// default and per-call issues when the caller opts in. Scripted transports
 //// replace the network; the built-in reducers still decode their own SSE.
 
+import http_test_helpers
+
 import conversation_fixture
 
 import gleam/int
@@ -55,43 +57,48 @@ fn assert_mixed_issues(issues: List(types.ToolCallIssue)) -> Nil {
 }
 
 pub fn strict_checks_are_the_default_for_unknown_tools_test() {
-  let script =
-    testing.start([
-      testing.tool_calls("", [testing.ScriptedCall("call_1", "missing", "{}")]),
-    ])
-  let assert Ok(prepared) =
-    session.prepare(testing.config(script), lookup_request())
+  let script = [
+    testing.tool_calls("", [testing.ScriptedCall("call_1", "missing", "{}")]),
+  ]
+  let assert Ok(prepared) = session.prepare(testing.config(), lookup_request())
 
   let assert Error(session.RunFailure(types.ProtocolError(reason), _)) =
-    session.run(prepared)
+    http_test_helpers.run_reply(
+      prepared,
+      list.first(list.drop(script, 0)) |> should.be_ok,
+    )
   string.contains(reason, "admitted catalog") |> should.be_true
 }
 
 pub fn strict_checks_reject_schema_invalid_arguments_test() {
-  let script =
-    testing.start([
-      testing.tool_calls("", [
-        testing.ScriptedCall("call_1", "lookup", "{\"query\":42}"),
-      ]),
-    ])
-  let assert Ok(prepared) =
-    session.prepare(testing.config(script), lookup_request())
+  let script = [
+    testing.tool_calls("", [
+      testing.ScriptedCall("call_1", "lookup", "{\"query\":42}"),
+    ]),
+  ]
+  let assert Ok(prepared) = session.prepare(testing.config(), lookup_request())
 
   let assert Error(session.RunFailure(types.ProtocolError(reason), _)) =
-    session.run(prepared)
+    http_test_helpers.run_reply(
+      prepared,
+      list.first(list.drop(script, 0)) |> should.be_ok,
+    )
   string.contains(reason, "schema validation") |> should.be_true
 }
 
 pub fn reported_issues_keep_every_call_in_order_test() {
-  let script =
-    testing.start([
-      testing.tool_calls("Checking.", mixed_calls()),
-      testing.text("Done."),
-    ])
+  let script = [
+    testing.tool_calls("Checking.", mixed_calls()),
+    testing.text("Done."),
+  ]
   let assert Ok(prepared) =
-    session.prepare(report(testing.config(script)), lookup_request())
+    session.prepare(report(testing.config()), lookup_request())
 
-  let assert Ok(session.RunToolCalls(turn, None)) = session.run(prepared)
+  let assert Ok(session.RunToolCalls(turn, None)) =
+    http_test_helpers.run_reply(
+      prepared,
+      list.first(list.drop(script, 0)) |> should.be_ok,
+    )
   turn.text |> should.equal("Checking.")
   list.map(turn.calls, fn(call) { types.call_id_to_string(call.id) })
   |> should.equal(["call_ok", "call_unknown", "call_bad"])
@@ -103,7 +110,7 @@ pub fn reported_issues_keep_every_call_in_order_test() {
     types.ToolResult(call_id("call_unknown"), "{\"error\":\"unknown_tool\"}"),
   ]
   session.prepare(
-    report(testing.config(script)),
+    report(testing.config()),
     conversation_fixture.append_results(lookup_request(), turn, partial),
   )
   |> should.be_error
@@ -113,13 +120,16 @@ pub fn reported_issues_keep_every_call_in_order_test() {
     ])
   let assert Ok(next) =
     session.prepare(
-      report(testing.config(script)),
+      report(testing.config()),
       conversation_fixture.append_results(lookup_request(), turn, results),
     )
-  session.run(next) |> should.equal(Ok(session.RunText("Done.", None)))
+  http_test_helpers.run_reply(
+    next,
+    list.first(list.drop(script, 1)) |> should.be_ok,
+  )
+  |> should.equal(Ok(session.RunText("Done.", None)))
 
-  let assert [_, second] = testing.requests(script)
-  second.request.messages
+  conversation_fixture.append_results(lookup_request(), turn, results).messages
   |> should.equal([
     types.UserMessage("Find gleam"),
     types.AssistantTurnMessage(turn),
@@ -130,32 +140,41 @@ pub fn reported_issues_keep_every_call_in_order_test() {
 }
 
 pub fn valid_calls_report_no_issues_test() {
-  let script =
-    testing.start([
-      testing.tool_calls("", [
-        testing.ScriptedCall("call_1", "lookup", "{\"query\":\"gleam\"}"),
-      ]),
-    ])
+  let script = [
+    testing.tool_calls("", [
+      testing.ScriptedCall("call_1", "lookup", "{\"query\":\"gleam\"}"),
+    ]),
+  ]
   let assert Ok(prepared) =
-    session.prepare(report(testing.config(script)), lookup_request())
+    session.prepare(report(testing.config()), lookup_request())
 
-  let assert Ok(session.RunToolCalls(turn, _)) = session.run(prepared)
+  let assert Ok(session.RunToolCalls(turn, _)) =
+    http_test_helpers.run_reply(
+      prepared,
+      list.first(list.drop(script, 0)) |> should.be_ok,
+    )
   list.length(turn.calls) |> should.equal(1)
   turn.issues |> should.equal([])
 }
 
 pub fn streamed_and_buffered_paths_report_the_same_issues_test() {
-  let script =
-    testing.start([
-      testing.tool_calls("", mixed_calls()),
-      testing.tool_calls("", mixed_calls()),
-    ])
-  let settings = report(testing.config(script))
+  let script = [
+    testing.tool_calls("", mixed_calls()),
+    testing.tool_calls("", mixed_calls()),
+  ]
+  let settings = report(testing.config())
   let assert Ok(buffered) = session.prepare(settings, lookup_request())
   let assert Ok(streamed) = session.prepare(settings, lookup_request())
 
-  let assert Ok(session.RunToolCalls(buffered_turn, _)) = session.run(buffered)
-  let assert Ok(stream) = session.stream(streamed)
+  let assert Ok(session.RunToolCalls(buffered_turn, _)) =
+    http_test_helpers.run_reply(
+      buffered,
+      list.first(list.drop(script, 0)) |> should.be_ok,
+    )
+  use http_streamed <- http_test_helpers.with_script([
+    testing.exchange(streamed, list.first(list.drop(script, 1)) |> should.be_ok),
+  ])
+  let assert Ok(stream) = session.stream(http_streamed, streamed)
   let assert session.Finished(session.RunToolCalls(streamed_turn, _)) =
     terminal(stream)
 
@@ -166,17 +185,20 @@ pub fn streamed_and_buffered_paths_report_the_same_issues_test() {
 }
 
 pub fn structured_calls_report_issues_test() {
-  let script = testing.start([testing.tool_calls("", mixed_calls())])
+  let script = [testing.tool_calls("", mixed_calls())]
   let assert Ok(prepared) =
     session.prepare_structured(
-      report(testing.config(script)),
+      report(testing.config()),
       lookup_request(),
       "answer",
       codec.field("answer", codec.string()),
     )
 
   let assert Ok(session.StructuredNeedsTools(turn, _)) =
-    session.run_structured(prepared)
+    http_test_helpers.run_structured_reply(
+      prepared,
+      list.first(list.drop(script, 0)) |> should.be_ok,
+    )
   list.length(turn.calls) |> should.equal(3)
   assert_mixed_issues(turn.issues)
 }
@@ -184,18 +206,17 @@ pub fn structured_calls_report_issues_test() {
 pub fn reporting_keeps_bounds_and_identity_fatal_test() {
   let limits =
     types.Limits(..types.default_limits(), argument_bytes_per_call_limit: 16)
-  let script =
-    testing.start([
-      testing.tool_calls("", [
-        testing.ScriptedCall("call_1", "lookup", "{\"query\":\"far too long\"}"),
-      ]),
-      testing.tool_calls("", [
-        testing.ScriptedCall("call_1", "lookup", "{}"),
-        testing.ScriptedCall("call_1", "lookup", "{}"),
-      ]),
-      testing.tool_calls("", [testing.ScriptedCall("call_1", "look.up", "{}")]),
-    ])
-  let settings = report(testing.config(script))
+  let script = [
+    testing.tool_calls("", [
+      testing.ScriptedCall("call_1", "lookup", "{\"query\":\"far too long\"}"),
+    ]),
+    testing.tool_calls("", [
+      testing.ScriptedCall("call_1", "lookup", "{}"),
+      testing.ScriptedCall("call_1", "lookup", "{}"),
+    ]),
+    testing.tool_calls("", [testing.ScriptedCall("call_1", "look.up", "{}")]),
+  ]
+  let settings = report(testing.config())
   let assert Ok(oversized) =
     session.prepare(config.with_limits(settings, limits), lookup_request())
   let assert Ok(duplicate) = session.prepare(settings, lookup_request())
@@ -204,11 +225,21 @@ pub fn reporting_keeps_bounds_and_identity_fatal_test() {
   let assert Error(session.RunFailure(
     types.ResourceLimitExceeded("argument_bytes_per_call_limit", 16, _),
     _,
-  )) = session.run(oversized)
+  )) =
+    http_test_helpers.run_reply(
+      oversized,
+      list.first(list.drop(script, 0)) |> should.be_ok,
+    )
   let assert Error(session.RunFailure(types.ProtocolError(_), _)) =
-    session.run(duplicate)
+    http_test_helpers.run_reply(
+      duplicate,
+      list.first(list.drop(script, 1)) |> should.be_ok,
+    )
   let assert Error(session.RunFailure(types.ProtocolError(reason), _)) =
-    session.run(unnamed)
+    http_test_helpers.run_reply(
+      unnamed,
+      list.first(list.drop(script, 2)) |> should.be_ok,
+    )
   string.contains(reason, "invalid tool name") |> should.be_true
 }
 
@@ -328,13 +359,15 @@ fn built_in_settings() -> List(#(String, config.Config, String)) {
 pub fn built_in_providers_report_per_call_issues_test() {
   list.each(built_in_settings(), fn(entry) {
     let #(provider_name, settings, body) = entry
-    let script = testing.start([testing.Events([body])])
+    let script = [testing.Events([body])]
     let assert Ok(prepared) =
-      session.prepare(
-        settings |> testing.with_script(script) |> report,
-        lookup_request(),
+      session.prepare(settings |> report, lookup_request())
+    case
+      http_test_helpers.run_reply(
+        prepared,
+        list.first(list.drop(script, 0)) |> should.be_ok,
       )
-    case session.run(prepared) {
+    {
       Ok(session.RunToolCalls(turn, _)) -> {
         list.map(turn.calls, fn(call) { types.call_id_to_string(call.id) })
         |> should.equal(["call_ok", "call_unknown", "call_bad"])
@@ -348,10 +381,14 @@ pub fn built_in_providers_report_per_call_issues_test() {
 pub fn built_in_providers_reject_invalid_calls_by_default_test() {
   list.each(built_in_settings(), fn(entry) {
     let #(provider_name, settings, body) = entry
-    let script = testing.start([testing.Events([body])])
-    let assert Ok(prepared) =
-      session.prepare(settings |> testing.with_script(script), lookup_request())
-    case session.run(prepared) {
+    let script = [testing.Events([body])]
+    let assert Ok(prepared) = session.prepare(settings, lookup_request())
+    case
+      http_test_helpers.run_reply(
+        prepared,
+        list.first(list.drop(script, 0)) |> should.be_ok,
+      )
+    {
       Error(session.RunFailure(types.ProtocolError(_), _)) -> Nil
       other -> panic as { provider_name <> ": " <> string.inspect(other) }
     }
@@ -367,15 +404,22 @@ pub fn invalid_json_arguments_follow_the_selected_checks_test() {
   ]
   list.each(bodies, fn(entry) {
     let #(settings, body) = entry
-    let script = testing.start([testing.Events([body]), testing.Events([body])])
-    let strict = settings |> testing.with_script(script)
+    let script = [testing.Events([body]), testing.Events([body])]
+    let strict = settings
     let assert Ok(rejected) = session.prepare(strict, lookup_request())
     let assert Ok(reported) = session.prepare(report(strict), lookup_request())
 
     let assert Error(session.RunFailure(types.ProtocolError(reason), _)) =
-      session.run(rejected)
+      http_test_helpers.run_reply(
+        rejected,
+        list.first(list.drop(script, 0)) |> should.be_ok,
+      )
     reason |> should.equal("Invalid JSON in tool call arguments")
-    let assert Ok(session.RunToolCalls(turn, _)) = session.run(reported)
+    let assert Ok(session.RunToolCalls(turn, _)) =
+      http_test_helpers.run_reply(
+        reported,
+        list.first(list.drop(script, 1)) |> should.be_ok,
+      )
     turn.issues
     |> should.equal([
       types.InvalidArguments(
@@ -509,14 +553,17 @@ fn assert_reported_bad_call(
 
 pub fn reported_calls_replay_from_buffered_assistant_turn_test() {
   list.each(replay_cases(), fn(case_) {
-    let script =
-      testing.start([
-        testing.Events([case_.calls_body]),
-        testing.Events([case_.text_body]),
-      ])
-    let settings = case_.settings |> testing.with_script(script) |> report
+    let script = [
+      testing.Events([case_.calls_body]),
+      testing.Events([case_.text_body]),
+    ]
+    let settings = case_.settings |> report
     let assert Ok(prepared) = session.prepare(settings, lookup_request())
-    let assert Ok(session.RunToolCalls(turn, _)) = session.run(prepared)
+    let assert Ok(session.RunToolCalls(turn, _)) =
+      http_test_helpers.run_reply(
+        prepared,
+        list.first(list.drop(script, 0)) |> should.be_ok,
+      )
     assert_reported_bad_call(case_, turn.issues)
 
     case
@@ -530,9 +577,12 @@ pub fn reported_calls_replay_from_buffered_assistant_turn_test() {
       )
     {
       Ok(next) -> {
-        let assert Ok(session.RunText(_, _)) = session.run(next)
-        let assert [_, second] = testing.requests(script)
-        assert_replayed(case_, second.body)
+        let assert Ok(session.RunText(_, _)) =
+          http_test_helpers.run_reply(
+            next,
+            list.first(list.drop(script, 1)) |> should.be_ok,
+          )
+        assert_replayed(case_, session.prepared_request_json(next))
       }
       Error(error) -> panic as { case_.name <> ": " <> string.inspect(error) }
     }
@@ -541,14 +591,19 @@ pub fn reported_calls_replay_from_buffered_assistant_turn_test() {
 
 pub fn reported_calls_replay_from_streamed_assistant_turn_test() {
   list.each(replay_cases(), fn(case_) {
-    let script =
-      testing.start([
-        testing.Events([case_.calls_body]),
-        testing.Events([case_.text_body]),
-      ])
-    let settings = case_.settings |> testing.with_script(script) |> report
+    let script = [
+      testing.Events([case_.calls_body]),
+      testing.Events([case_.text_body]),
+    ]
+    let settings = case_.settings |> report
     let assert Ok(prepared) = session.prepare(settings, lookup_request())
-    let assert Ok(stream) = session.stream(prepared)
+    use http_prepared <- http_test_helpers.with_script([
+      testing.exchange(
+        prepared,
+        list.first(list.drop(script, 0)) |> should.be_ok,
+      ),
+    ])
+    let assert Ok(stream) = session.stream(http_prepared, prepared)
     let assert session.Finished(session.RunToolCalls(turn, _)) =
       terminal(stream)
     assert_reported_bad_call(case_, turn.issues)
@@ -564,10 +619,15 @@ pub fn reported_calls_replay_from_streamed_assistant_turn_test() {
       )
     {
       Ok(next) -> {
-        let assert Ok(stream) = session.stream(next)
+        use http_next <- http_test_helpers.with_script([
+          testing.exchange(
+            next,
+            list.first(list.drop(script, 1)) |> should.be_ok,
+          ),
+        ])
+        let assert Ok(stream) = session.stream(http_next, next)
         let assert session.Finished(session.RunText(_, _)) = terminal(stream)
-        let assert [_, second] = testing.requests(script)
-        assert_replayed(case_, second.body)
+        assert_replayed(case_, session.prepared_request_json(next))
       }
       Error(error) -> panic as { case_.name <> ": " <> string.inspect(error) }
     }
@@ -577,15 +637,16 @@ pub fn reported_calls_replay_from_streamed_assistant_turn_test() {
 pub fn reported_calls_replay_from_public_messages_test() {
   list.each(replay_cases(), fn(case_) {
     // The caller persisted the first round's calls and rebuilds the request.
-    let first = testing.start([testing.Events([case_.calls_body])])
+    let first = [testing.Events([case_.calls_body])]
     let assert Ok(prepared) =
-      session.prepare(
-        case_.settings |> testing.with_script(first) |> report,
-        lookup_request(),
+      session.prepare(case_.settings |> report, lookup_request())
+    let assert Ok(session.RunToolCalls(turn, _)) =
+      http_test_helpers.run_reply(
+        prepared,
+        list.first(list.drop(first, 0)) |> should.be_ok,
       )
-    let assert Ok(session.RunToolCalls(turn, _)) = session.run(prepared)
 
-    let script = testing.start([testing.Events([case_.text_body])])
+    let script = [testing.Events([case_.text_body])]
     let assert Ok(model) = types.model_id("checks-model")
     let request =
       types.new_request(model, [
@@ -596,16 +657,14 @@ pub fn reported_calls_replay_from_public_messages_test() {
         })
       ])
       |> types.with_tools([tool_fixtures.string_field_tool("lookup", "query")])
-    case
-      session.prepare(
-        case_.settings |> testing.with_script(script) |> report,
-        request,
-      )
-    {
+    case session.prepare(case_.settings |> report, request) {
       Ok(next) -> {
-        let assert Ok(session.RunText(_, _)) = session.run(next)
-        let assert [recorded] = testing.requests(script)
-        assert_replayed(case_, recorded.body)
+        let assert Ok(session.RunText(_, _)) =
+          http_test_helpers.run_reply(
+            next,
+            list.first(list.drop(script, 0)) |> should.be_ok,
+          )
+        assert_replayed(case_, session.prepared_request_json(next))
       }
       Error(error) -> panic as { case_.name <> ": " <> string.inspect(error) }
     }
@@ -614,13 +673,14 @@ pub fn reported_calls_replay_from_public_messages_test() {
 
 pub fn reported_call_replies_still_fail_default_checks_test() {
   list.each(replay_cases(), fn(case_) {
-    let script = testing.start([testing.Events([case_.calls_body])])
-    let assert Ok(prepared) =
-      session.prepare(
-        case_.settings |> testing.with_script(script),
-        lookup_request(),
+    let script = [testing.Events([case_.calls_body])]
+    let assert Ok(prepared) = session.prepare(case_.settings, lookup_request())
+    case
+      http_test_helpers.run_reply(
+        prepared,
+        list.first(list.drop(script, 0)) |> should.be_ok,
       )
-    case session.run(prepared) {
+    {
       Error(session.RunFailure(types.ProtocolError(_), _)) -> Nil
       other -> panic as { case_.name <> ": " <> string.inspect(other) }
     }

@@ -38,6 +38,10 @@
             gleam
             beam28Packages.erlang
             rebar3
+            python3
+            nghttp2
+            ripgrep
+            treefmtEval.config.build.wrapper
           ];
         };
 

@@ -1,6 +1,8 @@
+import gleam/bit_array
 import gleam/dynamic/decode
-import gleam/erlang/process
 import gleam/float
+import gleam/http
+import gleam/http/request as http_request
 import gleam/int
 import gleam/json
 import gleam/list
@@ -20,7 +22,6 @@ import llm_wire/internal/schema
 import llm_wire/internal/sse
 import llm_wire/internal/stream_types
 import llm_wire/internal/tls
-import llm_wire/internal/transport_failure
 import llm_wire/provider
 import llm_wire/telemetry
 import llm_wire/types
@@ -100,6 +101,29 @@ pub fn prepared_request_json(prepared: PreparedCall) -> String {
   prepared.body
 }
 
+/// Only the admitted representation can enter HTTP execution. Never re-encode
+/// an unvalidated request or expose credential-bearing headers publicly.
+pub fn http_request(prepared: PreparedCall) -> http_request.Request(BitArray) {
+  let parts = string.split_once(prepared.path, "?")
+  let #(path, query) = case parts {
+    Ok(#(path, query)) -> #(path, Some(query))
+    Error(Nil) -> #(prepared.path, None)
+  }
+  http_request.Request(
+    method: http.Post,
+    scheme: case prepared.tls_mode {
+      tls.Plaintext -> http.Http
+      _ -> http.Https
+    },
+    host: prepared.host,
+    port: Some(prepared.port),
+    path: path,
+    query: query,
+    headers: list.map(prepared.headers, fn(h) { #(string.lowercase(h.0), h.1) }),
+    body: bit_array.from_string(prepared.body),
+  )
+}
+
 /// The admitted request this call encodes, for the scripted test transport.
 pub fn prepared_request(prepared: PreparedCall) -> types.Request {
   prepared.request
@@ -113,129 +137,6 @@ pub fn prepared_adapter(
   prepared: PreparedCall,
 ) -> Result(provider.Adapter, types.WireError) {
   Ok(prepared.config)
-}
-
-type GunSetupError {
-  GunFailure(transport_failure.Failure)
-  GunStatus(Int, String, String)
-}
-
-type GunHandle
-
-@external(erlang, "llm_wire_gun_ffi", "connect_and_stream_gleam")
-fn gun_connect_and_stream_with_pool(
-  pool: Option(process.Pid),
-  host: String,
-  port: Int,
-  path: String,
-  headers: List(#(String, String)),
-  body: String,
-  overall_timeout_ms: Int,
-  tls_mode: String,
-  ca_file: String,
-  max_header_bytes: Int,
-  max_chunk_bytes: Int,
-  owner_pid: process.Pid,
-  on_chunk: fn(BitArray) -> Nil,
-  on_eof: fn() -> Nil,
-  on_error: fn(transport_failure.Failure) -> Nil,
-  on_request_sent: fn() -> Nil,
-) -> Result(GunHandle, GunSetupError)
-
-@external(erlang, "llm_wire_gun_ffi", "send_request_more")
-fn gun_request_more(handle: GunHandle) -> Nil
-
-@external(erlang, "llm_wire_gun_ffi", "send_close")
-fn gun_close(handle: GunHandle) -> Nil
-
-@external(erlang, "llm_wire_gun_ffi", "handle_pid")
-fn gun_handle_pid(handle: GunHandle) -> process.Pid
-
-/// Starts the exact provider request captured by preparation. This low-level
-/// entry accepts no caller-supplied HTTP body, route, or headers.
-pub fn connect_prepared_and_stream(
-  prepared: PreparedCall,
-  overall_timeout_ms: Int,
-  tls_mode: tls.TlsMode,
-  max_header_bytes: Int,
-  max_chunk_bytes: Int,
-  owner_pid: process.Pid,
-  on_chunk: fn(BitArray) -> Nil,
-  on_eof: fn() -> Nil,
-  on_error: fn(transport_failure.Failure) -> Nil,
-  on_request_sent: fn() -> Nil,
-) -> Result(#(owner.TransportPort, process.Pid), types.WireError) {
-  connect_prepared_and_stream_with_pool(
-    None,
-    prepared,
-    overall_timeout_ms,
-    tls_mode,
-    max_header_bytes,
-    max_chunk_bytes,
-    owner_pid,
-    on_chunk,
-    on_eof,
-    on_error,
-    on_request_sent,
-  )
-}
-
-pub fn connect_prepared_and_stream_with_pool(
-  pool_pid: Option(process.Pid),
-  prepared: PreparedCall,
-  overall_timeout_ms: Int,
-  tls_mode: tls.TlsMode,
-  max_header_bytes: Int,
-  max_chunk_bytes: Int,
-  owner_pid: process.Pid,
-  on_chunk: fn(BitArray) -> Nil,
-  on_eof: fn() -> Nil,
-  on_error: fn(transport_failure.Failure) -> Nil,
-  on_request_sent: fn() -> Nil,
-) -> Result(#(owner.TransportPort, process.Pid), types.WireError) {
-  use Nil <- result.try(validate_prepared_transport(prepared, tls_mode))
-  let #(tls_name, ca_file) = case tls_mode {
-    tls.Plaintext -> #("plaintext", "")
-    tls.VerifySystem -> #("verify_system", "")
-    tls.VerifyCaFile(path) -> #("verify_ca_file", path)
-  }
-  case
-    gun_connect_and_stream_with_pool(
-      pool_pid,
-      prepared.host,
-      prepared.port,
-      prepared.path,
-      prepared.headers,
-      prepared.body,
-      overall_timeout_ms,
-      tls_name,
-      ca_file,
-      max_header_bytes,
-      max_chunk_bytes,
-      owner_pid,
-      on_chunk,
-      on_eof,
-      on_error,
-      on_request_sent,
-    )
-  {
-    Error(GunStatus(status, response_body, retry_after)) ->
-      Error(types.HttpStatusError(
-        status,
-        response_body,
-        parse_retry_hint(retry_after),
-      ))
-    Error(GunFailure(failure)) ->
-      Error(transport_failure.to_wire_error(failure))
-    Ok(handle) ->
-      Ok(#(
-        owner.TransportPort(
-          request_more: fn() { gun_request_more(handle) },
-          close: fn() { gun_close(handle) },
-        ),
-        gun_handle_pid(handle),
-      ))
-  }
 }
 
 pub fn validate_prepared_transport(
@@ -258,7 +159,7 @@ pub fn validate_prepared_transport(
   let host_is_local =
     host == "localhost" || host == "127.0.0.1" || host == "::1"
   let tls_policy_is_valid = case tls_mode {
-    tls.Plaintext | tls.VerifyCaFile(_) -> host_is_local
+    tls.Plaintext -> host_is_local
     tls.VerifySystem -> True
   }
   use Nil <- result.try(
@@ -272,25 +173,13 @@ pub fn validate_prepared_transport(
       True -> Ok(Nil)
       False ->
         Error(types.ConfigurationError(
-          "Client requires valid HTTP fields; remote hosts require system-verified HTTPS",
+          "Client requires valid HTTP fields; remote hosts require verified HTTPS",
         ))
     },
   )
   // Provider headers were admitted before the fixed HTTP/SSE headers were
   // appended. The prepared request is opaque and cannot add headers later.
   Ok(Nil)
-}
-
-fn parse_retry_hint(value: String) -> Option(types.RetryHint) {
-  case value {
-    "" -> None
-    _ ->
-      case int.parse(value) {
-        Ok(seconds) if seconds >= 0 -> Some(types.RetryDelaySeconds(seconds))
-        Ok(_) -> Some(types.RetryHeaderValue(value))
-        Error(Nil) -> Some(types.RetryHeaderValue(value))
-      }
-  }
 }
 
 pub fn prepare(

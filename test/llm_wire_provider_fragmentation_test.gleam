@@ -1,13 +1,23 @@
 import gleam/bit_array
+import gleam/http/response
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
+import gleam/string
 import gleeunit/should
+import http_gun/fixture
+import http_test_helpers
+import llm_wire/config
 import llm_wire/internal/anthropic
 import llm_wire/internal/google
 import llm_wire/internal/openai
 import llm_wire/internal/sse
 import llm_wire/internal/stream_types
+import llm_wire/provider/anthropic as anthropic_options
+import llm_wire/provider/google as google_options
+import llm_wire/provider/openai as openai_options
+import llm_wire/session
+import llm_wire/testing
 import llm_wire/types
 
 pub fn complete_provider_interactions_survive_every_byte_split_test() {
@@ -19,9 +29,10 @@ pub fn complete_provider_interactions_survive_every_byte_split_test() {
 fn openai_interaction_splits() {
   let raw =
     "event: response.output_item.added\ndata: {\"output_index\":0,\"item\":{\"id\":\"item\",\"type\":\"message\"}}\n\n"
-    <> "event: response.output_text.delta\ndata: {\"output_index\":0,\"item_id\":\"item\",\"delta\":\"ok\"}\n\n"
+    <> "event: response.output_text.delta\ndata: {\"output_index\":0,\"item_id\":\"item\",\"delta\":\"oé🦊\"}\n\n"
     <> "event: response.output_item.done\ndata: {\"output_index\":0,\"item\":{\"id\":\"item\",\"type\":\"message\"}}\n\n"
     <> "event: response.completed\ndata: {\"response\":{\"id\":\"r1\",\"status\":\"completed\"}}\n\n"
+  check_session_fragments(raw, types.OpenAI)
   check_splits(raw, fn(events) {
     let assert Ok(reducer) =
       list.fold(events, Ok(openai.new(types.default_limits())), fn(acc, event) {
@@ -34,7 +45,7 @@ fn openai_interaction_splits() {
       })
     openai.terminal(reducer)
     |> should.equal(
-      Some(stream_types.StreamFinished(stream_types.CompletedText("ok"), None)),
+      Some(stream_types.StreamFinished(stream_types.CompletedText("oé🦊"), None)),
     )
   })
 }
@@ -43,10 +54,11 @@ fn anthropic_interaction_splits() {
   let raw =
     "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n"
     <> "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n"
-    <> "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n"
+    <> "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"oé🦊\"}}\n\n"
     <> "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n"
     <> "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\n"
     <> "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+  check_session_fragments(raw, types.Anthropic)
   check_splits(raw, fn(events) {
     let assert Ok(reducer) =
       list.fold(
@@ -64,7 +76,7 @@ fn anthropic_interaction_splits() {
     anthropic.terminal(reducer)
     |> should.equal(
       Some(stream_types.StreamFinished(
-        stream_types.CompletedText("ok"),
+        stream_types.CompletedText("oé🦊"),
         Some(types.Usage(1, 1, 2)),
       )),
     )
@@ -73,8 +85,9 @@ fn anthropic_interaction_splits() {
 
 fn google_interaction_splits() {
   let raw =
-    "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"ok\"}]}}]}\n\n"
+    "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"oé🦊\"}]}}]}\n\n"
     <> "data: {\"candidates\":[{\"finishReason\":\"STOP\",\"content\":{\"parts\":[]}}]}\n\n"
+  check_session_fragments(raw, types.Google)
   check_splits(raw, fn(events) {
     let assert Ok(reducer) =
       list.fold(events, Ok(google.new(types.default_limits())), fn(acc, event) {
@@ -87,7 +100,7 @@ fn google_interaction_splits() {
       })
     google.terminal(reducer)
     |> should.equal(
-      Some(stream_types.StreamFinished(stream_types.CompletedText("ok"), None)),
+      Some(stream_types.StreamFinished(stream_types.CompletedText("oé🦊"), None)),
     )
   })
 }
@@ -121,5 +134,44 @@ fn byte_boundaries_loop(
         bit_array.slice(bits, at: position, take: size - position)
       byte_boundaries_loop(bits, size, position + 1, [#(before, after), ..acc])
     }
+  }
+}
+
+// Run every byte as its own HTTP chunk, including each UTF-8 continuation byte
+// and the CR/LF split, through the real worker and semantic owner.
+fn check_session_fragments(raw: String, provider: types.Provider) -> Nil {
+  let assert Ok(key) = types.api_key("synthetic-fragment-key")
+  let settings = case provider {
+    types.OpenAI -> config.openai(openai_options.options(key))
+    types.Anthropic -> config.anthropic(anthropic_options.options(key))
+    types.Google -> config.google(google_options.options(key))
+    types.Custom(_) -> panic as "built-in fixture required"
+  }
+  let assert Ok(model) = types.model_id("fixture")
+  let assert Ok(call) =
+    session.prepare(
+      settings,
+      types.new_request(model, [types.UserMessage("hello")]),
+    )
+  let exchange = testing.exchange(call, testing.text("unused"))
+  let chunks =
+    raw |> string.replace("\n", "\r\n") |> bit_array.from_string |> bytes([])
+  let reply =
+    fixture.Respond(
+      response.Response(200, [#("content-type", "text/event-stream")], chunks),
+      fixture.Complete([]),
+    )
+  use client <- http_test_helpers.with_script([
+    fixture.Exchange(exchange.request, reply),
+  ])
+  let assert Ok(session.RunText("oé🦊", _)) = session.run(client, call)
+  Nil
+}
+
+fn bytes(input: BitArray, acc: List(BitArray)) -> List(BitArray) {
+  case input {
+    <<>> -> list.reverse(acc)
+    <<byte, rest:bytes>> -> bytes(rest, [<<byte>>, ..acc])
+    _ -> panic as "byte-aligned fixture required"
   }
 }

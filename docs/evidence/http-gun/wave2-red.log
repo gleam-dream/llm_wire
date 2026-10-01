@@ -1,0 +1,10 @@
+warning: Git tree '/code/gleam-dream/llm_wire' is dirty
+  Compiling llm_wire
+error: Unknown module value
+   ┌─ /code/gleam-dream/llm_wire/test/llm_wire_http_gun_test.gleam:43:39
+   │
+43 │   let assert Error(session.RunFailure(types.HttpFailure(http_error.ClientClosed), retry)) = session.run_with_client(client, prepared(1, types.default_deadlines()))
+   │                                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The module `llm_wire/types` does not have a `HttpFailure` value.
+

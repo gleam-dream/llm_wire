@@ -2,5 +2,4 @@
 pub type TlsMode {
   Plaintext
   VerifySystem
-  VerifyCaFile(path: String)
 }

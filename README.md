@@ -2,14 +2,14 @@
 
 A bounded LLM client for Gleam on Erlang/OTP. `llm_wire/config` holds provider
 and execution settings; `llm_wire/session` prepares, runs, streams, and
-continues interactions. `llm_wire/types` holds the request, message, tool call,
+collects single interactions. `llm_wire/types` holds the request, message, tool call,
 and tool result values shared across those paths. Preparation checks local
 options and schemas before a network request.
 
 The package targets Gleam 1.18 or newer on Erlang/OTP. The checked-in Nix
 development shell uses OTP 28; other OTP versions have not been verified in
 this release candidate. The JavaScript target is unsupported. The current
-dependency manifest uses local Blueprint and Sinal path dependencies, so the
+dependency manifest uses local HTTP Gun, Blueprint and Sinal path dependencies, so the
 package is not yet ready for an independent registry install.
 
 The initial release scope and remaining release decisions are recorded in
@@ -23,11 +23,17 @@ returns `WireError`; execution returns `session.RunFailure(error, retry)` so a
 caller can decide whether a request might have reached the provider.
 
 ```gleam
+import http_gun
+import http_gun/config as http_config
 import llm_wire/config
 import llm_wire/provider/openai
 import llm_wire/session
 import llm_wire/types
 
+// Start once in application startup; share across independent calls.
+// This ceiling must cover the longest configured LLM overall budget.
+let http_policy = http_config.Config(..http_config.default(), deadline_ms: 120_000)
+let assert Ok(client) = http_gun.start(http_policy)
 let assert Ok(key) = types.api_key("sk-...")
 let assert Ok(model) = types.model_id("gpt-...")
 let options = openai.options(key) |> openai.with_project("my-project")
@@ -40,7 +46,7 @@ let request =
   types.new_request(model, [types.UserMessage("Hello")])
   |> types.with_max_tokens(256)
 let assert Ok(prepared) = session.prepare(settings, request)
-let outcome = session.run(prepared)
+let outcome = session.run(client, prepared)
 ```
 
 Use `config.anthropic(anthropic.options(key))` or
@@ -57,19 +63,12 @@ Update fields by name and attach them with `config.with_limits` and
 `provider_metadata_bytes_limit` bounds retained call IDs, tool names, provider
 IDs/state, response IDs, and each response's opaque provider data. Preparation validates all limit and deadline fields before transport.
 
-For a local HTTPS server signed by a private CA, compose an endpoint and CA
-file:
-
-```gleam
-let settings =
-  config.openai(openai.options(key))
-  |> config.with_endpoint(endpoint)
-  |> config.with_ca_cert_file("certs/local-ca.pem")
-```
-
-Preparation rejects an empty CA path, a plaintext endpoint with a CA file,
-and remote hosts with a caller CA. Certificate and hostname verification apply
-when streaming.
+HTTP policy belongs to client startup. To use a private CA, set
+`trust: http_config.CustomCa("certs/local-ca.pem")` in the HTTP policy before
+`http_gun.start`. Verification includes the certificate and hostname. LLM Wire
+still rejects remote plaintext endpoints; HTTP is admitted only for loopback.
+The old per-call CA restriction and pool settings are removed. There is no
+replacement for the prerelease idle-connection eviction setting.
 
 ## Build a conversation with tool results
 
@@ -93,7 +92,7 @@ let request =
   types.new_request(model, [types.UserMessage("Echo hello")])
   |> types.with_tools([echo_tool])
 let assert Ok(prepared) = session.prepare(settings, request)
-case session.run(prepared) {
+case session.run(client, prepared) {
   Ok(session.RunToolCalls(turn, _usage)) -> {
     // Your application executes the calls and creates their result messages.
     let results = list.map(turn.calls, fn(call) {
@@ -106,7 +105,7 @@ case session.run(prepared) {
       ]),
     )
     let assert Ok(next) = session.prepare(settings, next_request)
-    session.run(next)
+    session.run(client, next)
   }
   other -> other
 }
@@ -163,7 +162,7 @@ request and call `prepare_structured` with the desired codec again.
 let output_codec = codec.field("answer", codec.int())
 let assert Ok(prepared) =
   session.prepare_structured(settings, request, "answer_shape", output_codec)
-let result = session.run_structured(prepared)
+let result = session.run_structured(client, prepared)
 ```
 
 The structured schema must be a closed object with required properties.
@@ -188,7 +187,7 @@ fn read_stream(stream: session.Stream) -> Result(session.Terminal, session.ReadE
   }
 }
 
-let assert Ok(stream) = session.stream(prepared)
+let assert Ok(stream) = session.stream(client, prepared)
 let terminal = read_stream(stream)
 ```
 
@@ -220,19 +219,31 @@ Applications combine both with tool effects, Retry-After hints, deadlines, and
 budgets when deciding whether to retry. A `MayHelp` result does not establish
 that repeating an operation is safe.
 
-## Own a connection pool
+## Own the HTTP client
 
-`config` is pure and never starts a pool. Start one in your application's
-supervision or startup path, attach it, and stop it during shutdown:
+Prepare remains pure. Pass an explicitly started `http_gun.Client` to `run`,
+`stream`, `run_structured`, or `stream_structured`. Calls neither start a hidden
+pool nor stop the shared client. Stop it with `http_gun.stop(client)` at
+application shutdown. Client shutdown unblocks outstanding calls with typed
+failures. Use `http_gun.child(policy)` under an application supervisor and publish
+the returned capability through your application registry; a restart supplies a
+new client. The [compiled consumer](examples/consumer/src/llm_wire_consumer.gleam)
+shows the child specification, concurrent independent calls, and early close.
 
-```gleam
-import llm_wire/pool
+Each execution starts one absolute overall budget. Admission, connection,
+headers and body spend that same budget. Preparing early spends none of it.
+HTTP Gun applies the earlier of this deadline and its client ceiling (30 seconds
+by default, versus LLM Wire's 60 seconds). Raise the ceiling at startup as shown.
+Consumer `ReadTimeout` leaves the stream usable. Semantic idle is independent:
+keepalive and non-progress bytes do not reset it. A provider terminal returns
+without waiting for HTTP EOF, and closes locally without draining.
 
-let assert Ok(owned_pool) = pool.start(pool.default_pool_config())
-let settings = config.openai(openai.options(key)) |> config.with_pool(owned_pool)
-// Prepare and run calls with `settings` while the application owns `owned_pool`.
-let shutdown = pool.stop(owned_pool)
-```
+Copied stream handles share one cursor. Conflicting reads fail explicitly;
+close is idempotent, including concurrent closes. The creating consumer owns the
+session lifetime. Its death closes HTTP; copying a handle does not transfer
+that lifetime. Use `close` on early exit, including application error paths.
+Local close never proves provider cancellation or rollback. See the
+[ownership and error mapping](docs/http-gun-migration.md).
 
 ## Add an HTTP/SSE provider
 
@@ -256,77 +267,69 @@ runtime owns transport, deadlines, queue limits, retry evidence, tool catalog
 validation, and terminal admission. The runtime bounds returned provider data. Adapters must also bound reducer
 state and enforce wire-specific block limits while accumulating a response.
 
-## Test without a network
+## Choose live, scripted, playback or recording at startup
 
-`llm_wire/testing` scripts provider replies for application tests. A script
-is a process that serves queued replies in order and records each admitted
-request. The replies enter the same stream owner, SSE framer, reducer, limits,
-deadlines, and terminal admission as a real response. No socket opens.
+All modes supply the same `http_gun.Client` to the same session calls. The
+[standalone consumer](examples/consumer/README.md) compiles against this checkout
+and executes scripted and strict offline playback flows.
+
+`llm_wire/testing` retains pure semantic reply builders and a provider-neutral
+`testing.config()`. Lower an opaque prepared call and reply to an HTTP exchange:
 
 ```gleam
-import llm_wire/session
+import http_gun/testing as http_testing
 import llm_wire/testing
-import llm_wire/types
 
-let script =
-  testing.start([
-    testing.tool_calls("", [
-      testing.ScriptedCall("call_1", "lookup", "{\"query\":\"gleam\"}"),
-    ]),
-    testing.text("Found it.") |> testing.with_usage(types.Usage(12, 3, 15)),
-  ])
-let assert Ok(prepared) = session.prepare(testing.config(script), request)
-let assert Ok(session.RunToolCalls(turn, _)) = session.run(prepared)
-let assert [call] = turn.calls
-let next_request = types.Request(..request, messages: list.append(request.messages, [
-  types.AssistantTurnMessage(turn), types.ToolResultMessage(call.id, "gleam.run")
-]))
-let assert Ok(next) = session.prepare(testing.config(script), next_request)
-let assert Ok(session.RunText("Found it.", _)) = session.run(next)
-let assert [_, second] = testing.requests(script)
-// second.request.messages ends with the assistant calls and the tool result.
+let assert Ok(call) = session.prepare(testing.config(), request)
+let exchanges = [testing.exchange(call, testing.text("hello"))]
+let assert Ok(client) = http_testing.start(http_policy, exchanges)
+let result = session.run(client, call)
+let _ = http_gun.stop(client)
 ```
 
-`testing.config(script)` selects a provider-neutral scripted provider. Its
-replies come from `text`, `tool_calls`, `refusal`, and `output_limited`.
-`testing.with_script(settings, script)` routes any configuration, including a
-built-in provider, through the script; those replies carry that provider's raw
-SSE bytes in `testing.Events(chunks)`. `testing.Interrupted(chunks)` ends with
-a transport failure, and `testing.Status(code, body)` fails before a stream
-opens. A request with no reply left fails with `ConfigurationError` and is
-still recorded.
+`text`, `tool_calls`, `refusal`, `output_limited`, and `with_usage` build semantic
+replies. For built-in providers use `testing.Events` with their SSE events or
+`testing.Interrupted` for partial failure. `testing.Status` supplies an HTTP
+status response. For structured calls use `testing.structured_exchange`.
+There is no retained request-history process. Inspect the finite expected
+exchanges your test already owns; no additional inspection queue accumulates.
 
-## Play a cassette from disk
-
-Choose the transport once when configuring a flow. The flow keeps its ordinary
-`session.prepare`, `run`, and `stream` calls in both environments:
+HTTP Gun owns the binary-capable fixture schema and live recorder:
 
 ```gleam
-import llm_wire/cassette
+import http_gun/cassette
+import http_gun/recording
 
-// Production:
-let production_settings = config.openai(openai.options(key))
+// Offline startup; load errors are explicit and there is no network fallback.
+let assert Ok(tape) = cassette.load("fixtures/lookup.json", 8_388_608)
+let assert Ok(client) = cassette.playback(tape, http_policy)
+// Run your ordinary application flow(client, ...) and stop at shutdown.
 
-// Local playback:
-let assert Ok(recording) = cassette.load("fixtures/lookup.json", 8_388_608)
-let script = cassette.start(recording)
-let local_settings = testing.with_script(production_settings, script)
-// Pass either settings value to the same application flow.
+// Recording startup opens real HTTP when the application executes calls.
+let assert Ok(recorded) = cassette.record(
+  http_policy, "fixtures/new.json",
+  recording.Options(8_388_608, recording.RefuseExisting),
+)
+// Run the same flow(recorded.client, ...), consuming or closing every stream.
+let captured = recording.finish_wait(recorded.recording, 5000)
+let _ = http_gun.stop(recorded.client)
 ```
 
-Version 1 cassettes store ordered exchanges. Each expected request matches the
-POST method, configured endpoint, effective path, and exact body. Configured
-headers and their credentials are excluded; request and response bodies are
-retained verbatim. Repeated identical requests can have different
-responses. A mismatch leaves the expected exchange unconsumed; mismatches and
-exhaustion return errors with no network fallback. `testing.remaining(script)`
-lets a test assert that it used every exchange.
+Capture/persistence failure is separate from HTTP and semantic outcomes.
+`finish_wait` waits for consumed/closed requests and never drains them. Choose
+`ReplaceExisting` explicitly when replacing a fixture. Capture is bounded;
+publication has atomic visibility, without a power-loss durability promise.
 
-`cassette.parse` and `to_json` support application-controlled fixture storage;
-`load` bounds file reads before allocating the complete file. Malformed,
-unsupported, oversized, and excessively nested data return typed cassette errors.
-Replies preserve SSE chunk boundaries, HTTP status failures and interruptions.
-This release adds playback; automatic live recording is not implemented.
+Matching preserves method, target, query, body bytes and significant headers.
+Only `authorization`, `proxy-authorization`, `cookie`, `set-cookie`, `x-api-key`,
+`api-key`, and `x-goog-api-key` metadata are excluded (case insensitive). Bodies,
+queries and unlisted headers remain exact and may contain secrets. Use synthetic
+inputs for owned fixtures; body/query redaction is not supplied.
+Repeated requests can have distinct sequential replies; mismatches do not consume
+the expected exchange. Coordinate admission order when concurrent requests have
+different expected replies. Missing/corrupt/incompatible/exhausted fixtures fail
+explicitly. Old prerelease LLM Wire cassette files and record-if-missing behavior
+are unsupported.
 
 ## Observe and integrate
 
@@ -351,7 +354,10 @@ let _ = sinal.detach(attachment)
 The metadata is `telemetry.Metadata(stage, provider, outcome)`.
 Package observations emit only these fixed, low-cardinality fields under the
 native `[:llm_wire, :observation]` event. They carry no prompt or response
-content.
+content. The `request_sent` stage now carries outcome `http_response_started`
+when HTTP Gun returns the response head. It is evidence that the request reached
+a response, not an exact wire-submission timestamp; time the entire execution in
+the application when measuring end-to-end latency.
 
 Applications that use Relay can adapt their own `relay/tool.Definition` to an
 LLM tool declaration through its input codec. This adapter belongs in the
@@ -405,21 +411,32 @@ shims in this cleanup.
 | `Continuation`, `prepare_continue`, checkpoint APIs, and `provider.Replay` | Append `AssistantTurnMessage(turn)` and results; prepare a new request explicitly                                         |
 | Direct internal provider reducer and request hooks                         | Use `provider.Adapter`/`provider.Spec`/`provider.reducer`, then `config.from_provider`; internal transport is unsupported |
 
+## HTTP Gun API migration
+
+- Add the unreleased local `http_gun = { path = "../http_gun" }` dependency.
+- Change `session.run(call)` to `session.run(client, call)` and likewise for
+  streaming and structured execution. Preparation signatures stay unchanged.
+- Replace `llm_wire/pool` and `config.with_pool` with application-owned HTTP Gun
+  startup/supervision. Move CA and connection policy to that startup.
+- Replace the old script process and `llm_wire/cassette` with HTTP Gun scripts,
+  playback and recording. Keep LLM semantic reply builders as pure values.
+- Match typed `types.HttpFailure(http_gun/error.Reason)`; HTTP opening failures
+  arrive as stream terminals because stream setup is asynchronous.
+
 ## Local release checks
 
-Run these commands from this package in the Gleam/OTP dev shell, with the
-sibling Blueprint and Sinal source directories present for the current local
-dependencies:
+Run with the local HTTP Gun, Blueprint and Sinal siblings present:
 
 ```sh
-gleam format --check src test
-gleam check
-gleam build
-gleam test
-sh test/external_package_boundary.sh
+nix develop -c sh dev/gate fast
+nix develop -c sh dev/gate full
+nix fmt
 nix flake check
-git diff --check
 ```
 
-There is no hosted CI workflow yet. It must be added when the release
-dependency layout is fixed so a fresh checkout can run these gates.
+The fast gate checks formatting, types/build, FFI warnings, production HTTP
+boundaries and the complete unit/local H1/TLS suite. Full adds a clean build,
+external consumers, independent nghttpd TLS/H2 and simultaneous load. All calls
+use synthetic local or offline inputs. See the
+[validation report](docs/http-gun-validation.md) for exact runtime, results and
+limits. Hosted CI awaits a distributable dependency layout.

@@ -1,4 +1,4 @@
-# Caller-owned conversation and cassette playback
+# Caller-owned conversation and HTTP client composition
 
 Accepted on 2026-09-29 by the library owner. This supersedes the continuation and
 checkpoint ownership in `docs/continuation-retry.md` and the corresponding tool
@@ -12,7 +12,7 @@ LLM Wire prepares one request and normalizes one response. Fabric or another
 caller owns conversation history, tool execution, retries, pause/resume,
 persistence, and duplicate-effect protection. No continuation handle, checkpoint,
 source digest, or state restoration API remains in LLM Wire. Prepared calls own
-only one admitted request and its transport configuration.
+only one admitted request and its semantic settings; the application supplies the shared HTTP client at execution.
 
 A completed tool response carries `types.AssistantTurn`: provider, text, calls,
 response ID, optional provider data, and reported call issues. It contains no
@@ -45,22 +45,27 @@ signed parts retain their content and ordering. Unsigned parts use the existing
 canonical argument repair. Generic custom data interpretation belongs to the
 configured adapter, independent of its public provider identity.
 
-## Offline cassette playback
+## HTTP client and fixtures (accepted 2026-09-30)
 
-Cassette playback substitutes the transport through configuration. The flow uses
-the same prepare/run/stream calls and provider parsers as production. A bounded
-version-1 JSON file contains ordered expected requests and scripted replies.
-Expected requests match method, configured endpoint, effective path and exact
-body. Configured headers and their credentials are excluded from fixtures;
-request and response bodies are retained verbatim.
+The HTTP Gun migration supersedes this document's original local cassette
+implementation, while preserving its caller-owned conversation decision.
+HTTP Gun owns generic transport, pooling, HTTP body ownership and byte streaming,
+HTTP deadlines/cancellation, scripts, recording and strict playback. LLM Wire owns
+provider encoding/reduction, bounded SSE, semantic idle/progress, admission,
+structured decoding and conservative semantic retry evidence.
 
-A mismatch does not consume the expected exchange. Mismatch, exhaustion, missing
-files, malformed data, unknown versions and oversized input fail explicitly.
-Playback never falls back to the network. Identical requests may have distinct
-responses at different sequence positions. The script owns only test playback
-progress, not agent execution progress. File loading, pure parsing/encoding and
-script startup remain separate operations. Live recording is a later test-tooling
-extension; this slice provides local stored playback.
+The application starts and shares an `http_gun.Client`, passing it to session
+execution. Preparation stays pure and opaque. Live, scripted, recorded and
+playback clients use one session path. Current HTTP Gun fixtures preserve binary
+chunks and significant headers; only its documented credential metadata names
+are excluded. Matching is ordered and non-consuming on mismatch, and never falls
+back to a network. Recording performs actual HTTP, with finite capture and an
+independent publication result; finalization waits for consumed/closed responses
+without draining them. Bodies, queries and unlisted headers are not redacted.
+
+[HTTP Gun migration](http-gun-migration.md) owns the worker/token lifetime,
+deadline and error mapping contract. [Validation](http-gun-validation.md) records
+the measured adoption evidence. A fixture is test input, not execution state.
 
 ## Delivery brief and acceptance
 

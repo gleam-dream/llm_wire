@@ -1,6 +1,7 @@
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import http_gun/error as http_error
 import json/blueprint/codec
 import json/blueprint/parser
 import json/blueprint/parser_limits
@@ -560,6 +561,8 @@ pub type WireError {
   ConfigurationError(reason: String)
   PreparationError(reason: String)
   TransportError(reason: String)
+  /// Typed HTTP failure; diagnostic strings are never used as categories.
+  HttpFailure(reason: http_error.Reason)
   HttpStatusError(status_code: Int, body: String, retry_hint: Option(RetryHint))
   ProviderError(code: Option(String), message: String)
   ProtocolError(reason: String)

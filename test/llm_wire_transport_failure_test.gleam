@@ -1,19 +1,29 @@
 import gleeunit/should
-import llm_wire/internal/transport_failure
+import http_gun/error
+import llm_wire/internal/http_client
 import llm_wire/types
 
-pub fn gun_deadline_race_keeps_deadline_classification_test() {
-  transport_failure.to_wire_error(transport_failure.OverallDeadlineFailure)
+pub fn http_deadline_keeps_deadline_classification_test() {
+  http_client.wire_error(error.Failure(
+    error.DeadlineExceeded,
+    error.MayHaveBeenSent,
+  ))
   |> should.equal(types.DeadlineExceeded(types.OverallDeadline))
 }
 
-pub fn other_gun_failure_keeps_transport_classification_test() {
-  transport_failure.to_wire_error(transport_failure.TransportFailure(
-    "overall deadline exceeded",
+pub fn diagnostic_text_does_not_determine_failure_category_test() {
+  http_client.wire_error(error.Failure(
+    error.InvalidConfig("overall deadline exceeded"),
+    error.NotSubmitted,
   ))
-  |> should.equal(types.TransportError("overall deadline exceeded"))
-  transport_failure.to_wire_error(transport_failure.TransportFailure(
-    "connection refused",
+  |> should.equal(
+    types.HttpFailure(error.InvalidConfig("overall deadline exceeded")),
+  )
+  http_client.wire_error(error.Failure(
+    error.ConnectionFailed(error.ConnectionRefused),
+    error.NotSubmitted,
   ))
-  |> should.equal(types.TransportError("connection refused"))
+  |> should.equal(
+    types.HttpFailure(error.ConnectionFailed(error.ConnectionRefused)),
+  )
 }

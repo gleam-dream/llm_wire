@@ -1,0 +1,336 @@
+warning: Git tree '/code/gleam-dream/llm_wire' is dirty
+WARN walk | git: Path /code/gleam-dream/llm_wire/src/llm_wire/cassette.gleam is in the worktree but appears to have been removed from the filesystem
+WARN walk | git: Path /code/gleam-dream/llm_wire/src/llm_wire/internal/client.gleam is in the worktree but appears to have been removed from the filesystem
+WARN walk | git: Path /code/gleam-dream/llm_wire/src/llm_wire/internal/tcp.gleam is in the worktree but appears to have been removed from the filesystem
+WARN walk | git: Path /code/gleam-dream/llm_wire/src/llm_wire/internal/transport.gleam is in the worktree but appears to have been removed from the filesystem
+WARN walk | git: Path /code/gleam-dream/llm_wire/src/llm_wire/internal/transport_failure.gleam is in the worktree but appears to have been removed from the filesystem
+WARN walk | git: Path /code/gleam-dream/llm_wire/src/llm_wire/pool.gleam is in the worktree but appears to have been removed from the filesystem
+WARN walk | git: Path /code/gleam-dream/llm_wire/src/llm_wire_cassette_ffi.erl is in the worktree but appears to have been removed from the filesystem
+WARN walk | git: Path /code/gleam-dream/llm_wire/src/llm_wire_gun_ffi.erl is in the worktree but appears to have been removed from the filesystem
+WARN walk | git: Path /code/gleam-dream/llm_wire/src/llm_wire_gun_pool.erl is in the worktree but appears to have been removed from the filesystem
+WARN walk | git: Path /code/gleam-dream/llm_wire/src/llm_wire_tcp_ffi.erl is in the worktree but appears to have been removed from the filesystem
+WARN walk | git: Path /code/gleam-dream/llm_wire/test/fixtures/cassette/hello.json is in the worktree but appears to have been removed from the filesystem
+WARN walk | git: Path /code/gleam-dream/llm_wire/test/fixtures/cassette/invalid_utf8.bin is in the worktree but appears to have been removed from the filesystem
+WARN walk | git: Path /code/gleam-dream/llm_wire/test/fixtures/cassette/next.json is in the worktree but appears to have been removed from the filesystem
+traversed 125 files
+emitted 86 files for processing
+formatted 0 files (0 changed) in 55ms
+  Resolving versions
+Downloading packages
+ Downloaded 21 packages in 0.17s
+  Compiling gleam_stdlib
+  Compiling gleam_json
+  Compiling gleam_erlang
+  Compiling gleam_http
+  Compiling gleam_httpc
+  Compiling anthropic_gleam
+warning: Deprecated value used
+    ┌─ /code/gleam-dream/llm_wire/build/packages/anthropic_gleam/src/anthropic/streaming/handler.gleam:404:35
+    │
+404 │   use stream_result <- result.try(stream_message(api_client, message_request))
+    │                                   ^^^^^^^^^^^^^^ This value has been deprecated
+
+It was deprecated with this message: Use api.chat_stream instead
+
+  Compiling cowlib
+===> Analyzing applications...
+===> Compiling cowlib
+  Compiling exception
+  Compiling file_streams
+  Compiling filepath
+  Compiling gleam_crypto
+  Compiling gleam_otp
+  Compiling gleeunit
+  Compiling logging
+  Compiling glisten
+  Compiling gramps
+warning: Deprecated type used
+    ┌─ /code/gleam-dream/llm_wire/build/packages/gramps/src/gramps/http.gleam:132:52
+    │
+132 │ pub fn response_builder(status: Int, headers: List(Header)) -> BytesTree {
+    │                                                    ^^^^^^ This type has been deprecated
+
+It was deprecated with this message: Use #(String, String) instead
+
+warning: Deprecated type used
+    ┌─ /code/gleam-dream/llm_wire/build/packages/gramps/src/gramps/http.gleam:209:37
+    │
+209 │ pub fn encode_headers(headers: List(Header)) -> BytesTree {
+    │                                     ^^^^^^ This type has been deprecated
+
+It was deprecated with this message: Use #(String, String) instead
+
+  Compiling gun
+===> Analyzing applications...
+===> Compiling gun
+  Compiling hpack_erl
+===> Analyzing applications...
+===> Compiling hpack
+  Compiling simplifile
+  Compiling http_gun
+  Compiling json_blueprint
+  Compiling mist
+warning: Deprecated type used
+   ┌─ /code/gleam-dream/llm_wire/build/packages/mist/src/mist/internal/encoder.gleam:16:17
+   │
+16 │   headers: List(Header),
+   │                 ^^^^^^ This type has been deprecated
+
+It was deprecated with this message: Use #(String, String) instead
+
+warning: Deprecated type used
+   ┌─ /code/gleam-dream/llm_wire/build/packages/mist/src/mist/internal/encoder.gleam:95:37
+   │
+95 │ pub fn encode_headers(headers: List(Header)) -> BytesTree {
+   │                                     ^^^^^^ This type has been deprecated
+
+It was deprecated with this message: Use #(String, String) instead
+
+warning: Deprecated type used
+   ┌─ /code/gleam-dream/llm_wire/build/packages/mist/src/mist/internal/http2.gleam:63:17
+   │
+63 │   headers: List(Header),
+   │                 ^^^^^^ This type has been deprecated
+
+It was deprecated with this message: Use #(String, String) instead
+
+warning: Deprecated type used
+    ┌─ /code/gleam-dream/llm_wire/build/packages/mist/src/mist/internal/http2.gleam:169:20
+    │
+169 │ ) -> Result(#(List(Header), HpackContext), HpackError)
+    │                    ^^^^^^ This type has been deprecated
+
+It was deprecated with this message: Use #(String, String) instead
+
+warning: Deprecated type used
+    ┌─ /code/gleam-dream/llm_wire/build/packages/mist/src/mist/internal/http2.gleam:174:17
+    │
+174 │   headers: List(Header),
+    │                 ^^^^^^ This type has been deprecated
+
+It was deprecated with this message: Use #(String, String) instead
+
+warning: Deprecated type used
+   ┌─ /code/gleam-dream/llm_wire/build/packages/mist/src/mist/internal/http2/stream.gleam:60:17
+   │
+60 │   headers: List(Header),
+   │                 ^^^^^^ This type has been deprecated
+
+It was deprecated with this message: Use #(String, String) instead
+
+warning: Deprecated type used
+    ┌─ /code/gleam-dream/llm_wire/build/packages/mist/src/mist/internal/http2/stream.gleam:143:17
+    │
+143 │   headers: List(Header),
+    │                 ^^^^^^ This type has been deprecated
+
+It was deprecated with this message: Use #(String, String) instead
+
+  Compiling telemetry
+===> Analyzing applications...
+===> Compiling telemetry
+  Compiling sinal
+   Checking llm_wire
+   Compiled in 20.52s
+  Resolving versions
+  Compiling llm_wire
+   Compiled in 0.85s
+   Compiled in 0.35s
+    Running llm_wire_test.main
+[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m=CRASH REPORT==== 30-Sep-2026::16:23:24.165333 ===
+  crasher:
+    initial call: gleam@otp@actor:'-start/1-anonymous-0-'/0
+    pid: <0.381.0>
+    registered_name: []
+    exception error: #{function =>
+                           <<"reducer_exception_releases_http_and_preserves_shared_client_test">>,
+                       line => 60,
+                       message => <<"controlled reducer exception">>,
+                       module => <<"llm_wire_http_gun_test">>,
+                       file => <<"test/llm_wire_http_gun_test.gleam">>,
+                       gleam_error => panic}
+      in function  llm_wire_http_gun_test:'-reducer_exception_releases_http_and_preserves_shared_client_test/0-anonymous-2-'/2 (test/llm_wire_http_gun_test.gleam:92)
+      in call from llm_wire@provider:'-reducer/4-anonymous-1-'/5 (src/llm_wire/provider.gleam:87)
+      in call from llm_wire@internal@owner:process_sse_events/2 (src/llm_wire/internal/owner.gleam:606)
+      in call from gleam@otp@actor:loop/1 (src/gleam/otp/actor.gleam:491)
+    ancestors: [<0.380.0>,<0.131.0>]
+    message_queue_len: 0
+    messages: []
+    links: [<0.380.0>,<0.382.0>]
+    dictionary: []
+    trap_exit: false
+    status: running
+    heap_size: 610
+    stack_size: 29
+    reductions: 679
+  neighbours:
+    neighbour:
+      pid: <0.383.0>
+      registered_name: []
+      initial call: gleam@otp@actor:'-start/1-anonymous-0-'/0
+      current_function: {gleam_erlang_ffi,select,2}
+      ancestors: [<0.382.0>,<0.381.0>,<0.380.0>,<0.131.0>]
+      message_queue_len: 0
+      links: [<0.382.0>]
+      trap_exit: false
+      status: waiting
+      heap_size: 233
+      stack_size: 12
+      reductions: 97
+      current_stacktrace: [{gleam_erlang_ffi,select,2,
+                      [{file,
+                           "/code/gleam-dream/llm_wire/build/dev/erlang/gleam_erlang/_gleam_artefacts/gleam_erlang_ffi.erl"},
+                       {line,52}]},
+                  {gleam_erlang_ffi,select,1,
+                      [{file,
+                           "/code/gleam-dream/llm_wire/build/dev/erlang/gleam_erlang/_gleam_artefacts/gleam_erlang_ffi.erl"},
+                       {line,49}]},
+                  {gleam@otp@actor,loop,1,
+                      [{file,"src/gleam/otp/actor.gleam"},{line,466}]},
+                  {proc_lib,init_p,3,[{file,"proc_lib.erl"},{line,317}]}]
+    neighbour:
+      pid: <0.382.0>
+      registered_name: []
+      initial call: llm_wire@internal@http_client:'-start/5-anonymous-2-'/0
+      current_function: {gleam_erlang_ffi,'receive',2}
+      ancestors: [<0.381.0>,<0.380.0>,<0.131.0>]
+      message_queue_len: 0
+      links: [<0.381.0>,<0.383.0>]
+      trap_exit: false
+      status: waiting
+      heap_size: 376
+      stack_size: 31
+      reductions: 1343
+      current_stacktrace: [{gleam_erlang_ffi,'receive',2,
+                      [{file,
+                           "/code/gleam-dream/llm_wire/build/dev/erlang/gleam_erlang/_gleam_artefacts/gleam_erlang_ffi.erl"},
+                       {line,91}]},
+                  {llm_wire@internal@http_client,read,4,
+                      [{file,"src/llm_wire/internal/http_client.gleam"},
+                       {line,164}]},
+                  {http_gun_ffi,scoped,2,
+                      [{file,
+                           "/code/gleam-dream/llm_wire/build/dev/erlang/http_gun/_gleam_artefacts/http_gun_ffi.erl"},
+                       {line,49}]},
+                  {http_gun,'-with_response_with_options/4-anonymous-2-',2,
+                      [{file,"src/http_gun.gleam"},{line,99}]},
+                  {llm_wire@internal@http_client,'-start/5-anonymous-1-',7,
+                      [{file,"src/llm_wire/internal/http_client.gleam"},
+                       {line,65}]},
+                  {http_gun_ffi,scoped,2,
+                      [{file,
+                           "/code/gleam-dream/llm_wire/build/dev/erlang/http_gun/_gleam_artefacts/http_gun_ffi.erl"},
+                       {line,49}]},
+                  {http_gun@cancellation,'-with_token/1-anonymous-6-',2,
+                      [{file,"src/http_gun/cancellation.gleam"},{line,52}]},
+                  {llm_wire@internal@http_client,'-start/5-anonymous-2-',6,
+                      [{file,"src/llm_wire/internal/http_client.gleam"},
+                       {line,59}]}]
+    neighbour:
+      pid: <0.380.0>
+      registered_name: []
+      initial call: llm_wire_http_gun_test:'-reducer_exception_releases_http_and_preserves_shared_client_test/0-anonymous-6-'/0
+      current_function: {gleam_erlang_ffi,select,2}
+      ancestors: [<0.131.0>]
+      message_queue_len: 0
+      links: [<0.381.0>]
+      trap_exit: false
+      status: waiting
+      heap_size: 376
+      stack_size: 19
+      reductions: 189
+      current_stacktrace: [{gleam_erlang_ffi,select,2,
+                      [{file,
+                           "/code/gleam-dream/llm_wire/build/dev/erlang/gleam_erlang/_gleam_artefacts/gleam_erlang_ffi.erl"},
+                       {line,52}]},
+                  {llm_wire@internal@owner,next,2,
+                      [{file,"src/llm_wire/internal/owner.gleam"},{line,274}]},
+                  {llm_wire@session,next,1,
+                      [{file,"src/llm_wire/session.gleam"},{line,144}]},
+                  {llm_wire@session,collect,1,
+                      [{file,"src/llm_wire/session.gleam"},{line,97}]},
+                  {llm_wire_http_gun_test,
+                      '-reducer_exception_releases_http_and_preserves_shared_client_test/0-anonymous-6-',
+                      2,
+                      [{file,"test/llm_wire_http_gun_test.gleam"},{line,113}]},
+                  {proc_lib,init_p,3,[{file,"proc_lib.erl"},{line,317}]}]
+[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m=NOTICE REPORT==== 30-Sep-2026::16:23:25.020703 ===
+TLS client: In state wait_cert_cr at ssl_handshake.erl:2226 generated CLIENT ALERT: Fatal - Bad Certificate
+ - {bad_cert,{hostname_check_failed,{requested,"localhost"},
+                                    {received,[{iPAddress,<<127,0,0,1>>}]}}}
+=NOTICE REPORT==== 30-Sep-2026::16:23:25.022061 ===
+TLS server: In state wait_finished received CLIENT ALERT: Fatal - Bad Certificate
+
+=SUPERVISOR REPORT==== 30-Sep-2026::16:23:25.022130 ===
+    supervisor: {local,'glisten_connection_supervisor$2626'}
+    errorContext: child_terminated
+    reason: <<"Failed to handshake socket">>
+    offender: [{pid,<0.656.0>},
+               {id,0},
+               {mfargs,
+                   {gleam@otp@factory_supervisor,start_child_callback,
+                       undefined}},
+               {restart_type,temporary},
+               {significant,false},
+               {shutdown,5000},
+               {child_type,worker}]
+
+[32m.[39m=NOTICE REPORT==== 30-Sep-2026::16:23:25.038714 ===
+TLS client: In state wait_cert_cr at ssl_handshake.erl:2218 generated CLIENT ALERT: Fatal - Unknown CA
+
+[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m
+222 passed, no failures[39m
+  Resolving versions
+Downloading packages
+ Downloaded 12 packages in 0.06s
+      Added cowlib v2.20.0
+      Added file_streams v1.7.0
+      Added filepath v1.1.2
+      Added gleam_crypto v1.5.2
+      Added gleam_erlang v1.3.0
+      Added gleam_http v4.4.0
+      Added gleam_json v3.1.0
+      Added gleam_otp v1.3.0
+      Added gleam_stdlib v0.71.0
+      Added gun v2.6.0
+      Added http_gun v0.1.0
+      Added json_blueprint v1.7.1
+      Added llm_wire v0.1.0
+      Added simplifile v2.7.0
+      Added sinal v0.1.0
+      Added telemetry v1.4.2
+  Compiling cowlib
+===> Analyzing applications...
+===> Compiling cowlib
+  Compiling gleam_stdlib
+  Compiling file_streams
+  Compiling filepath
+  Compiling gleam_crypto
+  Compiling gleam_erlang
+  Compiling gleam_http
+  Compiling gleam_json
+  Compiling gleam_otp
+  Compiling gun
+===> Analyzing applications...
+===> Compiling gun
+  Compiling simplifile
+  Compiling http_gun
+  Compiling json_blueprint
+  Compiling telemetry
+===> Analyzing applications...
+===> Compiling telemetry
+  Compiling sinal
+  Compiling llm_wire
+   Checking llm_wire_boundary_probe
+   Compiled in 17.88s
+   Compiled in 0.30s
+    Running llm_wire_consumer.main
+  Resolving versions
+error: Hex API failure
+
+There was a problem when using the Hex API.
+
+This was error from the Hex client library:
+
+    The rate limit for the Hex API has been exceeded
+

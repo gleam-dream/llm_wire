@@ -26,11 +26,23 @@ library revision. The authoritative wire contract is
 
 ## Test and deployment composition
 
-Inject a `config.Config` into the same agent flow in every environment. Production
-uses the configured provider; local playback loads a cassette, starts its script,
-and substitutes it with `testing.with_script(settings, script)`. Startup handles
-fixture load errors. Tests assert consumed exchanges and observe outgoing
-requests through `testing.requests`. Missing matches never authorize live calls.
+Inject pure provider `config.Config` and an application-owned `http_gun.Client`
+into the same agent flow. Start/supervise the client once and pass it to `run`,
+`stream` and their structured counterparts. Set its deadline ceiling to cover
+Fabric's longest LLM budget. Put trust and connection policy at client startup;
+remove the old pool/CA/idle-eviction settings.
+
+Use HTTP Gun script clients or load its current cassette schema and start strict
+playback. `llm_wire/testing` now supplies pure semantic replies and
+`testing.exchange` / `structured_exchange`. Inspect those bounded expected
+exchanges rather than an accumulating `testing.requests` history. Startup handles
+fixture failures. For recording, pass `recorded.client` and finalize separately
+after all streams are consumed/closed; capture failure must not overwrite the
+agent's successful response. Missing matches never authorize live calls.
+
+The [compiled consumer](../examples/consumer/src/llm_wire_consumer.gleam) shows
+shared supervision, early close, concurrency and all four startup modes. Fabric
+has not been modified or independently validated by this migration.
 
 ## Consumer acceptance scenarios
 

@@ -1,0 +1,12 @@
+{
+  "date": "2026-09-30",
+  "system": "Darwin",
+  "architecture": "arm64",
+  "os_release": "25.5.0",
+  "versions": {
+    "gleam": "gleam 1.18.1",
+    "erlang": "OTP 28.5.0.6 ERTS 16.4.0.6",
+    "rebar3": "rebar 3.27.0 on Erlang/OTP 28 Erts 16.4.0.6",
+    "nghttpd": "nghttpd nghttp2/1.70.0"
+  }
+}

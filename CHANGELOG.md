@@ -9,16 +9,20 @@
   `RunToolCalls(turn, usage)` and `StructuredNeedsTools(turn, usage)` return
   `types.AssistantTurn` data. Callers append `AssistantTurnMessage` plus results
   and prepare the next request explicitly. Fabric owns agent state and storage.
-- Added bounded version-1 disk cassette playback with strict ordered request
-  matching, no network fallback, typed load/format errors, and explicit delivery
-  evidence for local mismatches. The same flow uses production or playback
-  settings; live recording is deferred.
+- **Breaking:** execution now takes an application-owned `http_gun.Client`.
+  Removed the direct Gun transport, custom pool, per-call CA/pool settings and
+  duplicate HTTP cassette engine. Pure preparation and caller-owned histories
+  remain unchanged. Trust and transport limits belong to HTTP client startup.
+- HTTP Gun provides binary fixtures, strict offline playback and actual live
+  recording through the same session path. Capture/persistence failures are
+  separate; finite capture, explicit replacement and no-drain finalization are
+  tested. The old prerelease fixture schema is removed.
 - Erlang/OTP HTTP and SSE calls through OpenAI Responses, Anthropic Messages,
   Google GenerateContent, and public application-defined provider adapters.
 - Pure provider options and common configuration; local admission before
   transport; bounded request, response, progress, metadata, and deadline paths.
 - Buffered and owned streaming outcomes, typed retry evidence, exact tool
-  response messages, and an optional caller-owned connection pool.
+  response messages, and an explicitly shared application-owned HTTP Gun client.
 - Blueprint-backed tool and structured-output admission, including schema-only
   tools from finite runtime contracts. Sinal emits fixed lifecycle observations.
 
@@ -35,12 +39,9 @@ candidate API.
   outcomes. Callers that need a `WireError` map the error explicitly.
   Provider-returned names use the same grammar; a response naming a tool
   outside it fails with `ProtocolError`.
-- Added `llm_wire/testing`, a supported deterministic test transport. A
-  `Script` serves queued replies to the ordinary session runtime without a
-  socket and records each admitted request. `testing.config` selects a
-  provider-neutral scripted provider; `testing.with_script` routes any
-  configuration, including built-in providers, through raw scripted SSE.
-  Downstream packages no longer need a loopback HTTP stub.
+- `llm_wire/testing` retains pure semantic reply builders and lowers admitted
+  prepared calls to HTTP Gun exchanges. There is no separate script process,
+  connector or request-history buffer.
 - Added `config.with_tool_call_checks` with `types.ToolCallChecks`. The default,
   `RejectInvalidToolCalls`, keeps the documented contract: an undeclared tool
   or invalid arguments fail the response with `ProtocolError`.
@@ -72,9 +73,9 @@ candidate API.
   and selected image profiles. Audio, video, embeddings, realtime/WebSocket,
   batch/background jobs, automatic retries, and remote
   cancellation acknowledgement are outside this candidate.
-- Strict response-header rejection is tested, but Gun 2.6.0 has no proven
-  16 KiB **pre-allocation** bound on complete headers. The transport decision
-  recorded in `DESIGN-COVERAGE.md` remains open before release acceptance.
+- HTTP Gun/Gun apply documented HTTP limits. Released, unmodified Gun/Cowlib
+  remain underneath; protocol-parser pre-allocation certification is outside this
+  migration and is not a new release blocker. No universal memory claim is made.
 - Adapter authors must bound reducer state and wire-specific block structure.
   Returned provider data is bounded by the runtime.
 
@@ -95,11 +96,12 @@ candidate API.
 
 ### Release preparation remaining
 
-- Select a version and convert local Blueprint and Sinal path dependencies to
+- Select a version and convert local HTTP Gun, Blueprint and Sinal path dependencies to
   released dependencies. Confirm the repository URL before adding package
   repository metadata.
 - Add hosted CI for the final dependency layout and verify the release gates
   there. Current local gates are listed in the README.
-- Complete the response-header transport decision and final release review.
+- Complete the final release/API review; migration validation is recorded in
+  `docs/http-gun-validation.md` for Darwin ARM64 OTP 28 only.
 
 No version has been selected or package published.

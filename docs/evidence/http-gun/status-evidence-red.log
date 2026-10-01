@@ -1,0 +1,154 @@
+warning: Git tree '/code/gleam-dream/llm_wire' is dirty
+  Compiling llm_wire
+   Compiled in 0.34s
+    Running llm_wire_test.main
+[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m=CRASH REPORT==== 30-Sep-2026::16:15:00.831576 ===
+  crasher:
+    initial call: gleam@otp@actor:'-start/1-anonymous-0-'/0
+    pid: <0.381.0>
+    registered_name: []
+    exception error: #{function =>
+                           <<"reducer_exception_releases_http_and_preserves_shared_client_test">>,
+                       line => 60,
+                       message => <<"controlled reducer exception">>,
+                       module => <<"llm_wire_http_gun_test">>,
+                       file => <<"test/llm_wire_http_gun_test.gleam">>,
+                       gleam_error => panic}
+      in function  llm_wire_http_gun_test:'-reducer_exception_releases_http_and_preserves_shared_client_test/0-anonymous-2-'/2 (test/llm_wire_http_gun_test.gleam:92)
+      in call from llm_wire@provider:'-reducer/4-anonymous-1-'/5 (src/llm_wire/provider.gleam:87)
+      in call from llm_wire@internal@owner:process_sse_events/2 (src/llm_wire/internal/owner.gleam:598)
+      in call from gleam@otp@actor:loop/1 (src/gleam/otp/actor.gleam:491)
+    ancestors: [<0.380.0>,<0.131.0>]
+    message_queue_len: 0
+    messages: []
+    links: [<0.380.0>,<0.382.0>]
+    dictionary: []
+    trap_exit: false
+    status: running
+    heap_size: 610
+    stack_size: 29
+    reductions: 679
+  neighbours:
+    neighbour:
+      pid: <0.383.0>
+      registered_name: []
+      initial call: gleam@otp@actor:'-start/1-anonymous-0-'/0
+      current_function: {gleam_erlang_ffi,select,2}
+      ancestors: [<0.382.0>,<0.381.0>,<0.380.0>,<0.131.0>]
+      message_queue_len: 0
+      links: [<0.382.0>]
+      trap_exit: false
+      status: waiting
+      heap_size: 233
+      stack_size: 12
+      reductions: 97
+      current_stacktrace: [{gleam_erlang_ffi,select,2,
+                      [{file,
+                           "/code/gleam-dream/llm_wire/build/dev/erlang/gleam_erlang/_gleam_artefacts/gleam_erlang_ffi.erl"},
+                       {line,52}]},
+                  {gleam_erlang_ffi,select,1,
+                      [{file,
+                           "/code/gleam-dream/llm_wire/build/dev/erlang/gleam_erlang/_gleam_artefacts/gleam_erlang_ffi.erl"},
+                       {line,49}]},
+                  {gleam@otp@actor,loop,1,
+                      [{file,"src/gleam/otp/actor.gleam"},{line,466}]},
+                  {proc_lib,init_p,3,[{file,"proc_lib.erl"},{line,317}]}]
+    neighbour:
+      pid: <0.382.0>
+      registered_name: []
+      initial call: llm_wire@internal@http_client:'-start/5-anonymous-2-'/0
+      current_function: {gleam_erlang_ffi,'receive',2}
+      ancestors: [<0.381.0>,<0.380.0>,<0.131.0>]
+      message_queue_len: 0
+      links: [<0.381.0>,<0.383.0>]
+      trap_exit: false
+      status: waiting
+      heap_size: 376
+      stack_size: 31
+      reductions: 1343
+      current_stacktrace: [{gleam_erlang_ffi,'receive',2,
+                      [{file,
+                           "/code/gleam-dream/llm_wire/build/dev/erlang/gleam_erlang/_gleam_artefacts/gleam_erlang_ffi.erl"},
+                       {line,91}]},
+                  {llm_wire@internal@http_client,read,4,
+                      [{file,"src/llm_wire/internal/http_client.gleam"},
+                       {line,164}]},
+                  {http_gun_ffi,scoped,2,
+                      [{file,
+                           "/code/gleam-dream/llm_wire/build/dev/erlang/http_gun/_gleam_artefacts/http_gun_ffi.erl"},
+                       {line,49}]},
+                  {http_gun,'-with_response_with_options/4-anonymous-2-',2,
+                      [{file,"src/http_gun.gleam"},{line,99}]},
+                  {llm_wire@internal@http_client,'-start/5-anonymous-1-',7,
+                      [{file,"src/llm_wire/internal/http_client.gleam"},
+                       {line,65}]},
+                  {http_gun_ffi,scoped,2,
+                      [{file,
+                           "/code/gleam-dream/llm_wire/build/dev/erlang/http_gun/_gleam_artefacts/http_gun_ffi.erl"},
+                       {line,49}]},
+                  {http_gun@cancellation,'-with_token/1-anonymous-6-',2,
+                      [{file,"src/http_gun/cancellation.gleam"},{line,52}]},
+                  {llm_wire@internal@http_client,'-start/5-anonymous-2-',6,
+                      [{file,"src/llm_wire/internal/http_client.gleam"},
+                       {line,59}]}]
+    neighbour:
+      pid: <0.380.0>
+      registered_name: []
+      initial call: llm_wire_http_gun_test:'-reducer_exception_releases_http_and_preserves_shared_client_test/0-anonymous-6-'/0
+      current_function: {gleam_erlang_ffi,select,2}
+      ancestors: [<0.131.0>]
+      message_queue_len: 0
+      links: [<0.381.0>]
+      trap_exit: false
+      status: waiting
+      heap_size: 376
+      stack_size: 19
+      reductions: 189
+      current_stacktrace: [{gleam_erlang_ffi,select,2,
+                      [{file,
+                           "/code/gleam-dream/llm_wire/build/dev/erlang/gleam_erlang/_gleam_artefacts/gleam_erlang_ffi.erl"},
+                       {line,52}]},
+                  {llm_wire@internal@owner,next,2,
+                      [{file,"src/llm_wire/internal/owner.gleam"},{line,273}]},
+                  {llm_wire@session,next,1,
+                      [{file,"src/llm_wire/session.gleam"},{line,143}]},
+                  {llm_wire@session,collect,1,
+                      [{file,"src/llm_wire/session.gleam"},{line,96}]},
+                  {llm_wire_http_gun_test,
+                      '-reducer_exception_releases_http_and_preserves_shared_client_test/0-anonymous-6-',
+                      2,
+                      [{file,"test/llm_wire_http_gun_test.gleam"},{line,113}]},
+                  {proc_lib,init_p,3,[{file,"proc_lib.erl"},{line,317}]}]
+[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m
+[1m[31mpanic[39m[22m [90msrc/gleeunit/should.gleam:10[39m
+[36m test[39m: llm_wire_http_gun_test.partial_status_body_keeps_bytes_when_semantic_idle_wins_test
+[36m info[39m: 
+False
+should equal
+True
+[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m=NOTICE REPORT==== 30-Sep-2026::16:15:01.664099 ===
+TLS client: In state wait_cert_cr at ssl_handshake.erl:2226 generated CLIENT ALERT: Fatal - Bad Certificate
+ - {bad_cert,{hostname_check_failed,{requested,"localhost"},
+                                    {received,[{iPAddress,<<127,0,0,1>>}]}}}
+=NOTICE REPORT==== 30-Sep-2026::16:15:01.666016 ===
+TLS server: In state wait_finished received CLIENT ALERT: Fatal - Bad Certificate
+
+=SUPERVISOR REPORT==== 30-Sep-2026::16:15:01.666098 ===
+    supervisor: {local,'glisten_connection_supervisor$2626'}
+    errorContext: child_terminated
+    reason: <<"Failed to handshake socket">>
+    offender: [{pid,<0.642.0>},
+               {id,0},
+               {mfargs,
+                   {gleam@otp@factory_supervisor,start_child_callback,
+                       undefined}},
+               {restart_type,temporary},
+               {significant,false},
+               {shutdown,5000},
+               {child_type,worker}]
+
+[32m.[39m=NOTICE REPORT==== 30-Sep-2026::16:15:01.714127 ===
+TLS client: In state wait_cert_cr at ssl_handshake.erl:2218 generated CLIENT ALERT: Fatal - Unknown CA
+
+[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[31m
+220 passed, 1 failures[39m

@@ -1,0 +1,24 @@
+#!/bin/sh
+set -eu
+cd "$(dirname "$0")/.."
+profile=${1:-fast}
+case "$profile" in fast|full) ;; *) printf '%s\n' 'Usage: sh dev/gate fast|full' >&2; exit 2 ;; esac
+treefmt --fail-on-change
+gleam format --check src test examples/consumer/src
+if [ "$profile" = full ]; then gleam clean; fi
+gleam check
+gleam build --warnings-as-errors
+gate_tmp=$(mktemp -d)
+trap 'rm -rf "$gate_tmp"' EXIT HUP INT TERM
+erlc -Werror +warn_unused_vars +warn_unused_function -o "$gate_tmp" test/*.erl
+if rg -n 'http_gun/internal|gun:|llm_wire_gun|llm_wire_cassette_ffi|llm_wire/pool|llm_wire/internal/transport' src; then
+  printf '%s\n' 'A removed or non-public production HTTP path was found.' >&2
+  exit 1
+fi
+gleam test
+if [ "$profile" = full ]; then
+  sh test/external_package_boundary.sh
+  python3 dev/local-http.py
+fi
+git diff --check
+printf 'LLM Wire %s gate passed.\n' "$profile"

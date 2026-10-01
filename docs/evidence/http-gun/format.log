@@ -1,0 +1,17 @@
+warning: Git tree '/code/gleam-dream/llm_wire' is dirty
+WARN walk | git: Path /code/gleam-dream/llm_wire/src/llm_wire/cassette.gleam is in the worktree but appears to have been removed from the filesystem
+WARN walk | git: Path /code/gleam-dream/llm_wire/src/llm_wire/internal/client.gleam is in the worktree but appears to have been removed from the filesystem
+WARN walk | git: Path /code/gleam-dream/llm_wire/src/llm_wire/internal/tcp.gleam is in the worktree but appears to have been removed from the filesystem
+WARN walk | git: Path /code/gleam-dream/llm_wire/src/llm_wire/internal/transport.gleam is in the worktree but appears to have been removed from the filesystem
+WARN walk | git: Path /code/gleam-dream/llm_wire/src/llm_wire/internal/transport_failure.gleam is in the worktree but appears to have been removed from the filesystem
+WARN walk | git: Path /code/gleam-dream/llm_wire/src/llm_wire/pool.gleam is in the worktree but appears to have been removed from the filesystem
+WARN walk | git: Path /code/gleam-dream/llm_wire/src/llm_wire_cassette_ffi.erl is in the worktree but appears to have been removed from the filesystem
+WARN walk | git: Path /code/gleam-dream/llm_wire/src/llm_wire_gun_ffi.erl is in the worktree but appears to have been removed from the filesystem
+WARN walk | git: Path /code/gleam-dream/llm_wire/src/llm_wire_gun_pool.erl is in the worktree but appears to have been removed from the filesystem
+WARN walk | git: Path /code/gleam-dream/llm_wire/src/llm_wire_tcp_ffi.erl is in the worktree but appears to have been removed from the filesystem
+WARN walk | git: Path /code/gleam-dream/llm_wire/test/fixtures/cassette/hello.json is in the worktree but appears to have been removed from the filesystem
+WARN walk | git: Path /code/gleam-dream/llm_wire/test/fixtures/cassette/invalid_utf8.bin is in the worktree but appears to have been removed from the filesystem
+WARN walk | git: Path /code/gleam-dream/llm_wire/test/fixtures/cassette/next.json is in the worktree but appears to have been removed from the filesystem
+traversed 132 files
+emitted 87 files for processing
+formatted 4 files (3 changed) in 333ms

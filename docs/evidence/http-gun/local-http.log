@@ -1,0 +1,10 @@
+warning: Git tree '/code/gleam-dream/llm_wire' is dirty
+  Compiling llm_wire
+   Compiled in 0.83s
+    Running llm_wire_local_gate.main
+{"scenario":"h2_cancel_sibling","healthy_text_bytes":2097152,"cancelled":true}
+{"scenario":"simultaneous","callers":1,"failures":0,"elapsed_us":768,"p50_us":706,"p95_us":706,"max_us":706,"connections":1,"vm_memory_peak_bytes":63144985,"process_memory_peak_bytes":1803632,"mailbox_total_peak":1,"mailbox_single_peak":1,"process_count_peak":98,"ports_peak":3}
+{"scenario":"simultaneous","callers":10,"failures":0,"elapsed_us":2059,"p50_us":1835,"p95_us":1935,"max_us":1987,"connections":1,"vm_memory_peak_bytes":61270401,"process_memory_peak_bytes":1803632,"mailbox_total_peak":5,"mailbox_single_peak":4,"process_count_peak":107,"ports_peak":3}
+{"scenario":"simultaneous","callers":100,"failures":0,"elapsed_us":19399,"p50_us":12495,"p95_us":17227,"max_us":17522,"connections":1,"vm_memory_peak_bytes":64473377,"process_memory_peak_bytes":1803632,"mailbox_total_peak":4,"mailbox_single_peak":4,"process_count_peak":176,"ports_peak":3}
+{"scenario":"simultaneous","callers":1000,"failures":0,"elapsed_us":168248,"p50_us":89015,"p95_us":146440,"max_us":161025,"connections":1,"vm_memory_peak_bytes":103729769,"process_memory_peak_bytes":4440824,"mailbox_total_peak":60,"mailbox_single_peak":60,"process_count_peak":3663,"ports_peak":3}
+Verified TLS H2: one connection, cancelled streams and healthy siblings, 1/10/100/1000 simultaneous callers.

@@ -1,16 +1,17 @@
-import gleam/option.{type Option, None, Some}
+import gleam/option.{type Option}
 import gleam/result
+import http_gun
+import http_gun/fixture
 import json/blueprint/codec
 import llm_wire/config
 import llm_wire/internal/api
-import llm_wire/internal/client
+import llm_wire/internal/http_client
 import llm_wire/internal/owner
 import llm_wire/internal/stream_types
-import llm_wire/internal/tls
-import llm_wire/pool
 import llm_wire/types
 
-/// One admitted request with its transport and response settings.
+/// One admitted provider request and its semantic settings. HTTP client policy
+/// and lifetime are supplied separately at execution.
 pub opaque type PreparedCall {
   PreparedCall(call: api.PreparedCall, settings: config.Config)
 }
@@ -62,55 +63,34 @@ pub fn prepare(
     request,
     config.limits(settings),
   ))
-  use Nil <- result.try(validate_ca_policy(call, settings))
   Ok(PreparedCall(call, settings))
 }
 
-fn ca_override(settings: config.Config) -> Option(tls.TlsMode) {
-  case config.ca_cert_file(settings) {
-    None -> None
-    Some(path) -> Some(tls.VerifyCaFile(path))
-  }
-}
-
-fn validate_ca_policy(
-  call: api.PreparedCall,
-  settings: config.Config,
-) -> Result(Nil, types.WireError) {
-  case ca_override(settings) {
-    None -> Ok(Nil)
-    Some(mode) -> api.validate_prepared_transport(call, mode)
-  }
-}
-
-pub fn stream(prepared: PreparedCall) -> Result(Stream, RunFailure) {
-  let PreparedCall(call, settings) = prepared
-  open_source(call, settings)
-  |> result.map(fn(source) { Stream(source, prepared) })
-  |> result.map_error(open_failure)
-}
-
-fn open_source(
-  call: api.PreparedCall,
-  settings: config.Config,
-) -> Result(owner.Stream, client.OpenFailure) {
-  client.open_prepared_stream_with(
-    call,
-    config.limits(settings),
-    config.deadlines(settings),
-    ca_override(settings),
-    option.map(config.pool(settings), pool.pool_pid),
-    config.connector(settings),
-    config.tool_call_checks(settings),
-  )
-}
-
-pub fn run(prepared: PreparedCall) -> Result(RunResult, RunFailure) {
-  use stream <- result.try(stream(prepared))
+pub fn run(
+  client: http_gun.Client,
+  prepared: PreparedCall,
+) -> Result(RunResult, RunFailure) {
+  use stream <- result.try(stream(client, prepared))
   collect(stream)
 }
 
-/// Collect one response from the owned stream.
+pub fn stream(
+  client: http_gun.Client,
+  prepared: PreparedCall,
+) -> Result(Stream, RunFailure) {
+  http_client.open(
+    client,
+    prepared.call,
+    config.limits(prepared.settings),
+    config.deadlines(prepared.settings),
+    config.tool_call_checks(prepared.settings),
+  )
+  |> result.map(fn(source) { Stream(source, prepared) })
+  |> result.map_error(fn(error) {
+    RunFailure(error, types.initial_retry_evidence())
+  })
+}
+
 pub fn collect(stream: Stream) -> Result(RunResult, RunFailure) {
   case next(stream) {
     Ok(NextProgress(_)) -> collect(stream)
@@ -121,10 +101,6 @@ pub fn collect(stream: Stream) -> Result(RunResult, RunFailure) {
     Error(StreamReadError(types.ReadTimeout)) -> collect(stream)
     Error(error) -> Error(read_failure(error))
   }
-}
-
-fn open_failure(failure: client.OpenFailure) -> RunFailure {
-  RunFailure(failure.error, failure.retry)
 }
 
 fn read_failure(error: ReadError) -> RunFailure {
@@ -247,27 +223,31 @@ pub fn prepare_structured(
     output_name,
     output_codec,
   ))
-  use Nil <- result.try(validate_ca_policy(
-    api.structured_prepared_call(call),
-    settings,
-  ))
   Ok(PreparedStructuredCall(call, settings))
 }
 
 pub fn stream_structured(
+  client: http_gun.Client,
   prepared: PreparedStructuredCall(output),
 ) -> Result(StructuredStream(output), RunFailure) {
-  let PreparedStructuredCall(call, settings) = prepared
-  let api_call = api.structured_prepared_call(call)
-  open_source(api_call, settings)
+  http_client.open(
+    client,
+    api.structured_prepared_call(prepared.call),
+    config.limits(prepared.settings),
+    config.deadlines(prepared.settings),
+    config.tool_call_checks(prepared.settings),
+  )
   |> result.map(fn(source) { StructuredStream(source, prepared) })
-  |> result.map_error(open_failure)
+  |> result.map_error(fn(error) {
+    RunFailure(error, types.initial_retry_evidence())
+  })
 }
 
 pub fn run_structured(
+  client: http_gun.Client,
   prepared: PreparedStructuredCall(output),
 ) -> Result(StructuredRunResult(output), RunFailure) {
-  use stream <- result.try(stream_structured(prepared))
+  use stream <- result.try(stream_structured(client, prepared))
   collect_structured(stream)
 }
 
@@ -351,4 +331,25 @@ pub fn structured_request_json(
   prepared: PreparedStructuredCall(output),
 ) -> String {
   api.structured_request_json(prepared.call)
+}
+
+@internal
+pub fn fixture_exchange(
+  prepared: PreparedCall,
+  reply: fixture.Reply,
+) -> fixture.Exchange {
+  fixture.Exchange(fixture.sanitise(api.http_request(prepared.call)), reply)
+}
+
+@internal
+pub fn structured_fixture_exchange(
+  prepared: PreparedStructuredCall(output),
+  reply: fixture.Reply,
+) -> fixture.Exchange {
+  fixture.Exchange(
+    fixture.sanitise(
+      api.http_request(api.structured_prepared_call(prepared.call)),
+    ),
+    reply,
+  )
 }

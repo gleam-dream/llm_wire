@@ -36,6 +36,7 @@ pub fn assess(
     | types.ResourceLimitExceeded(..)
     | types.CancelledLocally -> WillNotHelpUnchanged
     types.TransportError(_) | types.DeadlineExceeded(_) -> MayHelp
+    types.HttpFailure(_) -> Unknown
     types.ProtocolError(_) | types.OutputValidationError(_) -> Unknown
     types.HttpStatusError(status, _, _) -> assess_status(provider, status)
     types.ProviderError(None, _) -> Unknown

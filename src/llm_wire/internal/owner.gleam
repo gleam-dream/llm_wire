@@ -6,10 +6,10 @@ import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/result
 import gleam/string
+import http_gun/deadline
 import llm_wire/internal/call_admission
 import llm_wire/internal/sse
 import llm_wire/internal/stream_types
-import llm_wire/internal/transport_failure
 import llm_wire/provider
 import llm_wire/telemetry
 import llm_wire/types
@@ -31,7 +31,40 @@ pub fn start_provider_stream(
   tools: List(types.ToolDefinition),
   checks: types.ToolCallChecks,
 ) -> Result(Stream, types.WireError) {
-  start_stream(identity, reducer, limits, deadlines, transport, tools, checks)
+  start_stream(
+    identity,
+    reducer,
+    limits,
+    deadlines,
+    fn(_) { transport },
+    tools,
+    checks,
+    None,
+  )
+}
+
+/// The transport is started inside the semantic owner, so its linked worker
+/// shares the owner's failure lifetime without transferring HTTP body ownership.
+pub fn start_with_transport(
+  identity: types.Provider,
+  reducer: provider.Reducer,
+  limits: types.Limits,
+  deadlines: types.Deadlines,
+  start_transport: fn(Stream) -> TransportPort,
+  tools: List(types.ToolDefinition),
+  checks: types.ToolCallChecks,
+  budget: deadline.Deadline,
+) -> Result(Stream, types.WireError) {
+  start_stream(
+    identity,
+    reducer,
+    limits,
+    deadlines,
+    start_transport,
+    tools,
+    checks,
+    Some(budget),
+  )
 }
 
 type Message {
@@ -47,9 +80,9 @@ type Message {
   )
   FeedChunk(chunk: BitArray)
   FeedEof
-  FeedError(failure: transport_failure.Failure)
-  AttachTransport(transport: TransportPort)
+  FeedFailure(types.WireError, types.RetryEvidence)
   RequestWasSent
+  ResponseBytesObserved
   OverallDeadlineFired
   IdleDeadlineFired
   DownMessage(process.Down)
@@ -118,21 +151,23 @@ fn start_stream(
   reducer: provider.Reducer,
   limits: types.Limits,
   deadlines: types.Deadlines,
-  transport: TransportPort,
+  start_transport: fn(Stream) -> TransportPort,
   tools: List(types.ToolDefinition),
   checks: types.ToolCallChecks,
+  budget: Option(deadline.Deadline),
 ) -> Result(Stream, types.WireError) {
   let consumer_pid = process.self()
   let builder =
     actor.new_with_initialiser(5000, fn(subject) {
-      let overall_timer = case deadlines.overall_timeout_ms > 0 {
-        True ->
-          Some(process.send_after(
-            subject,
-            deadlines.overall_timeout_ms,
-            OverallDeadlineFired,
-          ))
-        False -> None
+      let transport = start_transport(Stream(subject))
+      let overall_ms = case budget {
+        Some(value) -> deadline.remaining_ms(value)
+        None -> deadlines.overall_timeout_ms
+      }
+      let overall_timer = case budget, overall_ms > 0 {
+        Some(_), _ | None, True ->
+          Some(process.send_after(subject, overall_ms, OverallDeadlineFired))
+        None, False -> None
       }
 
       let idle_timer = case deadlines.idle_timeout_ms > 0 {
@@ -182,6 +217,7 @@ fn start_stream(
           consumer_monitor: consumer_monitor,
         )
 
+      transport.request_more()
       actor.initialised(initial_state)
       |> actor.selecting(selector)
       |> actor.returning(subject)
@@ -192,11 +228,20 @@ fn start_stream(
   case actor.start(builder) {
     Ok(started) -> {
       // Request initial bytes from transport
-      transport.request_more()
       Ok(Stream(started.data))
     }
     Error(_) -> Error(types.ConfigurationError("Failed to start stream actor"))
   }
+}
+
+type ReadWait {
+  Delivered(Result(stream_types.ReadResult, types.ReadError))
+  OwnerStopped
+}
+
+type CancelWait {
+  CancelAcknowledged(CancelPendingReadResult)
+  OwnerFinished
 }
 
 pub fn next(
@@ -204,51 +249,84 @@ pub fn next(
   timeout_ms: Int,
 ) -> Result(stream_types.ReadResult, types.ReadError) {
   let Stream(subject) = stream
-  case is_alive(stream) {
-    False -> Error(types.StreamClosed)
-    True -> {
-      let reply_to = process.new_subject()
-      let read_id = reference.new()
-      process.send(
-        subject,
-        Next(read_id: read_id, reply_to: reply_to, consumer_pid: process.self()),
-      )
-
-      case process.receive(reply_to, timeout_ms) {
-        Ok(res) -> res
-        Error(Nil) -> {
-          let cancelled = process.new_subject()
-          process.send(
-            subject,
-            CancelPendingRead(read_id: read_id, reply_to: cancelled),
-          )
-          case process.receive(cancelled, 5000) {
-            Ok(CancelWon) -> Error(types.ReadTimeout)
-            Ok(DeliveryWon) ->
-              case process.receive(reply_to, 0) {
-                Ok(res) -> res
+  case owner_pid(stream) {
+    Error(Nil) -> Error(types.StreamClosed)
+    Ok(pid) ->
+      case process.is_alive(pid) {
+        False -> Error(types.StreamClosed)
+        True -> {
+          let monitor = process.monitor(pid)
+          let reply_to = process.new_subject()
+          let read_id = reference.new()
+          process.send(subject, Next(read_id, reply_to, process.self()))
+          let result = case
+            process.new_selector()
+            |> process.select_map(reply_to, Delivered)
+            |> process.select_specific_monitor(monitor, fn(_) { OwnerStopped })
+            |> process.selector_receive(timeout_ms)
+          {
+            Ok(Delivered(result)) -> result
+            Ok(OwnerStopped) -> delivered_before_exit(reply_to)
+            Error(Nil) -> {
+              let cancelled = process.new_subject()
+              process.send(subject, CancelPendingRead(read_id, cancelled))
+              // Await the acknowledgement to avoid leaving a late reply in the
+              // caller mailbox. A terminal owner may exit instead of replying to
+              // this cancellation; its previously sent result wins that race.
+              case
+                process.new_selector()
+                |> process.select_map(cancelled, CancelAcknowledged)
+                |> process.select_specific_monitor(monitor, fn(_) {
+                  OwnerFinished
+                })
+                |> process.selector_receive(5000)
+              {
+                Ok(CancelAcknowledged(CancelWon)) -> Error(types.ReadTimeout)
+                Ok(CancelAcknowledged(DeliveryWon)) | Ok(OwnerFinished) ->
+                  delivered_before_exit(reply_to)
                 Error(Nil) -> Error(types.OwnerUnavailable)
               }
-            Error(Nil) -> Error(types.OwnerUnavailable)
+            }
           }
+          process.demonitor_process(monitor)
+          result
         }
       }
-    }
+  }
+}
+
+fn delivered_before_exit(
+  reply: process.Subject(Result(stream_types.ReadResult, types.ReadError)),
+) -> Result(stream_types.ReadResult, types.ReadError) {
+  case process.receive(reply, 0) {
+    Ok(value) -> value
+    Error(Nil) -> Error(types.OwnerUnavailable)
   }
 }
 
 pub fn close(stream: Stream) -> Result(types.CloseOutcome, types.ReadError) {
   let Stream(subject) = stream
-  case is_alive(stream) {
-    False -> Ok(types.AlreadyTerminal)
-    True -> {
+  case owner_pid(stream) {
+    Error(Nil) -> Ok(types.AlreadyTerminal)
+    Ok(pid) -> {
+      let monitor = process.monitor(pid)
       let reply_to = process.new_subject()
       process.send(subject, Close(reply_to: reply_to))
-
-      case process.receive(reply_to, 5000) {
-        Ok(outcome) -> Ok(outcome)
+      let outcome = case
+        process.new_selector()
+        |> process.select_map(reply_to, Some)
+        |> process.select_specific_monitor(monitor, fn(_) { None })
+        |> process.selector_receive(5000)
+      {
+        Ok(Some(outcome)) -> Ok(outcome)
+        Ok(None) ->
+          Ok(
+            process.receive(reply_to, 0) |> result.unwrap(types.AlreadyTerminal),
+          )
         Error(Nil) -> Error(types.ReadTimeout)
       }
+      process.demonitor_process(monitor)
+      outcome
     }
   }
 }
@@ -263,19 +341,21 @@ pub fn feed_eof(stream: Stream) -> Nil {
   process.send(subject, FeedEof)
 }
 
-pub fn feed_error(stream: Stream, failure: transport_failure.Failure) -> Nil {
-  let Stream(subject) = stream
-  process.send(subject, FeedError(failure))
-}
-
-pub fn attach_transport(stream: Stream, transport: TransportPort) -> Nil {
-  let Stream(subject) = stream
-  process.send(subject, AttachTransport(transport))
+pub fn feed_failure(
+  stream: Stream,
+  error: types.WireError,
+  retry: types.RetryEvidence,
+) -> Nil {
+  process.send(stream.subject, FeedFailure(error, retry))
 }
 
 pub fn request_was_sent(stream: Stream) -> Nil {
   let Stream(subject) = stream
   process.send(subject, RequestWasSent)
+}
+
+pub fn response_bytes_observed(stream: Stream) -> Nil {
+  process.send(stream.subject, ResponseBytesObserved)
 }
 
 fn handle_message(
@@ -306,23 +386,43 @@ fn handle_message(
 
     FeedEof -> handle_eof(state)
 
-    FeedError(reason) -> handle_error(state, reason)
-
-    AttachTransport(transport) -> {
-      let updated_state =
-        State(..state, transport: transport, outstanding_read_credit: False)
-      if_needed_request_bytes(updated_state)
-    }
+    FeedFailure(error, retry) ->
+      case state.terminal_outcome {
+        Some(_) -> actor.continue(state)
+        None -> {
+          let cleaned = perform_cleanup(state)
+          let evidence =
+            merge_retry_evidence(
+              get_retry_evidence(
+                state.provider,
+                retry.classification,
+                state.response_bytes_observed,
+                state.semantic_progress_observed,
+              ),
+              retry.classification,
+              retry.response_bytes_observed,
+              retry.semantic_progress_observed,
+            )
+          let terminal = stream_types.StreamFailed(error, evidence)
+          deliver_or_enqueue(
+            State(..cleaned, terminal_outcome: Some(terminal)),
+            stream_types.StreamTerminal(terminal),
+          )
+        }
+      }
 
     RequestWasSent -> {
       let _ =
         telemetry.observe(
           telemetry.RequestSent,
           provider_name(state.provider_identity),
-          "gun_stream_started",
+          "http_response_started",
         )
       actor.continue(state)
     }
+
+    ResponseBytesObserved ->
+      actor.continue(State(..state, response_bytes_observed: True))
 
     OverallDeadlineFired -> handle_overall_deadline(state)
 
@@ -806,13 +906,6 @@ fn handle_eof(state: State) -> actor.Next(State, Message) {
       }
     }
   }
-}
-
-fn handle_error(
-  state: State,
-  failure: transport_failure.Failure,
-) -> actor.Next(State, Message) {
-  fail_stream(state, transport_failure.to_wire_error(failure))
 }
 
 fn handle_overall_deadline(state: State) -> actor.Next(State, Message) {

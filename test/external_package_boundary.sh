@@ -17,10 +17,38 @@ gleam = ">= 1.18.0"
 [dependencies]
 gleam_stdlib = ">= 0.70.0 and < 1.0.0"
 gleam_json = ">= 3.0.0 and < 4.0.0"
+gleam_http = ">= 4.4.0 and < 5.0.0"
 json_blueprint = { path = "$package_root/../json_blueprint" }
 llm_wire = { path = "$package_root" }
+http_gun = { path = "$package_root/../http_gun" }
 sinal = { path = "$package_root/../sinal" }
 EOF
+  # Use the actual consumer's pinned dependency closure, with absolute local
+  # paths in the temporary package. All added direct imports already belong to
+  # that closure. Keep versions pinned for every temporary consumer probe.
+  python3 - "$package_root/examples/consumer/manifest.toml" "$directory" <<'PY'
+import json
+from pathlib import Path
+import re
+import sys
+import tomllib
+
+seed, destination = map(Path, sys.argv[1:])
+packages = seed.read_text().split("[requirements]", 1)[0]
+packages = re.sub(
+    r'path = "([^"]+)"',
+    lambda match: "path = " + json.dumps(str((seed.parent / match[1]).resolve())),
+    packages,
+)
+dependencies = tomllib.loads((destination / "gleam.toml").read_text())["dependencies"]
+requirements = []
+for name, value in sorted(dependencies.items()):
+    if isinstance(value, str):
+        requirements.append(name + " = { version = " + json.dumps(value) + " }")
+    else:
+        requirements.append(name + " = { path = " + json.dumps(value["path"]) + " }")
+(destination / "manifest.toml").write_text(packages + "[requirements]\n" + "\n".join(requirements) + "\n")
+PY
 }
 
 positive="$scratch/positive"
@@ -28,6 +56,9 @@ make_consumer "$positive"
 cp "$package_root/test/external_provider.gleam" "$positive/src/external_provider.gleam"
 cat >"$positive/src/consumer.gleam" <<'EOF'
 import external_provider
+import http_gun
+import http_gun/config as http_config
+import http_gun/testing as http_testing
 import gleam/list
 import json/blueprint/codec
 import json/blueprint/runtime
@@ -100,17 +131,13 @@ pub fn assesses_failure(provider: types.Provider, error: types.WireError) {
 
 pub fn scripts_a_provider_without_a_socket() {
   let assert Ok(model) = types.model_id("consumer-model")
-  let script = testing.start([testing.text("scripted")])
   let request = types.new_request(model, [types.UserMessage("hello")])
-  let settings =
-    testing.config(script)
-    |> config.with_tool_call_checks(types.ReportInvalidToolCalls)
+  let settings = testing.config() |> config.with_tool_call_checks(types.ReportInvalidToolCalls)
   let assert Ok(prepared) = session.prepare(settings, request)
-  let issues = case session.run(prepared) {
-    Ok(session.RunToolCalls(turn, _)) -> turn.issues
-    _ -> []
-  }
-  #(issues, testing.requests(script))
+  let assert Ok(client) = http_testing.start(http_config.default(), [testing.exchange(prepared, testing.text("scripted"))])
+  let assert Ok(session.RunText("scripted", _)) = session.run(client, prepared)
+  let assert Ok(Nil) = http_gun.stop(client)
+  Nil
 }
 
 pub fn observe_with_sinal(
@@ -120,105 +147,82 @@ pub fn observe_with_sinal(
 }
 EOF
 (cd "$positive" && gleam check --target erlang)
+(cd "$package_root/examples/consumer" && gleam run)
 
 negative="$scratch/negative"
 make_consumer "$negative"
+# Gleam's supported build-tool API type-checks against the positive consumer's
+# already compiled dependency closure. Expected failures never contact Hex.
+compile_negative() {
+  gleam compile-package --target erlang --no-beam \
+    --package "$negative" --out "$negative/build" \
+    --lib "$positive/build/dev/erlang"
+}
 cat >"$negative/src/consumer.gleam" <<'EOF'
-import gleam/erlang/process
-import gleam/option.{None}
-import llm_wire/internal/api
-import llm_wire/internal/client
-import llm_wire/internal/transport
-import llm_wire/types
-
-pub fn prepared_call_cannot_be_fabricated() {
-  api.PreparedCall("{\"arbitrary\":true}")
-}
-
-pub fn arbitrary_string_cannot_be_sent_as_a_prepared_call() {
-  client.open_prepared_stream(
-    "{\"arbitrary\":true}",
-    types.default_limits(),
-    types.default_deadlines(),
-    None,
-  )
-}
-
-pub fn old_raw_client_entry_is_absent() {
-  client.open_openai_stream(
-    "api.example.test",
-    443,
-    "/v1/responses",
-    "consumer-key",
-    types.default_limits(),
-    types.default_deadlines(),
-    [],
-    "{\"arbitrary\":true}",
-  )
-}
-
-pub fn raw_transport_fields_cannot_be_supplied() {
-  transport.connect_and_stream(
-    "api.example.test",
-    443,
-    "/v1/responses",
-    [],
-    "{\"arbitrary\":true}",
-    1000,
-    types.default_limits(),
-    65536,
-    process.self(),
-    fn(_) { Nil },
-    fn() { Nil },
-    fn(_) { Nil },
-    fn() { Nil },
-  )
-}
-
-pub fn credential_headers_cannot_be_inspected() {
-  api.prepared_headers
-}
-EOF
-
-if (cd "$negative" && gleam check --target erlang) >"$scratch/negative.log" 2>&1; then
-  cat "$scratch/negative.log"
-  printf '%s\n' "The external raw-request probe unexpectedly compiled." >&2
-  exit 1
-fi
-
-if ! rg -q 'PreparedCall' "$scratch/negative.log" \
-  || ! rg -q 'open_openai_stream' "$scratch/negative.log" \
-  || ! rg -q 'connect_and_stream' "$scratch/negative.log" \
-  || ! rg -q 'prepared_headers' "$scratch/negative.log"; then
-  cat "$scratch/negative.log" >&2
-  printf '%s\n' "The external probe failed before reaching every raw-call boundary." >&2
-  exit 1
-fi
-
-rg -n -A 3 -B 1 'error:' "$scratch/negative.log" || true
-printf '%s\n' "Configured consumer compiled; raw-call consumer failed at the prepared-call boundary."
-
-removed_negative="$scratch/removed_negative"
-make_consumer "$removed_negative"
-cat >"$removed_negative/src/consumer.gleam" <<'EOF'
+import http_gun
 import llm_wire/session
-
-pub fn stateful_continuation_api_is_absent() {
-  session.prepare_continue
-}
-
-pub fn checkpoint_api_is_absent() {
-  session.export_continuation
+pub fn valid(client: http_gun.Client, call: session.PreparedCall) {
+  session.run(client, call)
 }
 EOF
-if (cd "$removed_negative" && gleam check --target erlang) >"$scratch/removed_negative.log" 2>&1; then
-  printf '%s\n' "The removed continuation API unexpectedly compiled." >&2
-  exit 1
-fi
-if ! rg -q 'prepare_continue' "$scratch/removed_negative.log" \
-  || ! rg -q 'export_continuation' "$scratch/removed_negative.log"; then
-  cat "$scratch/removed_negative.log" >&2
-  printf '%s\n' "The removed API probe failed before reaching each boundary." >&2
-  exit 1
-fi
-printf '%s\n' "Caller-owned history is public; continuation and checkpoint APIs are absent."
+compile_negative
+expect_rejected() {
+  name=$1
+  category=$2
+  symbol=$3
+  if compile_negative >"$scratch/$name.log" 2>&1; then
+    printf '%s\n' "Forbidden consumer compiled: $name" >&2
+    exit 1
+  fi
+  if ! rg -Fq "$category" "$scratch/$name.log" || ! rg -Fq "$symbol" "$scratch/$name.log"; then
+    cat "$scratch/$name.log" >&2
+    exit 1
+  fi
+  if rg -q '^error: Unknown module$|error:.*dependency' "$scratch/$name.log"; then
+    cat "$scratch/$name.log" >&2
+    exit 1
+  fi
+  printf '%s\n' "Rejected $name for $category ($symbol)"
+}
+
+cat >"$negative/src/consumer.gleam" <<'EOF'
+import llm_wire/session
+pub fn fabricate() { session.PreparedCall("arbitrary") }
+EOF
+expect_rejected opaque 'Unknown module value' 'PreparedCall'
+
+cat >"$negative/src/consumer.gleam" <<'EOF'
+import http_gun
+import gleam/http/request
+import llm_wire/session
+pub fn bypass(client: http_gun.Client) {
+  session.run(client, request.new() |> request.set_body(<<>>))
+}
+EOF
+expect_rejected raw_http 'Type mismatch' 'PreparedCall'
+
+cat >"$negative/src/consumer.gleam" <<'EOF'
+import llm_wire/session
+pub fn credentials(call: session.PreparedCall) { call.call }
+EOF
+expect_rejected stored_credentials 'Unknown record field' 'PreparedCall'
+
+cat >"$negative/src/consumer.gleam" <<'EOF'
+import llm_wire/session
+pub fn continuation() { session.prepare_continue }
+EOF
+expect_rejected continuation 'Unknown module value' 'prepare_continue'
+
+cat >"$negative/src/consumer.gleam" <<'EOF'
+import llm_wire/session
+pub fn checkpoint() { session.export_continuation }
+EOF
+expect_rejected checkpoint 'Unknown module value' 'export_continuation'
+
+cat >"$negative/src/consumer.gleam" <<'EOF'
+import llm_wire/config
+pub fn obsolete_pool() { config.with_pool }
+EOF
+expect_rejected obsolete_pool 'Unknown module value' 'with_pool'
+
+printf '%s\n' 'Public migrated consumer works; opacity, raw-request, credential, and removed API boundaries hold.'

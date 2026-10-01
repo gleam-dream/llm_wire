@@ -1,0 +1,19 @@
+warning: Git tree '/code/gleam-dream/llm_wire' is dirty
+WARN walk | git: Path /code/gleam-dream/llm_wire/src/llm_wire/cassette.gleam is in the worktree but appears to have been removed from the filesystem
+WARN walk | git: Path /code/gleam-dream/llm_wire/src/llm_wire/internal/client.gleam is in the worktree but appears to have been removed from the filesystem
+WARN walk | git: Path /code/gleam-dream/llm_wire/src/llm_wire/internal/tcp.gleam is in the worktree but appears to have been removed from the filesystem
+WARN walk | git: Path /code/gleam-dream/llm_wire/src/llm_wire/internal/transport.gleam is in the worktree but appears to have been removed from the filesystem
+WARN walk | git: Path /code/gleam-dream/llm_wire/src/llm_wire/internal/transport_failure.gleam is in the worktree but appears to have been removed from the filesystem
+WARN walk | git: Path /code/gleam-dream/llm_wire/src/llm_wire/pool.gleam is in the worktree but appears to have been removed from the filesystem
+WARN walk | git: Path /code/gleam-dream/llm_wire/src/llm_wire_cassette_ffi.erl is in the worktree but appears to have been removed from the filesystem
+WARN walk | git: Path /code/gleam-dream/llm_wire/src/llm_wire_gun_ffi.erl is in the worktree but appears to have been removed from the filesystem
+WARN walk | git: Path /code/gleam-dream/llm_wire/src/llm_wire_gun_pool.erl is in the worktree but appears to have been removed from the filesystem
+WARN walk | git: Path /code/gleam-dream/llm_wire/src/llm_wire_tcp_ffi.erl is in the worktree but appears to have been removed from the filesystem
+WARN walk | git: Path /code/gleam-dream/llm_wire/test/fixtures/cassette/hello.json is in the worktree but appears to have been removed from the filesystem
+WARN walk | git: Path /code/gleam-dream/llm_wire/test/fixtures/cassette/invalid_utf8.bin is in the worktree but appears to have been removed from the filesystem
+WARN walk | git: Path /code/gleam-dream/llm_wire/test/fixtures/cassette/next.json is in the worktree but appears to have been removed from the filesystem
+ERRO file has changed path=docs/evidence/http-gun/sources.json prev_size=10503 prev_mod_time="2026-09-30 16:31:01 -0300 -03" current_size=10487 current_mod_time="2026-09-30 16:31:03 -0300 -03"
+traversed 131 files
+emitted 87 files for processing
+formatted 2 files (1 changed) in 328ms
+Error: unexpected changes detected, --fail-on-change is enabled

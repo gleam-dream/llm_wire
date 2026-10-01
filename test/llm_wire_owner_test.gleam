@@ -1,8 +1,9 @@
 import gleam/erlang/process
+import gleam/list
 import gleeunit/should
+import http_gun/error as http_error
 import llm_wire/internal/owner
 import llm_wire/internal/stream_types
-import llm_wire/internal/transport_failure
 import llm_wire/types
 import owner_provider_helper
 import tool_fixtures
@@ -70,6 +71,38 @@ pub fn owner_copied_handles_and_close_test() {
   // Next on stream2 returns StreamClosed
   owner.next(stream2, 1000)
   |> should.equal(Error(types.StreamClosed))
+}
+
+pub fn copied_handles_close_concurrently_and_idempotently_test() {
+  let port = owner.TransportPort(fn() { Nil }, fn() { Nil })
+  let assert Ok(stream) =
+    owner_provider_helper.start_openai_stream(
+      types.default_limits(),
+      types.default_deadlines(),
+      port,
+    )
+  let ready = process.new_subject()
+  let done = process.new_subject()
+  list.each(list.repeat(Nil, 50), fn(_) {
+    let _ =
+      process.spawn(fn() {
+        let go = process.new_subject()
+        process.send(ready, go)
+        let assert Ok(Nil) = process.receive(go, 1000)
+        process.send(done, owner.close(stream))
+      })
+    Nil
+  })
+  let gates =
+    list.map(list.repeat(Nil, 50), fn(_) {
+      let assert Ok(go) = process.receive(ready, 1000)
+      go
+    })
+  list.each(gates, fn(go) { process.send(go, Nil) })
+  list.each(gates, fn(_) {
+    let assert Ok(Ok(_)) = process.receive(done, 6000)
+    Nil
+  })
 }
 
 pub fn owner_concurrent_read_conflict_test() {
@@ -379,12 +412,13 @@ pub fn owner_argument_disconnect_never_emits_partial_tool_call_test() {
   owner.feed_chunk(stream, <<
     "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"x\\\":\"}}\n\n":utf8,
   >>)
-  owner.feed_error(
+  owner.feed_failure(
     stream,
-    transport_failure.TransportFailure("connection reset during tool arguments"),
+    types.HttpFailure(http_error.RequestFailed(http_error.ConnectionReset)),
+    types.RetryEvidence(types.RequestMayHaveReachedProvider, False, False),
   )
   let assert Ok(stream_types.StreamTerminal(stream_types.StreamFailed(
-    types.TransportError("connection reset during tool arguments"),
+    types.HttpFailure(http_error.RequestFailed(http_error.ConnectionReset)),
     _,
   ))) = owner.next(stream, 1000)
 }

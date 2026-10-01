@@ -6,6 +6,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import gleeunit/should
+import http_test_helpers
 import llm_wire/config
 import llm_wire/provider/google
 import llm_wire/session
@@ -24,10 +25,13 @@ pub fn caller_can_reuse_a_complete_signed_turn_in_a_fresh_request_test() {
     testing.Events([
       "data: {\"candidates\":[{\"finishReason\":\"STOP\",\"content\":{\"parts\":[{\"text\":\"thinking\",\"thoughtSignature\":\"text-sig\",\"opaque\":true},{\"functionCall\":{\"name\":\"calc\",\"id\":\"call_1\",\"args\":{\"x\":7}},\"thoughtSignature\":\"call-sig\"}]}}]}\n\n",
     ])
-  let script = testing.start([reply])
-  let assert Ok(prepared) =
-    session.prepare(testing.with_script(settings, script), request)
-  let assert Ok(session.RunToolCalls(turn, _)) = session.run(prepared)
+  let script = [reply]
+  let assert Ok(prepared) = session.prepare(settings, request)
+  let assert Ok(session.RunToolCalls(turn, _)) =
+    http_test_helpers.run_reply(
+      prepared,
+      list.first(list.drop(script, 0)) |> should.be_ok,
+    )
   let assert [call] = turn.calls
   turn.text |> should.equal("thinking")
   call.provider_state |> should.equal(Some("call-sig"))
@@ -60,10 +64,14 @@ pub fn modified_or_missing_provider_data_is_rejected_before_another_request_test
     testing.Events([
       "data: {\"candidates\":[{\"finishReason\":\"STOP\",\"content\":{\"parts\":[{\"text\":\"thinking\",\"thoughtSignature\":\"text-sig\"},{\"functionCall\":{\"name\":\"calc\",\"id\":\"call_1\",\"args\":{\"x\":7}}}]}}]}\n\n",
     ])
-  let script = testing.start([reply, reply])
-  let configured = testing.with_script(settings, script)
+  let script = [reply, reply]
+  let configured = settings
   let assert Ok(prepared) = session.prepare(configured, source)
-  let assert Ok(session.RunToolCalls(turn, _)) = session.run(prepared)
+  let assert Ok(session.RunToolCalls(turn, _)) =
+    http_test_helpers.run_reply(
+      prepared,
+      list.first(list.drop(script, 0)) |> should.be_ok,
+    )
   let assert [call] = turn.calls
   let assert Some(data) = turn.provider_data
   let changed = [
@@ -91,7 +99,6 @@ pub fn modified_or_missing_provider_data_is_rejected_before_another_request_test
       )
     session.prepare(configured, request) |> should.be_error
   })
-  testing.remaining(script) |> should.equal(1)
 }
 
 pub fn signed_history_and_repeated_ids_stay_with_their_caller_owned_round_test() {
@@ -112,17 +119,25 @@ pub fn signed_history_and_repeated_ids_stay_with_their_caller_owned_round_test()
     testing.Events([
       "data: {\"candidates\":[{\"finishReason\":\"STOP\",\"content\":{\"parts\":[{\"text\":\"second thought\"},{\"functionCall\":{\"name\":\"lookup\",\"id\":\"same-id\",\"args\":{\"x\":2}}}]}}]}\n\n",
     ])
-  let script = testing.start([first_reply, second_reply])
-  let configured = testing.with_script(settings, script)
+  let script = [first_reply, second_reply]
+  let configured = settings
   let assert Ok(first) = session.prepare(configured, source)
-  let assert Ok(session.RunToolCalls(one, _)) = session.run(first)
+  let assert Ok(session.RunToolCalls(one, _)) =
+    http_test_helpers.run_reply(
+      first,
+      list.first(list.drop(script, 0)) |> should.be_ok,
+    )
   let assert [call] = one.calls
   let second_source =
     conversation_fixture.append_results(source, one, [
       types.ToolResult(call.id, "first result"),
     ])
   let assert Ok(second) = session.prepare(configured, second_source)
-  let assert Ok(session.RunToolCalls(two, _)) = session.run(second)
+  let assert Ok(session.RunToolCalls(two, _)) =
+    http_test_helpers.run_reply(
+      second,
+      list.first(list.drop(script, 1)) |> should.be_ok,
+    )
   let assert [call] = two.calls
   let third_source =
     conversation_fixture.append_results(second_source, two, [
@@ -188,15 +203,17 @@ pub fn custom_adapter_interprets_its_own_data_even_with_google_identity_test() {
   let source =
     types.new_request(model, [types.UserMessage("calculate")])
     |> types.with_tools([tool_fixtures.int_field_tool("calc", "x")])
-  let script =
-    testing.start([
-      testing.Events([
-        "event: text\ndata: custom turn\n\nevent: tool\ndata: call_1|calc|{\"x\":7}\n\nevent: done\ndata: {}\n\n",
-      ]),
-    ])
-  let assert Ok(prepared) =
-    session.prepare(testing.with_script(settings, script), source)
-  let assert Ok(session.RunToolCalls(turn, _)) = session.run(prepared)
+  let script = [
+    testing.Events([
+      "event: text\ndata: custom turn\n\nevent: tool\ndata: call_1|calc|{\"x\":7}\n\nevent: done\ndata: {}\n\n",
+    ]),
+  ]
+  let assert Ok(prepared) = session.prepare(settings, source)
+  let assert Ok(session.RunToolCalls(turn, _)) =
+    http_test_helpers.run_reply(
+      prepared,
+      list.first(list.drop(script, 0)) |> should.be_ok,
+    )
   let assert [call] = turn.calls
   let assert Ok(next) =
     session.prepare(
@@ -233,10 +250,13 @@ pub fn provider_data_and_normalized_metadata_share_one_byte_budget_test() {
     testing.Events([
       "event: text\ndata: custom turn\n\nevent: tool\ndata: call_1|calc|{\"x\":7}\n\nevent: done\ndata: {}\n\n",
     ])
-  let script = testing.start([reply, reply])
-  let assert Ok(first) =
-    session.prepare(testing.with_script(settings, script), source)
-  let assert Ok(session.RunToolCalls(turn, _)) = session.run(first)
+  let script = [reply, reply]
+  let assert Ok(first) = session.prepare(settings, source)
+  let assert Ok(session.RunToolCalls(turn, _)) =
+    http_test_helpers.run_reply(
+      first,
+      list.first(list.drop(script, 0)) |> should.be_ok,
+    )
   let assert Some(data) = turn.provider_data
   let limits =
     types.Limits(
@@ -244,12 +264,15 @@ pub fn provider_data_and_normalized_metadata_share_one_byte_budget_test() {
       provider_metadata_bytes_limit: string.byte_size(data),
     )
   let bounded = config.with_limits(settings, limits)
-  let assert Ok(second) =
-    session.prepare(testing.with_script(bounded, script), source)
+  let assert Ok(second) = session.prepare(bounded, source)
   let assert Error(session.RunFailure(
     types.ResourceLimitExceeded("provider_metadata_bytes_limit", _, _),
     _,
-  )) = session.run(second)
+  )) =
+    http_test_helpers.run_reply(
+      second,
+      list.first(list.drop(script, 1)) |> should.be_ok,
+    )
   let assert [call] = turn.calls
   let next_request =
     conversation_fixture.append_results(source, turn, [

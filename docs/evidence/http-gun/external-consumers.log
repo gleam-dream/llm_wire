@@ -1,0 +1,37 @@
+warning: Git tree '/code/gleam-dream/llm_wire' is dirty
+  Resolving versions
+Downloading packages
+ Downloaded 12 packages in 0.06s
+  Compiling cowlib
+===> Analyzing applications...
+===> Compiling cowlib
+  Compiling gleam_stdlib
+  Compiling file_streams
+  Compiling filepath
+  Compiling gleam_crypto
+  Compiling gleam_erlang
+  Compiling gleam_http
+  Compiling gleam_json
+  Compiling gleam_otp
+  Compiling gun
+===> Analyzing applications...
+===> Compiling gun
+  Compiling simplifile
+  Compiling http_gun
+  Compiling json_blueprint
+  Compiling telemetry
+===> Analyzing applications...
+===> Compiling telemetry
+  Compiling sinal
+  Compiling llm_wire
+   Checking llm_wire_boundary_probe
+   Compiled in 17.30s
+   Compiled in 0.24s
+    Running llm_wire_consumer.main
+Rejected opaque for Unknown module value (PreparedCall)
+Rejected raw_http for Type mismatch (PreparedCall)
+Rejected stored_credentials for Unknown record field (PreparedCall)
+Rejected continuation for Unknown module value (prepare_continue)
+Rejected checkpoint for Unknown module value (export_continuation)
+Rejected obsolete_pool for Unknown module value (with_pool)
+Public migrated consumer works; opacity, raw-request, credential, and removed API boundaries hold.

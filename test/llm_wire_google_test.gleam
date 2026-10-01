@@ -8,6 +8,7 @@ import gleam/json
 import gleam/option.{None, Some}
 import gleam/string
 import gleeunit/should
+import http_test_helpers
 import json/blueprint/codec
 import json/blueprint/number
 import llm_wire/internal/api
@@ -415,6 +416,7 @@ pub fn google_structured_output_accepts_valid_schema_and_rejects_nullable_test()
 }
 
 pub fn google_loopback_integration_text_stream_test() {
+  use owned_http <- http_test_helpers.with_client
   let assert Ok(server) = fake_server.start()
   process.spawn_unlinked(fn() {
     let assert Ok(socket) = fake_server.accept_connection(server, 2000)
@@ -453,7 +455,12 @@ pub fn google_loopback_integration_text_stream_test() {
   let assert Ok(prepared) = api.prepare(config, request, types.default_limits())
 
   let assert Ok(api.RunText(text, usage)) =
-    runtime.run(prepared, types.default_limits(), types.default_deadlines())
+    runtime.run(
+      owned_http,
+      prepared,
+      types.default_limits(),
+      types.default_deadlines(),
+    )
 
   text |> should.equal("Hello Google!")
   usage |> should.equal(Some(types.Usage(4, 2, 6)))
@@ -462,6 +469,7 @@ pub fn google_loopback_integration_text_stream_test() {
 }
 
 pub fn google_loopback_integration_caller_owned_tool_round_test() {
+  use owned_http <- http_test_helpers.with_client
   let assert Ok(server) = fake_server.start()
   process.spawn_unlinked(fn() {
     // 1st request: return tool call
@@ -520,7 +528,12 @@ pub fn google_loopback_integration_caller_owned_tool_round_test() {
 
   // Run 1: returns tool call
   let assert Ok(api.RunToolCalls(turn, _)) =
-    runtime.run(prepared, types.default_limits(), types.default_deadlines())
+    runtime.run(
+      owned_http,
+      prepared,
+      types.default_limits(),
+      types.default_deadlines(),
+    )
 
   let assert [call] = turn.calls
   call.arguments_json |> should.equal("{\"x\":7}")
@@ -550,6 +563,7 @@ pub fn google_loopback_integration_caller_owned_tool_round_test() {
   // Run 2: returns final text
   let assert Ok(api.RunText(answer, _)) =
     runtime.run(
+      owned_http,
       continued_prepared,
       types.default_limits(),
       types.default_deadlines(),
@@ -560,6 +574,7 @@ pub fn google_loopback_integration_caller_owned_tool_round_test() {
 }
 
 pub fn google_loopback_integration_refusal_test() {
+  use owned_http <- http_test_helpers.with_client
   let assert Ok(server) = fake_server.start()
   process.spawn_unlinked(fn() {
     let assert Ok(socket) = fake_server.accept_connection(server, 2000)
@@ -586,13 +601,19 @@ pub fn google_loopback_integration_refusal_test() {
   let assert Ok(prepared) = api.prepare(config, request, types.default_limits())
 
   let assert Ok(api.RunRefusal(reason, _)) =
-    runtime.run(prepared, types.default_limits(), types.default_deadlines())
+    runtime.run(
+      owned_http,
+      prepared,
+      types.default_limits(),
+      types.default_deadlines(),
+    )
 
   reason |> should.equal("Prompt blocked by safety policy: SAFETY")
   fake_server.stop(server)
 }
 
 pub fn google_missing_provider_id_is_omitted_from_next_request_test() {
+  use owned_http <- http_test_helpers.with_client
   let assert Ok(server) = fake_server.start()
   process.spawn_unlinked(fn() {
     let assert Ok(socket1) = fake_server.accept_connection(server, 2000)
@@ -653,7 +674,12 @@ pub fn google_missing_provider_id_is_omitted_from_next_request_test() {
     |> types.with_tools([tool])
   let assert Ok(prepared) = api.prepare(config, request, types.default_limits())
   let assert Ok(api.RunToolCalls(turn, _)) =
-    runtime.run(prepared, types.default_limits(), types.default_deadlines())
+    runtime.run(
+      owned_http,
+      prepared,
+      types.default_limits(),
+      types.default_deadlines(),
+    )
   let assert [call] = turn.calls
   call.id |> types.call_id_to_string |> should.equal("call_0")
   let assert Ok(next) =
@@ -677,7 +703,12 @@ pub fn google_missing_provider_id_is_omitted_from_next_request_test() {
   |> should.equal(True)
   string.contains(body, "call_0") |> should.equal(False)
   let assert Ok(api.RunText(text, _)) =
-    runtime.run(next, types.default_limits(), types.default_deadlines())
+    runtime.run(
+      owned_http,
+      next,
+      types.default_limits(),
+      types.default_deadlines(),
+    )
   text |> should.equal("ok")
   fake_server.stop(server)
 }

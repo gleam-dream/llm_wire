@@ -8,18 +8,20 @@ import gleam/int
 import gleam/option.{None, Some}
 import gleam/string
 import gleeunit/should
+import http_gun/config as http_config
+import http_gun/error as http_error
+import http_test_helpers
 import llm_wire/config
 import llm_wire/internal/api
-import llm_wire/internal/client as prepared_client
 import llm_wire/internal/owner
 import llm_wire/internal/runtime
 import llm_wire/internal/stream_types
-import llm_wire/internal/tcp
 import llm_wire/internal/tls
 import llm_wire/provider/openai as openai_provider
 import llm_wire/session
 import llm_wire/types
 import llm_wire_test_client as client
+import llm_wire_test_tcp as tcp
 import mist
 import tool_fixtures
 
@@ -39,33 +41,8 @@ pub fn api_rejects_remote_plaintext_before_transport_test() {
   }
 }
 
-pub fn prepared_client_rejects_caller_ca_for_remote_host_test() {
-  let assert Ok(api_key) = types.api_key("sk-never-send")
-  let assert Ok(endpoint) = types.endpoint("https://api.example.test/v1")
-  let assert Ok(model) = types.model_id("gpt-test")
-  let config = api.openai_adapter(api_key, endpoint, None, None)
-  let request = types.new_request(model, [types.UserMessage("hello")])
-  let assert Ok(prepared) = api.prepare(config, request, types.default_limits())
-  case
-    prepared_client.open_prepared_stream(
-      prepared,
-      types.default_limits(),
-      types.default_deadlines(),
-      Some(tls.VerifyCaFile("test/fixtures/llm-wire-test-ca.crt")),
-    )
-  {
-    Error(prepared_client.OpenFailure(types.ConfigurationError(reason), retry)) -> {
-      retry.classification |> should.equal(types.NoRequestSent)
-      reason
-      |> should.equal(
-        "Client requires valid HTTP fields; remote hosts require system-verified HTTPS",
-      )
-    }
-    _ -> should.fail()
-  }
-}
-
 pub fn caller_owned_assistant_turn_requires_exact_local_result_coverage_test() {
+  use owned_http <- http_test_helpers.with_client
   let assert Ok(server) = fake_server.start()
   process.spawn_unlinked(fn() {
     let assert Ok(socket) = fake_server.accept_connection(server, 2000)
@@ -114,6 +91,7 @@ pub fn caller_owned_assistant_turn_requires_exact_local_result_coverage_test() {
 
   let assert Ok(api.RunToolCalls(turn, _usage)) =
     runtime.run(
+      owned_http,
       first_prepared,
       types.default_limits(),
       types.default_deadlines(),
@@ -156,6 +134,7 @@ pub fn caller_owned_assistant_turn_requires_exact_local_result_coverage_test() {
 }
 
 pub fn anthropic_assistant_turn_preserves_typed_tool_use_input_test() {
+  use owned_http <- http_test_helpers.with_client
   let assert Ok(server) = fake_server.start()
   let stream =
     "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-test\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n"
@@ -187,7 +166,12 @@ pub fn anthropic_assistant_turn_preserves_typed_tool_use_input_test() {
     |> types.with_tools([tool])
   let assert Ok(prepared) = api.prepare(config, request, types.default_limits())
   let assert Ok(api.RunToolCalls(turn, _)) =
-    runtime.run(prepared, types.default_limits(), types.default_deadlines())
+    runtime.run(
+      owned_http,
+      prepared,
+      types.default_limits(),
+      types.default_deadlines(),
+    )
   let assert [call] = turn.calls
   let assert Ok(follow_up) =
     api.prepare(
@@ -214,6 +198,7 @@ pub fn anthropic_assistant_turn_preserves_typed_tool_use_input_test() {
 }
 
 pub fn buffered_api_preserves_openai_refusal_outcome_test() {
+  use owned_http <- http_test_helpers.with_client
   let assert Ok(server) = fake_server.start()
   process.spawn_unlinked(fn() {
     let assert Ok(socket) = fake_server.accept_connection(server, 2000)
@@ -256,12 +241,18 @@ pub fn buffered_api_preserves_openai_refusal_outcome_test() {
   let request = types.new_request(model, [types.UserMessage("help")])
   let assert Ok(prepared) = api.prepare(config, request, types.default_limits())
 
-  runtime.run(prepared, types.default_limits(), types.default_deadlines())
+  runtime.run(
+    owned_http,
+    prepared,
+    types.default_limits(),
+    types.default_deadlines(),
+  )
   |> should.equal(Ok(api.RunRefusal("I cannot help with that.", None)))
   fake_server.stop(server)
 }
 
 pub fn real_http_openai_streaming_test() {
+  use owned_http <- http_test_helpers.with_client
   let assert Ok(server) = fake_server.start()
   let port = server.port
 
@@ -307,6 +298,7 @@ pub fn real_http_openai_streaming_test() {
 
   let assert Ok(stream) =
     client.open_openai_stream(
+      owned_http,
       "127.0.0.1",
       port,
       "/v1/responses",
@@ -341,6 +333,7 @@ pub fn real_http_openai_streaming_test() {
 }
 
 pub fn real_http_anthropic_streaming_test() {
+  use owned_http <- http_test_helpers.with_client
   let assert Ok(server) = fake_server.start()
   let port = server.port
 
@@ -398,6 +391,7 @@ pub fn real_http_anthropic_streaming_test() {
 
   let assert Ok(stream) =
     client.open_anthropic_stream(
+      owned_http,
       "127.0.0.1",
       port,
       "/v1/messages",
@@ -432,6 +426,7 @@ pub fn real_http_anthropic_streaming_test() {
 }
 
 pub fn real_http_error_response_test() {
+  use owned_http <- http_test_helpers.with_client
   let assert Ok(server) = fake_server.start()
   let port = server.port
 
@@ -454,6 +449,7 @@ pub fn real_http_error_response_test() {
 
   let res =
     client.open_openai_stream(
+      owned_http,
       "127.0.0.1",
       port,
       "/v1/responses",
@@ -464,7 +460,7 @@ pub fn real_http_error_response_test() {
       "{}",
     )
 
-  case res {
+  case opening_failure(res) {
     Error(types.HttpStatusError(429, body, Some(types.RetryDelaySeconds(3)))) -> {
       body |> should.equal("{\"error\": \"rate_limited\"}")
     }
@@ -475,6 +471,7 @@ pub fn real_http_error_response_test() {
 }
 
 pub fn buffered_http_status_failure_records_response_bytes_test() {
+  use owned_http <- http_test_helpers.with_client
   let assert Ok(server) = fake_server.start()
   process.spawn_unlinked(fn() {
     let assert Ok(socket) = fake_server.accept_connection(server, 2000)
@@ -492,7 +489,7 @@ pub fn buffered_http_status_failure_records_response_bytes_test() {
     |> config.with_endpoint(endpoint)
   let request = types.new_request(model, [types.UserMessage("hello")])
   let assert Ok(prepared) = session.prepare(settings, request)
-  case session.run(prepared) {
+  case session.run(owned_http, prepared) {
     Error(session.RunFailure(types.HttpStatusError(429, "busy", _), retry)) -> {
       retry.classification |> should.equal(types.RequestMayHaveReachedProvider)
       retry.response_bytes_observed |> should.be_true
@@ -503,6 +500,7 @@ pub fn buffered_http_status_failure_records_response_bytes_test() {
 }
 
 pub fn gun_refuses_redirects_instead_of_following_them_test() {
+  use owned_http <- http_test_helpers.with_client
   let assert Ok(server) = fake_server.start()
   process.spawn_unlinked(fn() {
     let assert Ok(socket) = fake_server.accept_connection(server, 2000)
@@ -517,6 +515,7 @@ pub fn gun_refuses_redirects_instead_of_following_them_test() {
   let assert Ok(api_key) = types.api_key("sk-test")
   let result =
     client.open_openai_stream(
+      owned_http,
       "127.0.0.1",
       server.port,
       "/v1/responses",
@@ -526,7 +525,7 @@ pub fn gun_refuses_redirects_instead_of_following_them_test() {
       [],
       "{}",
     )
-  case result {
+  case opening_failure(result) {
     Error(types.HttpStatusError(302, "", None)) -> should.be_true(True)
     _ -> should.fail()
   }
@@ -534,6 +533,7 @@ pub fn gun_refuses_redirects_instead_of_following_them_test() {
 }
 
 pub fn gun_rejects_oversized_response_header_block_test() {
+  use owned_http <- http_test_helpers.with_client
   let assert Ok(server) = fake_server.start()
   process.spawn_unlinked(fn() {
     let assert Ok(socket) = fake_server.accept_connection(server, 2000)
@@ -548,6 +548,7 @@ pub fn gun_rejects_oversized_response_header_block_test() {
   let assert Ok(api_key) = types.api_key("sk-test")
   let result =
     client.open_openai_stream(
+      owned_http,
       "127.0.0.1",
       server.port,
       "/v1/responses",
@@ -557,14 +558,19 @@ pub fn gun_rejects_oversized_response_header_block_test() {
       [],
       "{}",
     )
-  case result {
-    Error(types.TransportError(_)) -> should.be_true(True)
+  case opening_failure(result) {
+    Error(types.HttpFailure(http_error.LimitExceeded(
+      http_error.ResponseHeaderBytes,
+      _,
+      _,
+    ))) -> should.be_true(True)
     _ -> should.fail()
   }
   fake_server.stop(server)
 }
 
 pub fn gun_enforces_total_response_body_limit_test() {
+  use owned_http <- http_test_helpers.with_client
   let assert Ok(server) = fake_server.start()
   let limits =
     types.Limits(..types.default_limits(), response_body_bytes_limit: 128)
@@ -582,6 +588,7 @@ pub fn gun_enforces_total_response_body_limit_test() {
   let assert Ok(api_key) = types.api_key("sk-test")
   let assert Ok(stream) =
     client.open_openai_stream(
+      owned_http,
       "127.0.0.1",
       server.port,
       "/v1/responses",
@@ -602,6 +609,7 @@ pub fn gun_enforces_total_response_body_limit_test() {
 }
 
 pub fn gun_decodes_chunked_transfer_before_sse_framing_test() {
+  use owned_http <- http_test_helpers.with_client
   let assert Ok(server) = fake_server.start()
   let payload =
     "event: response.output_item.added\ndata: {\"output_index\":0,\"item\":{\"id\":\"chunked-item\",\"type\":\"message\"}}\n\n"
@@ -623,6 +631,7 @@ pub fn gun_decodes_chunked_transfer_before_sse_framing_test() {
   let assert Ok(api_key) = types.api_key("sk-test")
   let assert Ok(stream) =
     client.open_openai_stream(
+      owned_http,
       "127.0.0.1",
       server.port,
       "/v1/responses",
@@ -645,6 +654,7 @@ pub fn gun_decodes_chunked_transfer_before_sse_framing_test() {
 }
 
 pub fn gun_rejects_compressed_event_streams_test() {
+  use owned_http <- http_test_helpers.with_client
   let assert Ok(server) = fake_server.start()
   process.spawn_unlinked(fn() {
     let assert Ok(socket) = fake_server.accept_connection(server, 2000)
@@ -659,6 +669,7 @@ pub fn gun_rejects_compressed_event_streams_test() {
   let assert Ok(api_key) = types.api_key("sk-test")
   let result =
     client.open_openai_stream(
+      owned_http,
       "127.0.0.1",
       server.port,
       "/v1/responses",
@@ -668,14 +679,15 @@ pub fn gun_rejects_compressed_event_streams_test() {
       [],
       "{}",
     )
-  case result {
-    Error(types.TransportError(_)) -> should.be_true(True)
+  case opening_failure(result) {
+    Error(types.ProtocolError(_)) -> should.be_true(True)
     _ -> should.fail()
   }
   fake_server.stop(server)
 }
 
 pub fn gun_setup_uses_remaining_overall_deadline_test() {
+  use owned_http <- http_test_helpers.with_client
   let assert Ok(server) = fake_server.start()
   process.spawn_unlinked(fn() {
     let assert Ok(socket) = fake_server.accept_connection(server, 2000)
@@ -693,6 +705,7 @@ pub fn gun_setup_uses_remaining_overall_deadline_test() {
     )
   let result =
     client.open_openai_stream(
+      owned_http,
       "127.0.0.1",
       server.port,
       "/v1/responses",
@@ -702,7 +715,7 @@ pub fn gun_setup_uses_remaining_overall_deadline_test() {
       [],
       "{}",
     )
-  case result {
+  case opening_failure(result) {
     Error(types.DeadlineExceeded(types.OverallDeadline)) -> should.be_true(True)
     _ -> should.fail()
   }
@@ -710,6 +723,7 @@ pub fn gun_setup_uses_remaining_overall_deadline_test() {
 }
 
 pub fn real_http_disconnect_mid_stream_test() {
+  use owned_http <- http_test_helpers.with_client
   let assert Ok(server) = fake_server.start()
   let port = server.port
 
@@ -742,6 +756,7 @@ pub fn real_http_disconnect_mid_stream_test() {
 
   let assert Ok(stream) =
     client.open_openai_stream(
+      owned_http,
       "127.0.0.1",
       port,
       "/v1/responses",
@@ -772,6 +787,12 @@ pub fn real_http_disconnect_mid_stream_test() {
 }
 
 pub fn gun_tls_stream_with_pinned_ca_test() {
+  use owned_http <- http_test_helpers.with_settings(
+    http_config.Config(
+      ..http_config.default(),
+      trust: http_config.CustomCa("test/fixtures/llm-wire-test-ca.crt"),
+    ),
+  )
   let port_subject = process.new_subject()
   let payload =
     "event: response.output_item.added\ndata: {\"output_index\":0,\"item\":{\"id\":\"tls-item\",\"type\":\"message\"}}\n\n"
@@ -804,10 +825,9 @@ pub fn gun_tls_stream_with_pinned_ca_test() {
   let settings =
     config.openai(openai_provider.options(api_key))
     |> config.with_endpoint(endpoint)
-    |> config.with_ca_cert_file("test/fixtures/llm-wire-test-ca.crt")
   let request = types.new_request(model, [types.UserMessage("hello")])
   let assert Ok(prepared) = session.prepare(settings, request)
-  let assert Ok(stream) = session.stream(prepared)
+  let assert Ok(stream) = session.stream(owned_http, prepared)
 
   let assert Ok(session.NextProgress(types.TextDelta("tls-item", text))) =
     session.next(stream)
@@ -822,6 +842,12 @@ pub fn gun_tls_stream_with_pinned_ca_test() {
 }
 
 pub fn gun_tls_rejects_hostname_mismatch_test() {
+  use owned_http <- http_test_helpers.with_settings(
+    http_config.Config(
+      ..http_config.default(),
+      trust: http_config.CustomCa("test/fixtures/llm-wire-test-ca.crt"),
+    ),
+  )
   let port_subject = process.new_subject()
   let handler = fn(_request) {
     response.new(200)
@@ -844,6 +870,7 @@ pub fn gun_tls_rejects_hostname_mismatch_test() {
   let assert Ok(api_key) = types.api_key("sk-local-tls-test")
   let result =
     client.open_openai_stream_with_tls_mode(
+      owned_http,
       "localhost",
       port,
       "/v1/responses",
@@ -852,16 +879,17 @@ pub fn gun_tls_rejects_hostname_mismatch_test() {
       types.default_deadlines(),
       [],
       "{}",
-      tls.VerifyCaFile("test/fixtures/llm-wire-test-ca.crt"),
+      tls.VerifySystem,
     )
-  case result {
-    Error(types.TransportError(_)) -> Nil
+  case opening_failure(result) {
+    Error(types.HttpFailure(_)) -> Nil
     _ -> panic as "expected certificate hostname verification failure"
   }
   process.send_exit(server.pid)
 }
 
 pub fn gun_tls_rejects_untrusted_ca_test() {
+  use owned_http <- http_test_helpers.with_client
   let port_subject = process.new_subject()
   let handler = fn(_request) {
     response.new(200)
@@ -884,6 +912,7 @@ pub fn gun_tls_rejects_untrusted_ca_test() {
   let assert Ok(api_key) = types.api_key("sk-local-tls-test")
   let result =
     client.open_openai_stream_with_tls_mode(
+      owned_http,
       "127.0.0.1",
       port,
       "/v1/responses",
@@ -894,14 +923,15 @@ pub fn gun_tls_rejects_untrusted_ca_test() {
       "{}",
       tls.VerifySystem,
     )
-  case result {
-    Error(types.TransportError(_)) -> should.be_true(True)
+  case opening_failure(result) {
+    Error(types.HttpFailure(_)) -> should.be_true(True)
     _ -> should.fail()
   }
   process.send_exit(server.pid)
 }
 
 pub fn real_http_disconnect_before_bytes_test() {
+  use owned_http <- http_test_helpers.with_client
   let assert Ok(server) = fake_server.start()
   let port = server.port
 
@@ -919,6 +949,7 @@ pub fn real_http_disconnect_before_bytes_test() {
 
   let res =
     client.open_openai_stream(
+      owned_http,
       "127.0.0.1",
       port,
       "/v1/responses",
@@ -929,8 +960,22 @@ pub fn real_http_disconnect_before_bytes_test() {
       "{}",
     )
 
-  case res {
-    Error(types.TransportError(_)) -> Nil
+  case opening_failure(res) {
+    Error(types.HttpFailure(_)) -> Nil
     _ -> panic as "expected TransportError"
+  }
+}
+
+fn opening_failure(
+  opened: Result(owner.Stream, types.WireError),
+) -> Result(Nil, types.WireError) {
+  case opened {
+    Error(error) -> Error(error)
+    Ok(stream) ->
+      case owner.next(stream, 5000) {
+        Ok(stream_types.StreamTerminal(stream_types.StreamFailed(error, _))) ->
+          Error(error)
+        other -> panic as string.inspect(other)
+      }
   }
 }

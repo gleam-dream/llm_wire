@@ -1,38 +1,18 @@
-//// Deterministic provider scripting for tests. Nothing here opens a socket or
-//// contacts a provider.
-////
-//// A `Script` is a process holding queued replies. Each request the session
-//// runtime would send over the network takes the next reply instead, and the
-//// script records the admitted request. Replies enter the same stream owner,
-//// SSE framer, reducer, bounds, deadlines, and terminal admission as a real
-//// response, so `session.prepare`, `run`, and `stream`
-//// behave as they do against a provider.
-////
-//// Two uses share the script:
-////
-//// - `config(script)` selects the scripted provider, whose replies are built
-////   with `text`, `tool_calls`, `refusal`, and `output_limited`. Tests need no
-////   provider wire format.
-//// - `with_script(settings, script)` routes any configured provider, built-in
-////   or application-defined, through the script. Its replies are that
-////   provider's raw SSE bytes in `Events` or `Interrupted`.
-////
-//// The script is linked to the process that starts it.
+//// Pure LLM reply builders lowered into HTTP Gun exchanges. Client startup,
+//// matching, recording and playback belong exclusively to HTTP Gun.
 
+import gleam/bit_array
 import gleam/dynamic/decode
-import gleam/erlang/process
+import gleam/http/response
 import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/otp/actor
-import gleam/result
-import gleam/string
+import http_gun/error as http_error
+import http_gun/fixture
 import llm_wire/config
-import llm_wire/internal/api
-import llm_wire/internal/transport
-import llm_wire/internal/transport_failure
 import llm_wire/provider
+import llm_wire/session
 import llm_wire/types
 
 /// One scripted HTTP exchange.
@@ -42,31 +22,8 @@ pub type Reply {
   Events(chunks: List(String))
   /// These chunks followed by a transport failure before end of stream.
   Interrupted(chunks: List(String))
-  /// An HTTP status other than the expected 200; no stream opens.
+  /// An HTTP status other than the expected 200; the semantic stream fails.
   Status(code: Int, body: String)
-}
-
-/// A request the runtime delivered to the script: the admitted request, and
-/// the route and body the provider adapter encoded for it.
-pub type Recorded {
-  Recorded(
-    request: types.Request,
-    method: String,
-    endpoint: String,
-    path: String,
-    body: String,
-  )
-}
-
-/// Exact transport identity, excluding headers. `endpoint` is the configured
-/// endpoint, including its base path; `path` is the effective request path.
-pub type ExpectedRequest {
-  ExpectedRequest(method: String, endpoint: String, path: String, body: String)
-}
-
-/// A reply that can be taken only by its expected request.
-pub type Exchange {
-  Exchange(request: ExpectedRequest, reply: Reply)
 }
 
 /// A tool call the scripted provider returns. Its fields are wire values: the
@@ -75,133 +32,9 @@ pub type ScriptedCall {
   ScriptedCall(id: String, name: String, arguments_json: String)
 }
 
-pub opaque type Script {
-  Script(subject: process.Subject(Message))
-}
-
-type Message {
-  Take(request: Recorded, reply_to: process.Subject(Result(Reply, String)))
-  Requests(reply_to: process.Subject(List(Recorded)))
-  Remaining(reply_to: process.Subject(Int))
-}
-
-type ScriptState {
-  ScriptState(replies: List(QueuedReply), recorded: List(Recorded))
-}
-
-type QueuedReply {
-  QueuedReply(expected: Option(ExpectedRequest), reply: Reply)
-}
-
-/// Starts a script that serves `replies` in order, one per request.
-pub fn start(replies: List(Reply)) -> Script {
-  start_queue(list.map(replies, fn(reply) { QueuedReply(None, reply) }))
-}
-
-/// Starts an ordered script with exact request matching. A mismatch fails
-/// without consuming the next exchange. Matching never contacts the network.
-pub fn start_matched(exchanges: List(Exchange)) -> Script {
-  start_queue(
-    list.map(exchanges, fn(exchange) {
-      QueuedReply(Some(exchange.request), exchange.reply)
-    }),
-  )
-}
-
-fn start_queue(replies: List(QueuedReply)) -> Script {
-  let assert Ok(started) =
-    actor.new(ScriptState(replies, []))
-    |> actor.on_message(handle_message)
-    |> actor.start
-  Script(started.data)
-}
-
-fn handle_message(
-  state: ScriptState,
-  message: Message,
-) -> actor.Next(ScriptState, Message) {
-  case message {
-    Take(request, reply_to) -> {
-      let recorded = [request, ..state.recorded]
-      case state.replies {
-        [next, ..rest] -> {
-          case matches(next.expected, request) {
-            True -> {
-              process.send(reply_to, Ok(next.reply))
-              actor.continue(ScriptState(rest, recorded))
-            }
-            False -> {
-              process.send(
-                reply_to,
-                Error("Test script request does not match its next exchange"),
-              )
-              actor.continue(ScriptState(state.replies, recorded))
-            }
-          }
-        }
-        [] -> {
-          process.send(
-            reply_to,
-            Error("Test script has no reply left for this request"),
-          )
-          actor.continue(ScriptState([], recorded))
-        }
-      }
-    }
-    Requests(reply_to) -> {
-      process.send(reply_to, list.reverse(state.recorded))
-      actor.continue(state)
-    }
-    Remaining(reply_to) -> {
-      process.send(reply_to, list.length(state.replies))
-      actor.continue(state)
-    }
-  }
-}
-
-fn matches(expected: Option(ExpectedRequest), request: Recorded) -> Bool {
-  case expected {
-    None -> True
-    Some(expected) ->
-      expected.method == request.method
-      && expected.endpoint == request.endpoint
-      && expected.path == request.path
-      && expected.body == request.body
-  }
-}
-
-/// Every request delivered so far, oldest first, including a request that
-/// found no remaining reply.
-pub fn requests(script: Script) -> List(Recorded) {
-  process.call(script.subject, 5000, Requests)
-}
-
-/// The number of replies not yet taken.
-pub fn remaining(script: Script) -> Int {
-  process.call(script.subject, 5000, Remaining)
-}
-
-/// Routes every call made with `settings` through the script instead of the
-/// network. Preparation, endpoint admission, and the provider's reducer are
-/// unchanged; an attached pool is not used. A request with no remaining reply
-/// fails with `ConfigurationError`.
-pub fn with_script(settings: config.Config, script: Script) -> config.Config {
-  config.with_connector(
-    settings,
-    transport.Connector(fn(prepared, max_chunk, owner, chunk, eof, error, sent) {
-      connect(script, prepared, max_chunk, owner, chunk, eof, error, sent)
-    }),
-  )
-}
-
-/// Settings for the scripted provider, routed through `script`.
-pub fn config(script: Script) -> config.Config {
-  config.from_provider(provider()) |> with_script(script)
-}
-
 /// Encodes requests as JSON and reads the replies built by `text`,
 /// `tool_calls`, `refusal`, and `output_limited`. It is reachable only through
-/// a script, so it is not public.
+/// HTTP Gun scripts and local test servers.
 fn provider() -> provider.Adapter {
   let assert Ok(endpoint) = types.endpoint("https://scripted.llm-wire.invalid")
   provider.adapter(
@@ -298,157 +131,6 @@ fn end_event(stop: String, reason: String) -> String {
 
 fn sse_event(name: String, data: json.Json) -> String {
   "event: " <> name <> "\ndata: " <> json.to_string(data) <> "\n\n"
-}
-
-// Transport replacement.
-
-type Control {
-  More
-  Stop
-}
-
-fn connect(
-  script: Script,
-  prepared: api.PreparedCall,
-  max_chunk_bytes: Int,
-  owner_pid: process.Pid,
-  on_chunk: fn(BitArray) -> Nil,
-  on_eof: fn() -> Nil,
-  on_error: fn(transport_failure.Failure) -> Nil,
-  on_request_sent: fn() -> Nil,
-) -> Result(transport.TransportHandle, transport.ConnectFailure) {
-  use adapter <- result.try(
-    api.prepared_adapter(prepared)
-    |> result.map_error(fn(error) {
-      transport.ConnectFailure(error, types.initial_retry_evidence())
-    }),
-  )
-  let recorded =
-    Recorded(
-      api.prepared_request(prepared),
-      "POST",
-      provider.endpoint(adapter) |> types.endpoint_to_string,
-      api.prepared_path(prepared),
-      api.prepared_request_json(prepared),
-    )
-  case process.call(script.subject, 5000, Take(recorded, _)) {
-    Error(message) ->
-      Error(transport.ConnectFailure(
-        types.ConfigurationError(message),
-        types.initial_retry_evidence(),
-      ))
-    Ok(Status(code, body)) -> {
-      on_request_sent()
-      Error(transport.ConnectFailure(
-        types.HttpStatusError(code, body, None),
-        types.RetryEvidence(types.RequestMayHaveReachedProvider, True, False),
-      ))
-    }
-    Ok(Events(chunks)) -> {
-      on_request_sent()
-      Ok(serve(
-        chunks,
-        False,
-        max_chunk_bytes,
-        owner_pid,
-        on_chunk,
-        on_eof,
-        on_error,
-      ))
-    }
-    Ok(Interrupted(chunks)) -> {
-      on_request_sent()
-      Ok(serve(
-        chunks,
-        True,
-        max_chunk_bytes,
-        owner_pid,
-        on_chunk,
-        on_eof,
-        on_error,
-      ))
-    }
-  }
-}
-
-/// Serves one chunk per read credit, as the network transport does, and stops
-/// when the owner closes the stream or exits.
-fn serve(
-  chunks: List(String),
-  interrupted: Bool,
-  max_chunk_bytes: Int,
-  owner_pid: process.Pid,
-  on_chunk: fn(BitArray) -> Nil,
-  on_eof: fn() -> Nil,
-  on_error: fn(transport_failure.Failure) -> Nil,
-) -> transport.TransportHandle {
-  let ready = process.new_subject()
-  let pid =
-    process.spawn_unlinked(fn() {
-      let control = process.new_subject()
-      process.send(ready, control)
-      let selector =
-        process.new_selector()
-        |> process.select(control)
-        |> process.select_specific_monitor(process.monitor(owner_pid), fn(_) {
-          Stop
-        })
-      let finish = fn() {
-        case interrupted {
-          True ->
-            on_error(transport_failure.TransportFailure(
-              "scripted connection interrupted",
-            ))
-          False -> on_eof()
-        }
-      }
-      serve_loop(selector, chunks, max_chunk_bytes, on_chunk, finish, on_error)
-    })
-  let assert Ok(control) = process.receive(ready, 5000)
-  transport.TransportHandle(
-    request_more: fn() { process.send(control, More) },
-    close: fn() { process.send(control, Stop) },
-    owner_pid: pid,
-  )
-}
-
-fn serve_loop(
-  selector: process.Selector(Control),
-  chunks: List(String),
-  max_chunk_bytes: Int,
-  on_chunk: fn(BitArray) -> Nil,
-  finish: fn() -> Nil,
-  on_error: fn(transport_failure.Failure) -> Nil,
-) -> Nil {
-  case process.selector_receive_forever(selector) {
-    Stop -> Nil
-    More ->
-      case chunks {
-        [] -> finish()
-        [chunk, ..rest] ->
-          case string.byte_size(chunk) > max_chunk_bytes {
-            True ->
-              on_error(transport_failure.TransportFailure(
-                "response chunk byte limit exceeded",
-              ))
-            False -> {
-              on_chunk(<<chunk:utf8>>)
-              case rest {
-                [] -> finish()
-                _ ->
-                  serve_loop(
-                    selector,
-                    rest,
-                    max_chunk_bytes,
-                    on_chunk,
-                    finish,
-                    on_error,
-                  )
-              }
-            }
-          }
-      }
-  }
 }
 
 // Scripted provider wire format.
@@ -640,4 +322,45 @@ fn parse(
     Ok(value) -> next(value)
     Error(_) -> Error(types.ProtocolError("Malformed scripted event: " <> data))
   }
+}
+
+/// One finite HTTP Gun exchange from an opaque admitted call. Credential
+/// metadata follows HTTP Gun's finite exclusion list; bodies/queries stay exact.
+pub fn exchange(
+  prepared: session.PreparedCall,
+  reply: Reply,
+) -> fixture.Exchange {
+  session.fixture_exchange(prepared, http_reply(reply))
+}
+
+pub fn structured_exchange(
+  prepared: session.PreparedStructuredCall(output),
+  reply: Reply,
+) -> fixture.Exchange {
+  session.structured_fixture_exchange(prepared, http_reply(reply))
+}
+
+pub fn http_reply(reply: Reply) -> fixture.Reply {
+  let #(status, chunks, ending) = case reply {
+    Events(chunks) -> #(200, chunks, fixture.Complete([]))
+    Interrupted(chunks) -> #(
+      200,
+      chunks,
+      fixture.Failed(http_error.Failure(
+        http_error.RequestFailed(http_error.PeerClosed),
+        http_error.MayHaveBeenSent,
+      )),
+    )
+    Status(code, text) -> #(code, [text], fixture.Complete([]))
+  }
+  fixture.Respond(
+    response.new(status)
+      |> response.set_header("content-type", "text/event-stream")
+      |> response.set_body(list.map(chunks, bit_array.from_string)),
+    ending,
+  )
+}
+
+pub fn config() -> config.Config {
+  config.from_provider(provider())
 }

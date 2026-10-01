@@ -2,13 +2,15 @@ import gleam/int
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import http_gun
 import llm_wire/internal/api
-import llm_wire/internal/client
+import llm_wire/internal/http_client
 import llm_wire/internal/owner
 import llm_wire/internal/tls
 import llm_wire/types
 
 pub fn open_openai_stream(
+  owned_http: http_gun.Client,
   host: String,
   port: Int,
   path: String,
@@ -19,6 +21,7 @@ pub fn open_openai_stream(
   _body: String,
 ) -> Result(owner.Stream, types.WireError) {
   open_stream(
+    owned_http,
     types.OpenAI,
     host,
     port,
@@ -32,6 +35,7 @@ pub fn open_openai_stream(
 }
 
 pub fn open_anthropic_stream(
+  owned_http: http_gun.Client,
   host: String,
   port: Int,
   path: String,
@@ -42,6 +46,7 @@ pub fn open_anthropic_stream(
   _body: String,
 ) -> Result(owner.Stream, types.WireError) {
   open_stream(
+    owned_http,
     types.Anthropic,
     host,
     port,
@@ -55,6 +60,7 @@ pub fn open_anthropic_stream(
 }
 
 pub fn open_openai_stream_with_tls_mode(
+  owned_http: http_gun.Client,
   host: String,
   port: Int,
   path: String,
@@ -66,6 +72,7 @@ pub fn open_openai_stream_with_tls_mode(
   tls_mode: tls.TlsMode,
 ) -> Result(owner.Stream, types.WireError) {
   open_stream(
+    owned_http,
     types.OpenAI,
     host,
     port,
@@ -79,6 +86,7 @@ pub fn open_openai_stream_with_tls_mode(
 }
 
 fn open_stream(
+  owned_http: http_gun.Client,
   provider: types.Provider,
   host: String,
   port: Int,
@@ -97,7 +105,7 @@ fn open_stream(
   }
   let base_path = string.drop_end(path, string.byte_size(suffix))
   let scheme = case tls_override {
-    Some(tls.VerifySystem) | Some(tls.VerifyCaFile(_)) -> "https"
+    Some(tls.VerifySystem) -> "https"
     Some(tls.Plaintext) | None -> "http"
   }
   let endpoint_text =
@@ -114,6 +122,11 @@ fn open_stream(
     types.new_request(model, [types.UserMessage("test request")])
     |> types.with_tools(tools)
   use prepared <- result.try(api.prepare(config, request, limits))
-  client.open_prepared_stream(prepared, limits, deadlines, tls_override)
-  |> result.map_error(fn(failure) { failure.error })
+  http_client.open(
+    owned_http,
+    prepared,
+    limits,
+    deadlines,
+    types.RejectInvalidToolCalls,
+  )
 }

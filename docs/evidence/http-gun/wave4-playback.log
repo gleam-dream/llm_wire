@@ -1,0 +1,15 @@
+warning: Git tree '/code/gleam-dream/llm_wire' is dirty
+  Compiling llm_wire
+error: Inexhaustive patterns
+    ┌─ /code/gleam-dream/llm_wire/test/llm_wire_cassette_test.gleam:174:3
+    │
+174 │   case bytes { <<byte, rest:bytes>> -> [<<byte>>, ..byte_chunks(rest)] <<>> -> [] }
+    │   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+This case expression does not have a pattern for all possible values. If it
+is run on one of the values without a pattern then it will crash.
+
+The missing patterns are:
+
+    _
+

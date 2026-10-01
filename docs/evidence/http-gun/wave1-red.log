@@ -1,0 +1,57 @@
+  Compiling llm_wire
+error: Unknown module
+  ┌─ /code/gleam-dream/llm_wire/test/llm_wire_http_gun_test.gleam:7:1
+  │
+7 │ import http_gun
+  │ ^^^^^^^^^^^^^^^
+
+No module has been found with the name `http_gun`.
+
+error: Unknown module
+  ┌─ /code/gleam-dream/llm_wire/test/llm_wire_http_gun_test.gleam:8:1
+  │
+8 │ import http_gun/config as http_config
+  │ ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+No module has been found with the name `http_gun/config`.
+
+error: Unknown module
+   ┌─ /code/gleam-dream/llm_wire/test/llm_wire_http_gun_test.gleam:26:27
+   │
+26 │   let assert Ok(client) = http_gun.start(http_config.Config(..http_config.default(), deadline_ms: 60_000))
+   │                           ^^^^^^^^
+
+No module has been found with the name `http_gun`.
+
+error: Unknown module
+   ┌─ /code/gleam-dream/llm_wire/test/llm_wire_http_gun_test.gleam:26:42
+   │
+26 │   let assert Ok(client) = http_gun.start(http_config.Config(..http_config.default(), deadline_ms: 60_000))
+   │                                          ^^^^^^^^^^^
+
+No module has been found with the name `http_config`.
+
+error: Invalid record constructor
+   ┌─ /code/gleam-dream/llm_wire/test/llm_wire_http_gun_test.gleam:26:42
+   │
+26 │   let assert Ok(client) = http_gun.start(http_config.Config(..http_config.default(), deadline_ms: 60_000))
+   │                                          ^^^^^^^^^^^^^^^^^^ This is not a record constructor
+
+Only record constructors can be used with the update syntax.
+
+error: Unknown module value
+   ┌─ /code/gleam-dream/llm_wire/test/llm_wire_http_gun_test.gleam:27:11
+   │
+27 │   session.run_with_client(client, prepared) |> should.equal(Ok(session.RunText("hello", None)))
+   │           ^^^^^^^^^^^^^^^
+
+The module `llm_wire/session` does not have a `run_with_client` value.
+
+error: Unknown module
+   ┌─ /code/gleam-dream/llm_wire/test/llm_wire_http_gun_test.gleam:28:24
+   │
+28 │   let assert Ok(Nil) = http_gun.stop(client)
+   │                        ^^^^^^^^
+
+No module has been found with the name `http_gun`.
+

@@ -1,6 +1,8 @@
 import gleam/json
+import gleam/list
 import gleam/option.{None, Some}
 import gleeunit/should
+import http_test_helpers
 import llm_wire/config
 import llm_wire/internal/anthropic
 import llm_wire/internal/openai
@@ -271,14 +273,18 @@ fn assert_openai_call_rejected(name: String, arguments: String) -> Nil {
     <> "}\n\n"
     <> "event: response.output_item.done\ndata: {\"output_index\":0,\"item\":{\"id\":\"item_1\"}}\n\n"
     <> "event: response.completed\ndata: {\"response\":{\"id\":\"r1\",\"status\":\"completed\"}}\n\n"
-  let script = testing.start([testing.Events([body])])
-  let settings =
-    config.openai(openai_provider.options(key)) |> testing.with_script(script)
+  let script = [testing.Events([body])]
+  let settings = config.openai(openai_provider.options(key))
   let request =
     types.new_request(model, [types.UserMessage("Weather?")])
     |> types.with_tools([tool_fixtures.string_field_tool("weather", "city")])
   let assert Ok(prepared) = session.prepare(settings, request)
-  case session.run(prepared) {
+  case
+    http_test_helpers.run_reply(
+      prepared,
+      list.first(list.drop(script, 0)) |> should.be_ok,
+    )
+  {
     Error(session.RunFailure(types.ProtocolError(_), _)) -> Nil
     _ -> should.fail()
   }

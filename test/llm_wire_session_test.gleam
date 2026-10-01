@@ -4,9 +4,10 @@ import gleam/bit_array
 import gleam/erlang/process
 import gleam/int
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{Some}
 import gleam/string
 import gleeunit/should
+import http_test_helpers
 import json/blueprint/codec
 import llm_wire/config
 import llm_wire/provider
@@ -81,7 +82,6 @@ pub fn configured_defaults_and_modifiers_keep_other_settings_test() {
   |> should.equal("https://api.openai.com/v1")
   config.limits(with_project) |> should.equal(types.default_limits())
   config.deadlines(with_project) |> should.equal(types.default_deadlines())
-  config.pool(with_project) |> should.equal(None)
 }
 
 pub fn all_provider_defaults_prepare_their_native_routes_test() {
@@ -155,25 +155,8 @@ pub fn outgoing_request_limit_is_independent_of_incoming_event_limit_test() {
   }
 }
 
-pub fn configured_ca_rejects_plaintext_and_empty_path_at_prepare_test() {
-  let plaintext =
-    local_config(1)
-    |> config.with_ca_cert_file("test/fixtures/llm-wire-test-ca.crt")
-  case session.prepare(plaintext, request()) {
-    Error(types.ConfigurationError(_)) -> should.be_true(True)
-    _ -> should.fail()
-  }
-
-  let assert Ok(key) = types.api_key("sk-test")
-  let empty =
-    config.openai(openai_provider.options(key)) |> config.with_ca_cert_file("")
-  case session.prepare(empty, request()) {
-    Error(types.ConfigurationError(_)) -> should.be_true(True)
-    _ -> should.fail()
-  }
-}
-
 pub fn caller_owned_buffered_round_applies_configured_limits_test() {
+  use owned_http <- http_test_helpers.with_client
   let assert Ok(server) = fake_server.start()
   process.spawn_unlinked(fn() {
     let assert Ok(socket) = fake_server.accept_connection(server, 2000)
@@ -196,7 +179,8 @@ pub fn caller_owned_buffered_round_applies_configured_limits_test() {
     )
   let settings = config.with_limits(base, constrained_limits)
   let assert Ok(prepared) = session.prepare(settings, request())
-  let assert Ok(session.RunToolCalls(turn, _)) = session.run(prepared)
+  let assert Ok(session.RunToolCalls(turn, _)) =
+    session.run(owned_http, prepared)
   let assert [call] = turn.calls
   case
     session.prepare(
@@ -214,6 +198,7 @@ pub fn caller_owned_buffered_round_applies_configured_limits_test() {
 }
 
 pub fn caller_owned_stream_round_applies_deadline_and_failure_evidence_test() {
+  use owned_http <- http_test_helpers.with_client
   let assert Ok(server) = fake_server.start()
   process.spawn_unlinked(fn() {
     let assert Ok(first) = fake_server.accept_connection(server, 2000)
@@ -249,7 +234,7 @@ pub fn caller_owned_stream_round_applies_deadline_and_failure_evidence_test() {
     )
   let settings = config.with_deadlines(local_config(server.port), deadlines)
   let assert Ok(prepared) = session.prepare(settings, request())
-  let assert Ok(opened) = session.stream(prepared)
+  let assert Ok(opened) = session.stream(owned_http, prepared)
   let assert session.Finished(session.RunToolCalls(turn, _)) = terminal(opened)
   let assert [call] = turn.calls
   let assert Ok(next) =
@@ -259,7 +244,7 @@ pub fn caller_owned_stream_round_applies_deadline_and_failure_evidence_test() {
         types.ToolResult(call.id, "42"),
       ]),
     )
-  let assert Ok(resumed) = session.stream(next)
+  let assert Ok(resumed) = session.stream(owned_http, next)
   let assert session.Failed(
     types.DeadlineExceeded(types.OverallDeadline),
     retry,
@@ -269,6 +254,7 @@ pub fn caller_owned_stream_round_applies_deadline_and_failure_evidence_test() {
 }
 
 pub fn configured_refusal_keeps_usage_test() {
+  use owned_http <- http_test_helpers.with_client
   let assert Ok(server) = fake_server.start()
   process.spawn_unlinked(fn() {
     let assert Ok(socket) = fake_server.accept_connection(server, 2000)
@@ -288,7 +274,7 @@ pub fn configured_refusal_keeps_usage_test() {
   })
   let assert Ok(prepared) =
     session.prepare(local_config(server.port), request())
-  session.run(prepared)
+  session.run(owned_http, prepared)
   |> should.equal(
     Ok(session.RunRefusal("declined", Some(types.Usage(3, 2, 5)))),
   )
@@ -296,6 +282,7 @@ pub fn configured_refusal_keeps_usage_test() {
 }
 
 pub fn caller_supplied_structured_codec_and_correlated_calls_test() {
+  use owned_http <- http_test_helpers.with_client
   let assert Ok(server) = fake_server.start()
   process.spawn_unlinked(fn() {
     let assert Ok(first) = fake_server.accept_connection(server, 2000)
@@ -330,7 +317,7 @@ pub fn caller_supplied_structured_codec_and_correlated_calls_test() {
       "answer_shape",
       output_codec,
     )
-  let assert Ok(opened) = session.stream_structured(prepared)
+  let assert Ok(opened) = session.stream_structured(owned_http, prepared)
   let assert session.StructuredFinished(session.StructuredNeedsTools(turn, _)) =
     structured_terminal(opened)
   session.structured_request_json(prepared)
@@ -367,6 +354,6 @@ pub fn caller_supplied_structured_codec_and_correlated_calls_test() {
   |> string.contains("\"call_id\":\"call_1\"")
   |> should.be_true
   let assert Ok(session.StructuredValue(42, "{\"answer\":42}", _)) =
-    session.run_structured(next)
+    session.run_structured(owned_http, next)
   fake_server.stop(server)
 }

@@ -7,6 +7,7 @@ import gleam/int
 import gleam/option.{None}
 import gleam/string
 import gleeunit/should
+import http_test_helpers
 import json/blueprint/codec
 import llm_wire/config
 import llm_wire/session
@@ -20,11 +21,12 @@ fn settings(port: Int) -> config.Config {
 }
 
 pub fn buffered_open_failure_preserves_pretransport_retry_evidence_test() {
+  use owned_http <- http_test_helpers.with_client
   let assert Ok(endpoint) = types.endpoint("http://127.0.0.1:1")
   let settings =
     config.from_provider(external_provider.failing_adapter(endpoint))
   let assert Ok(prepared) = session.prepare(settings, request(False))
-  case session.run(prepared) {
+  case session.run(owned_http, prepared) {
     Error(session.RunFailure(types.ConfigurationError(_), retry)) -> {
       retry.classification |> should.equal(types.NoRequestSent)
       retry.response_bytes_observed |> should.be_false
@@ -38,7 +40,7 @@ pub fn buffered_open_failure_preserves_pretransport_retry_evidence_test() {
       "answer",
       codec.field("answer", codec.int()),
     )
-  case session.run_structured(structured) {
+  case session.run_structured(owned_http, structured) {
     Error(session.RunFailure(types.ConfigurationError(_), retry)) ->
       retry.classification |> should.equal(types.NoRequestSent)
     _ -> should.fail()
@@ -67,6 +69,7 @@ fn terminal(stream: session.Stream) -> session.Terminal {
 }
 
 pub fn external_provider_text_over_real_http_test() {
+  use owned_http <- http_test_helpers.with_client
   let assert Ok(server) = fake_server.start()
   process.spawn_unlinked(fn() {
     let assert Ok(socket) = fake_server.accept_connection(server, 2000)
@@ -88,11 +91,13 @@ pub fn external_provider_text_over_real_http_test() {
   })
   let assert Ok(prepared) =
     session.prepare(settings(server.port), request(False))
-  let assert Ok(session.RunText("Hello fourth!", None)) = session.run(prepared)
+  let assert Ok(session.RunText("Hello fourth!", None)) =
+    session.run(owned_http, prepared)
   fake_server.stop(server)
 }
 
 pub fn external_provider_data_preserves_text_and_exact_tool_results_test() {
+  use owned_http <- http_test_helpers.with_client
   let assert Ok(server) = fake_server.start()
   process.spawn_unlinked(fn() {
     let assert Ok(first) = fake_server.accept_connection(server, 2000)
@@ -129,7 +134,8 @@ pub fn external_provider_data_preserves_text_and_exact_tool_results_test() {
   })
   let assert Ok(prepared) =
     session.prepare(settings(server.port), request(True))
-  let assert Ok(session.RunToolCalls(turn, None)) = session.run(prepared)
+  let assert Ok(session.RunToolCalls(turn, None)) =
+    session.run(owned_http, prepared)
   turn.text |> should.equal("Before tool")
   let assert [call] = turn.calls
   let prepare_next = fn(results) {
@@ -149,7 +155,8 @@ pub fn external_provider_data_preserves_text_and_exact_tool_results_test() {
   string.contains(body, "\"replay_text\":\"Before tool\"") |> should.be_true
   string.contains(body, "\"text\":\"Before tool\"") |> should.be_true
   string.contains(body, "\"call_id\":\"call-1\"") |> should.be_true
-  let assert Ok(session.RunText("Answer 14", None)) = session.run(next)
+  let assert Ok(session.RunText("Answer 14", None)) =
+    session.run(owned_http, next)
   fake_server.stop(server)
 }
 
@@ -158,6 +165,7 @@ fn run_bounded_event(
   limits: types.Limits,
   with_tool: Bool,
 ) -> session.Terminal {
+  use owned_http <- http_test_helpers.with_client
   let assert Ok(server) = fake_server.start()
   process.spawn_unlinked(fn() {
     let assert Ok(socket) = fake_server.accept_connection(server, 2000)
@@ -172,7 +180,7 @@ fn run_bounded_event(
   })
   let configured = settings(server.port) |> config.with_limits(limits)
   let assert Ok(prepared) = session.prepare(configured, request(with_tool))
-  let assert Ok(stream) = session.stream(prepared)
+  let assert Ok(stream) = session.stream(owned_http, prepared)
   let outcome = terminal(stream)
   fake_server.stop(server)
   outcome
