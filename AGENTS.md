@@ -19,7 +19,8 @@ Parent design: [gleam-dream/oversight](https://github.com/gleam-dream/oversight)
 - `gleam test`: runs the test suite.
 
 - `nix develop -c sh dev/gate fast`: formatting, compiler/build, test FFI warnings,
-  production HTTP boundary audit and complete unit/local H1/TLS suite.
+  production HTTP boundary audit, public module docs and complete unit/local
+  H1/TLS suite.
 - `nix develop -c sh dev/gate full`: clean build plus fast checks, actual external
   consumers and local nghttpd H2/concurrency validation. No provider credentials
   or public provider calls. Details: `docs/implementation/http-gun/gate-manifest.md`.

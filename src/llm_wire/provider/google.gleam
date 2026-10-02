@@ -1,3 +1,9 @@
+//// Holds the options for the built-in Google Gemini GenerateContent adapter:
+//// the API key and an optional `x-goog-api-version` header.
+////
+//// Build `Options` here, then pass them to `config.google`, which targets
+//// `https://generativelanguage.googleapis.com/v1beta`.
+
 import gleam/option.{type Option, None, Some}
 import llm_wire/types
 

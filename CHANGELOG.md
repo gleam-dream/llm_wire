@@ -20,6 +20,10 @@
   function call over 16 KiB failed the same way. The limit stays
   configurable. The SSE framer now resumes its line scan where the previous
   chunk ended, so a long line costs linear rather than quadratic time.
+- Every public module now starts with a rendered `////` module doc that states
+  its responsibility and its relation to the other modules; `config` and
+  `session` include an example checked against the current API. `dev/gate` fails when a
+  public module lacks one.
 
 ### Included
 

@@ -1,3 +1,27 @@
+//// Builds the provider and execution settings that `session.prepare` takes.
+////
+//// Use this module once per provider configuration: pick a built-in provider
+//// (`openai`, `anthropic`, `google`) from its options module under
+//// `llm_wire/provider/`, or wrap an application-defined `provider.Adapter`
+//// with `from_provider`. Then override the endpoint, limits, deadlines or
+//// tool-call checks with the `with_*` functions. A `Config` is pure data and
+//// opens no connection; the `http_gun.Client` that executes calls is passed to
+//// `llm_wire/session` separately. The built-in configs hold the API key only
+//// inside a closure, so `string.inspect` does not show it.
+////
+//// ```gleam
+//// import llm_wire/config
+//// import llm_wire/provider/openai
+//// import llm_wire/types
+////
+//// let assert Ok(key) = types.api_key("sk-...")
+//// let limits =
+////   types.Limits(..types.default_limits(), request_bytes_limit: 524_288)
+//// let settings =
+////   config.openai(openai.options(key) |> openai.with_project("my-project"))
+////   |> config.with_limits(limits)
+//// ```
+
 import gleam/result
 import llm_wire/internal/api
 import llm_wire/provider

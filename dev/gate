@@ -15,6 +15,12 @@ if rg -n 'http_gun/internal|gun:|llm_wire_gun|llm_wire_cassette_ffi|llm_wire/poo
   printf '%s\n' 'A removed or non-public production HTTP path was found.' >&2
   exit 1
 fi
+for module in $(find src -name '*.gleam' -not -path '*/internal/*'); do
+  if ! head -n 1 "$module" | grep -q '^////'; then
+    printf '%s\n' "Public module $module must start with a //// module doc." >&2
+    exit 1
+  fi
+done
 gleam test
 if [ "$profile" = full ]; then
   sh test/external_package_boundary.sh

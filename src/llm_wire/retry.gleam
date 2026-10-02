@@ -1,4 +1,8 @@
-//// Pure assessment of whether another provider attempt could help.
+//// Assesses whether another provider attempt could help after a failed call.
+////
+//// Pass the call's `types.Provider` and the `types.WireError` from a
+//// `session.RunFailure` or a failed stream terminal to `assess`. LLM Wire
+//// never retries by itself.
 ////
 //// The caller owns retry scheduling and must separately consider `RetryEvidence`,
 //// cancellation, provider effects, retry hints, and its remaining budget.

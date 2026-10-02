@@ -1,3 +1,16 @@
+//// Defines HTTP/SSE provider adapters: the request encoding, headers,
+//// schema projection and stream reducer one provider needs.
+////
+//// Use this module to add a provider that the built-in OpenAI, Anthropic and
+//// Google adapters do not cover. Build a `Spec`, wrap it with `adapter`, and
+//// pass the result to `config.from_provider`. The runtime behind
+//// `llm_wire/session` then applies the same transport, deadlines, byte limits,
+//// tool-call admission and retry evidence as for the built-in providers. A
+//// reducer, built with `reducer`, turns each `Event` into
+//// `types.StreamProgress` and finally a `Terminal`. Credentials belong in the
+//// `Spec.headers` closure, read with `types.reveal_api_key`, so they never
+//// print with the spec.
+
 import gleam/json
 import gleam/option.{type Option}
 import gleam/result

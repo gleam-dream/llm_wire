@@ -1,3 +1,10 @@
+//// Holds the options for the built-in OpenAI Responses adapter: the API key
+//// and the optional organization and project headers.
+////
+//// Build `Options` here, then pass them to `config.openai`, which targets
+//// `https://api.openai.com/v1`. `config.with_endpoint` points the same adapter
+//// at a compatible server.
+
 import gleam/option.{type Option, None, Some}
 import llm_wire/types
 

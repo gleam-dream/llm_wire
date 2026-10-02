@@ -1,3 +1,40 @@
+//// Prepares, runs and streams single LLM calls through an
+//// application-owned `http_gun.Client`.
+////
+//// `prepare` (or `prepare_structured` with a Blueprint output codec) checks
+//// the request, tools, schemas and limits from a `config.Config` without any
+//// I/O. `run` then executes the prepared call to one `RunResult`; `stream`
+//// returns a `Stream` read with `next` until a `Terminal`, and `close` ends it
+//// early. Execution failures carry `types.RetryEvidence`, which
+//// `llm_wire/retry` assesses. The library does not run tools or loop: on
+//// `RunToolCalls`, the caller appends the turn and its tool results to the
+//// messages and prepares the next request.
+////
+//// ```gleam
+//// import gleam/string
+//// import http_gun
+//// import http_gun/config as http_config
+//// import llm_wire/config
+//// import llm_wire/provider/openai
+//// import llm_wire/session
+//// import llm_wire/types
+////
+//// // Start once at application startup and share across calls.
+//// let assert Ok(client) = http_gun.start(http_config.default())
+//// let assert Ok(key) = types.api_key("sk-...")
+//// let assert Ok(model) = types.model_id("gpt-...")
+//// let settings = config.openai(openai.options(key))
+//// let request =
+////   types.new_request(model, [types.UserMessage("Hello")])
+////   |> types.with_max_tokens(256)
+//// let assert Ok(prepared) = session.prepare(settings, request)
+//// case session.run(client, prepared) {
+////   Ok(session.RunText(text, _usage)) -> text
+////   Ok(_other_outcome) -> "tool calls, refusal or output limit"
+////   Error(session.RunFailure(error, _retry)) -> string.inspect(error)
+//// }
+//// ```
+
 import gleam/option.{type Option}
 import gleam/result
 import http_gun

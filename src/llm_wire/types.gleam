@@ -1,3 +1,14 @@
+//// Defines the values shared by every LLM Wire module: validated
+//// identifiers, the request and its messages, tools and tool calls, limits,
+//// deadlines, stream progress, usage, retry evidence and errors.
+////
+//// Build requests here with `new_request` and the `with_*` functions, and
+//// tools with `tool_from_codec` or `tool_from_contract`. `llm_wire/config`
+//// takes the `Limits`, `Deadlines` and `ApiKey`; `llm_wire/session` returns
+//// the `AssistantTurn`, `StreamProgress`, `WireError` and `RetryEvidence`
+//// values. Smart constructors (`api_key`, `model_id`, `call_id`, `tool_name`,
+//// `endpoint`) reject invalid input before any request is prepared.
+
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string

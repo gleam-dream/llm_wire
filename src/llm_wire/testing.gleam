@@ -1,5 +1,12 @@
-//// Pure LLM reply builders lowered into HTTP Gun exchanges. Client startup,
-//// matching, recording and playback belong exclusively to HTTP Gun.
+//// Builds scripted LLM replies and lowers them into HTTP Gun exchanges for
+//// tests.
+////
+//// Use `text`, `tool_calls`, `refusal` and `output_limited` to describe a
+//// reply, `exchange` to pair it with a prepared call, and give the exchanges
+//// to an `http_gun/testing` client. The calls then run through the ordinary
+//// `llm_wire/session` path. `config()` selects a provider-neutral scripted
+//// adapter. Client startup, matching, recording and playback belong to
+//// HTTP Gun. Recorded requests drop HTTP Gun's documented credential headers.
 
 import gleam/bit_array
 import gleam/dynamic/decode

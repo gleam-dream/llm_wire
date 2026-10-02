@@ -1,3 +1,11 @@
+//// Describes the Sinal lifecycle observations that LLM calls emit.
+////
+//// Each prepared and executed call emits the `[llm_wire, observation]` event
+//// at fixed stages (`Stage`), with `Metadata` holding only the stage, the
+//// provider name and a low-cardinality outcome. Attach a Sinal handler to
+//// `observation_event()` to count or log calls. The metadata never carries
+//// request or response content, or credentials.
+
 import gleam/erlang/atom
 import sinal
 import sinal/fields
