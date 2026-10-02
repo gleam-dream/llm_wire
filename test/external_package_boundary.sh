@@ -106,12 +106,12 @@ pub fn prepares_schema_only_tool_and_structured_output() {
 }
 
 fn query_codec() -> codec.Codec(String) {
-  use query <- codec.field("query", codec.string(), fn(query) { query })
+  use query <- codec.field("query", codec.string(), get: fn(query) { query })
   codec.success(query)
 }
 
 fn answer_codec() -> codec.Codec(String) {
-  use answer <- codec.field("answer", codec.string(), fn(answer) { answer })
+  use answer <- codec.field("answer", codec.string(), get: fn(answer) { answer })
   codec.success(answer)
 }
 

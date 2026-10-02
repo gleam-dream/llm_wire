@@ -441,7 +441,9 @@ pub fn structured_output_rejects_optional_strict_schema_test() {
   let config = api.openai_adapter(key, endpoint, None, None)
   let request = types.new_request(model, [types.UserMessage("hello")])
   let output_codec = {
-    use item <- codec.optional_field("note", codec.string(), fn(item) { item })
+    use item <- codec.optional_field("note", codec.string(), get: fn(item) {
+      item
+    })
     codec.success(item)
   }
   case

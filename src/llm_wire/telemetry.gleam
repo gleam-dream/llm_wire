@@ -35,17 +35,16 @@ pub fn observe(stage: Stage, provider: String, outcome: String) -> Nil {
 }
 
 pub fn observation_event() -> sinal.Event(Nil, Metadata) {
-  let metadata_fields =
-    fields.record({
-      use stage <- fields.parameter
-      use provider <- fields.parameter
-      use outcome <- fields.parameter
-      Metadata(stage:, provider:, outcome:)
+  let metadata_fields = {
+    use stage <- fields.include(fields.string("stage"), get: fn(m) { m.stage })
+    use provider <- fields.include(fields.string("provider"), get: fn(m) {
+      m.provider
     })
-    |> fields.and(fields.string("stage"), fn(m: Metadata) { m.stage })
-    |> fields.and(fields.string("provider"), fn(m) { m.provider })
-    |> fields.and(fields.string("outcome"), fn(m) { m.outcome })
-    |> fields.build
+    use outcome <- fields.include(fields.string("outcome"), get: fn(m) {
+      m.outcome
+    })
+    fields.success(Metadata(stage:, provider:, outcome:))
+  }
   sinal.event(["llm_wire", "observation"], fields.empty(), metadata_fields)
 }
 

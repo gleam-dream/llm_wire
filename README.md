@@ -110,7 +110,7 @@ import llm_wire/session
 import llm_wire/types
 
 fn echo_input() -> codec.Codec(String) {
-  use text <- codec.field("text", codec.string(), fn(text) { text })
+  use text <- codec.field("text", codec.string(), get: fn(text) { text })
   codec.success(text)
 }
 
@@ -189,7 +189,7 @@ request and call `prepare_structured` with the desired codec again.
 
 ```gleam
 let output_codec = {
-  use answer <- codec.field("answer", codec.int(), fn(answer) { answer })
+  use answer <- codec.field("answer", codec.int(), get: fn(answer) { answer })
   codec.success(answer)
 }
 let assert Ok(prepared) =
