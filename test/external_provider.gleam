@@ -45,9 +45,7 @@ fn configured_adapter(
     provider.Spec(
       identity: identity,
       endpoint: endpoint,
-      headers: [
-        #("X-Fixture", "fourth"),
-      ],
+      headers: fn() { [#("X-Fixture", "fourth")] },
       encode: fn(request, tools, format) {
         encode_request(request, tools, format)
       },

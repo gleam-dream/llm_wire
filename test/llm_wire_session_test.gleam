@@ -74,9 +74,15 @@ pub fn configured_defaults_and_modifiers_keep_other_settings_test() {
   session.prepared_provider(prepared) |> should.equal(types.OpenAI)
   let adapter = config.adapter(with_project)
   let endpoint = provider.endpoint(adapter)
-  list.contains(provider.headers(adapter), #("OpenAI-Organization", "org-test"))
+  list.contains(provider.reveal_headers(adapter), #(
+    "OpenAI-Organization",
+    "org-test",
+  ))
   |> should.be_true
-  list.contains(provider.headers(adapter), #("OpenAI-Project", "proj-test"))
+  list.contains(provider.reveal_headers(adapter), #(
+    "OpenAI-Project",
+    "proj-test",
+  ))
   |> should.be_true
   types.endpoint_to_string(endpoint)
   |> should.equal("https://api.openai.com/v1")

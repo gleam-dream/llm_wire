@@ -2,6 +2,17 @@
 
 ## Unreleased — initial release candidate
 
+### Changed for the release API review
+
+- **Breaking:** API keys no longer print. `types.ApiKey` stores the key in a
+  closure, so `string.inspect` and crash reports of the key, provider options,
+  `config.Config`, `provider.Adapter`, prepared calls, streams and fixture
+  exchanges show a function reference instead. `provider.Spec.headers` is now
+  `fn() -> List(#(String, String))`; a custom adapter writes
+  `headers: fn() { [...] }`. `provider.headers` is replaced by
+  `provider.reveal_headers`, and the new `types.reveal_api_key` is the explicit
+  accessor a custom adapter uses to build its credential header.
+
 ### Included
 
 - **Breaking:** removed `Continuation`, `StructuredContinuation`, all

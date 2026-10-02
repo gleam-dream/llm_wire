@@ -48,7 +48,7 @@ pub fn reducer_exception_releases_http_and_preserves_shared_client_test() {
       provider.Spec(
         identity: types.Custom("exception-test"),
         endpoint: endpoint,
-        headers: [],
+        headers: fn() { [] },
         encode: fn(request, tools, format) {
           provider.encode(base, request, tools, format)
         },

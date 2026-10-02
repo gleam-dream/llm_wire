@@ -106,22 +106,27 @@ pub fn tool_name_to_string(name: ToolName) -> String {
   raw
 }
 
+/// A provider credential. The key is held inside a closure, so
+/// `string.inspect`, crash reports and logger metadata show a function
+/// reference instead of the key. Read it only with `reveal_api_key`.
 pub opaque type ApiKey {
-  ApiKey(String)
+  ApiKey(reveal: fn() -> String)
 }
 
+/// Trims the key and rejects an empty one with `ConfigurationError`.
 pub fn api_key(raw: String) -> Result(ApiKey, WireError) {
   let trimmed = string.trim(raw)
   case trimmed {
     "" -> Error(ConfigurationError("api_key cannot be empty"))
-    _ -> Ok(ApiKey(trimmed))
+    _ -> Ok(ApiKey(reveal: fn() { trimmed }))
   }
 }
 
-@internal
-pub fn api_key_expose(key: ApiKey) -> String {
-  let ApiKey(raw) = key
-  raw
+/// Returns the plain key. Use it only where a request header is built, such
+/// as inside a custom adapter's `provider.Spec` headers closure, and never log
+/// the result.
+pub fn reveal_api_key(key: ApiKey) -> String {
+  key.reveal()
 }
 
 pub opaque type Endpoint {

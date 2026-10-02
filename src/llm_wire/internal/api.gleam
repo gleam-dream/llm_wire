@@ -38,7 +38,8 @@ pub opaque type PreparedCall {
     port: Int,
     path: String,
     tls_mode: tls.TlsMode,
-    headers: List(#(String, String)),
+    // A closure, so the credential header never prints with the prepared call.
+    headers: fn() -> List(#(String, String)),
     body: String,
     structured_format: Option(StructuredFormat),
   )
@@ -119,7 +120,9 @@ pub fn http_request(prepared: PreparedCall) -> http_request.Request(BitArray) {
     port: Some(prepared.port),
     path: path,
     query: query,
-    headers: list.map(prepared.headers, fn(h) { #(string.lowercase(h.0), h.1) }),
+    headers: list.map(prepared.headers(), fn(h) {
+      #(string.lowercase(h.0), h.1)
+    }),
     body: bit_array.from_string(prepared.body),
   )
 }
@@ -305,7 +308,7 @@ fn prepare_with_format(
   let provider.EncodedRequest(provider_path, body_text) = encoded
   let #(host, port, base_path, tls_mode) = endpoint_parts
   let path = base_path <> provider_path
-  let provider_headers = provider.headers(adapter)
+  let provider_headers = provider.reveal_headers(adapter)
   let headers = list.append(provider_headers, common_headers())
   case validate_headers(provider_headers) {
     Error(error) -> Error(error)
@@ -331,7 +334,7 @@ fn prepare_with_format(
               port,
               path,
               tls_mode,
-              headers,
+              fn() { headers },
               body_text,
               structured_format,
             )
@@ -502,7 +505,7 @@ fn request_headers(
 ) -> List(#(String, String)) {
   case identity {
     types.OpenAI -> [
-      #("Authorization", "Bearer " <> types.api_key_expose(api_key)),
+      #("Authorization", "Bearer " <> types.reveal_api_key(api_key)),
       ..additional_headers
     ]
     types.Anthropic -> {
@@ -515,12 +518,12 @@ fn request_headers(
         False -> [#("anthropic-version", "2023-06-01")]
       }
       [
-        #("x-api-key", types.api_key_expose(api_key)),
+        #("x-api-key", types.reveal_api_key(api_key)),
         ..list.append(additional_headers, version_header)
       ]
     }
     types.Google -> [
-      #("x-goog-api-key", types.api_key_expose(api_key)),
+      #("x-goog-api-key", types.reveal_api_key(api_key)),
       ..additional_headers
     ]
     types.Custom(_) -> additional_headers
@@ -1528,7 +1531,7 @@ pub fn openai_adapter(
   provider.adapter(provider.Spec(
     identity: types.OpenAI,
     endpoint: endpoint,
-    headers: request_headers(types.OpenAI, key, optional_headers),
+    headers: fn() { request_headers(types.OpenAI, key, optional_headers) },
     encode: fn(request, tools, format) {
       use _ <- result.try(
         list.try_map(request.messages, fn(message) {
@@ -1563,7 +1566,7 @@ pub fn anthropic_adapter(
   provider.adapter(provider.Spec(
     identity: types.Anthropic,
     endpoint: endpoint,
-    headers: request_headers(types.Anthropic, key, optional_headers),
+    headers: fn() { request_headers(types.Anthropic, key, optional_headers) },
     encode: fn(request, tools, format) {
       use body <- result.try(encode_anthropic_request(
         request,
@@ -1590,7 +1593,7 @@ pub fn google_adapter(
   provider.adapter(provider.Spec(
     identity: types.Google,
     endpoint: endpoint,
-    headers: request_headers(types.Google, key, optional_headers),
+    headers: fn() { request_headers(types.Google, key, optional_headers) },
     encode: fn(request, tools, format) {
       use body <- result.try(encode_google_request(
         request,

@@ -55,6 +55,9 @@ provider-specific options live in `llm_wire/provider/anthropic` and
 `llm_wire/provider/google`. All three enter the same bounded HTTP/SSE runtime.
 `RunText`, `RunToolCalls`, `RunOutputLimited`, and `RunRefusal` are distinct
 successful outcomes. The library does not run tools or retry automatically.
+`types.ApiKey` holds the key in a closure: `string.inspect` of the key, the
+provider options, the config or a prepared call shows a function reference,
+never the key.
 
 `types.default_limits()` and `types.default_deadlines()` are bounded records.
 Update fields by name and attach them with `config.with_limits` and
@@ -278,6 +281,13 @@ and its semantic validation. The external consumer
 fixture in [external_provider.gleam](test/external_provider.gleam) implements a
 fourth provider using only public modules and runs against a real local
 HTTP/SSE server.
+
+`Spec.headers` is a closure, `fn() -> List(#(String, String))`, so a
+credential inside it never appears in `string.inspect` output or crash reports
+of the spec, adapter, config, prepared call or stream. Read the key with
+`types.reveal_api_key(key)` inside that closure.
+`provider.reveal_headers(adapter)` returns the headers in plain text, for
+wrapping one adapter in another; never log its result.
 
 The runtime supplies `Content-Type: application/json`,
 `Accept: text/event-stream`, and `Accept-Encoding: identity` for every adapter.

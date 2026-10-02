@@ -57,7 +57,7 @@ fn prepared(endpoint: types.Endpoint, path: String) -> session.PreparedCall {
       provider.Spec(
         identity: provider.identity(base),
         endpoint: endpoint,
-        headers: provider.headers(base),
+        headers: fn() { provider.reveal_headers(base) },
         encode: fn(request, tools, format) {
           provider.encode(base, request, tools, format)
           |> result.map(fn(encoded) {

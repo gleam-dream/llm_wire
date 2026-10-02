@@ -60,7 +60,7 @@ pub fn manual_tool_call_defaults_provider_metadata_test() {
 
 pub fn api_key_validation_test() {
   let assert Ok(key) = types.api_key("sk-secret-12345")
-  types.api_key_expose(key)
+  types.reveal_api_key(key)
   |> should.equal("sk-secret-12345")
 
   types.api_key("")

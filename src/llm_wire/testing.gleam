@@ -41,7 +41,7 @@ fn provider() -> provider.Adapter {
     provider.Spec(
       identity: types.Custom("scripted"),
       endpoint: endpoint,
-      headers: [],
+      headers: fn() { [] },
       encode: encode_request,
       project_tool_schema: provider.blueprint_schema,
       project_output_schema: provider.blueprint_schema,

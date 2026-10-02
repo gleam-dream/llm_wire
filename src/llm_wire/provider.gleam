@@ -13,11 +13,17 @@ pub opaque type Adapter {
 
 /// Provider-owned wire policy. Every callback is pure; construction allocates
 /// no transport resources. `encode` receives only locally admitted requests.
+///
+/// `headers` is a closure because it usually carries a credential: a closure
+/// prints as a function reference, so neither the spec nor any config,
+/// adapter or prepared call holding it shows the key in `string.inspect` or
+/// crash reports. Build the credential inside the closure, for example
+/// `headers: fn() { [#("authorization", "Bearer " <> types.reveal_api_key(key))] }`.
 pub type Spec {
   Spec(
     identity: types.Provider,
     endpoint: types.Endpoint,
-    headers: List(#(String, String)),
+    headers: fn() -> List(#(String, String)),
     encode: fn(types.Request, List(ProjectedTool), Option(OutputFormat)) ->
       Result(EncodedRequest, types.WireError),
     project_tool_schema: fn(codec.Schema) -> Result(json.Json, types.WireError),
@@ -117,8 +123,12 @@ pub fn endpoint(adapter: Adapter) -> types.Endpoint {
   adapter.spec.endpoint
 }
 
-pub fn headers(adapter: Adapter) -> List(#(String, String)) {
-  adapter.spec.headers
+/// Returns the adapter's request headers, including any credential in plain
+/// text. Call it only to build a request or to wrap one adapter in another
+/// (`headers: fn() { provider.reveal_headers(base) }`), and never log the
+/// result.
+pub fn reveal_headers(adapter: Adapter) -> List(#(String, String)) {
+  adapter.spec.headers()
 }
 
 pub fn with_endpoint(adapter: Adapter, endpoint: types.Endpoint) -> Adapter {
