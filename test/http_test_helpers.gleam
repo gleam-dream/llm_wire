@@ -1,13 +1,27 @@
 import http_gun
 import http_gun/config
+import http_gun/destination
 import http_gun/fixture
 import http_gun/testing as http_testing
 import llm_wire/session
 import llm_wire/testing
 
+/// HTTP Gun's default policy admits public destinations only. Local fake
+/// servers listen on loopback, so live test clients opt into it explicitly.
+pub fn loopback_config() -> config.Config {
+  let defaults = config.default()
+  config.Config(
+    ..defaults,
+    destination: destination.Policy(
+      ..defaults.destination,
+      allow_loopback: True,
+    ),
+  )
+}
+
 /// Tests own this client for the complete callback, including streamed reads.
 pub fn with_client(run: fn(http_gun.Client) -> value) -> value {
-  with_settings(config.Config(..config.default(), deadline_ms: 60_000), run)
+  with_settings(config.Config(..loopback_config(), deadline_ms: 60_000), run)
 }
 
 pub fn with_settings(

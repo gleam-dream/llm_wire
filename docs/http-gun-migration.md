@@ -109,7 +109,10 @@ The old LLM pool, connector, HTTP cassette codec and production Gun FFI are
 removed. `config.with_pool` and per-call CA setters no longer exist. Set
 `http_gun/config.CustomCa(path)` at client startup; certificate and hostname
 verification apply, including for application-approved remote private CAs.
-LLM Wire still admits plaintext only for loopback. The old idle-connection
+LLM Wire still admits plaintext only for loopback. HTTP Gun's default
+destination policy refuses loopback and private addresses, so a client for a
+local or private-network model server sets `destination.Policy` with
+`allow_loopback` or `allow_private` at startup. The old idle-connection
 eviction setting has no HTTP Gun equivalent and is removed, not ignored.
 
 Scripts, strict offline playback and actual live recording all supply the same

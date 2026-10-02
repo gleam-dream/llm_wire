@@ -9,6 +9,7 @@ import gleeunit/should
 import http_gun
 import http_gun/config as http_config
 import http_gun/error
+import http_test_helpers
 import llm_wire/config
 import llm_wire/provider/openai
 import llm_wire/session
@@ -16,7 +17,7 @@ import llm_wire/types
 import llm_wire_http_gun_test
 
 fn settings(active: Int, waiting: Int, connections: Int) -> http_config.Config {
-  let base = http_config.default()
+  let base = http_test_helpers.loopback_config()
   http_config.Config(
     ..base,
     deadline_ms: 5000,

@@ -70,6 +70,26 @@ still rejects remote plaintext endpoints; HTTP is admitted only for loopback.
 The old per-call CA restriction and pool settings are removed. There is no
 replacement for the prerelease idle-connection eviction setting.
 
+HTTP Gun's default destination policy admits public addresses only. A local
+model server, such as Ollama on `localhost`, needs a client whose policy allows
+loopback; a server on a private network needs `allow_private`. Otherwise every
+call fails before submission with `HttpFailure(DestinationRejected)`:
+
+```gleam
+import http_gun/destination
+
+let defaults = http_config.default()
+let local_policy = http_config.Config(
+  ..defaults,
+  deadline_ms: 120_000,
+  destination: destination.Policy(..defaults.destination, allow_loopback: True),
+)
+let assert Ok(local_client) = http_gun.start(local_policy)
+```
+
+Keep the default policy for clients that reach hosted providers; the loopback
+opt-in applies to every request through that client.
+
 ## Build a conversation with tool results
 
 `RunToolCalls(turn, usage)` returns an immutable `types.AssistantTurn` with text,

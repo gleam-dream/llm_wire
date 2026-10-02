@@ -12,6 +12,7 @@ import http_gun/config as http_config
 import http_gun/error as http_error
 import http_gun/fixture
 import http_gun/recording
+import http_test_helpers
 import json/blueprint/codec
 import llm_wire/config
 import llm_wire/session
@@ -24,8 +25,15 @@ import tool_fixtures
 @external(erlang, "erlang", "unique_integer")
 fn unique_integer() -> Int
 
+@external(erlang, "erlang", "system_time")
+fn system_time() -> Int
+
+/// `unique_integer` restarts with each VM, so a run that panicked before
+/// cleanup would otherwise leave a destination the next run collides with.
 fn path() -> String {
   "/private/tmp/llm-wire-http-recording-"
+  <> int.to_string(system_time())
+  <> "-"
   <> int.to_string(unique_integer())
   <> ".json"
 }
@@ -107,7 +115,7 @@ pub fn live_recording_and_offline_replay_preserve_text_tools_and_structured_test
   let settings = local_settings(server)
   let assert Ok(recorded) =
     cassette.record(
-      http_config.default(),
+      http_test_helpers.loopback_config(),
       destination,
       recording.Options(1_000_000, recording.RefuseExisting),
     )
@@ -146,7 +154,11 @@ pub fn concurrent_recording_keeps_admission_order_when_second_finishes_first_tes
   let assert Ok(release_first) = process.receive(ready, 1000)
   let destination = path()
   let assert Ok(recorded) =
-    cassette.record(http_config.default(), destination, recording.default())
+    cassette.record(
+      http_test_helpers.loopback_config(),
+      destination,
+      recording.default(),
+    )
   let assert Ok(model) = types.model_id("fixture")
   let assert Ok(call) =
     session.prepare(
@@ -196,7 +208,7 @@ pub fn capture_budget_failure_does_not_change_live_semantic_outcomes_test() {
   let destination = path()
   let assert Ok(recorded) =
     cassette.record(
-      http_config.default(),
+      http_test_helpers.loopback_config(),
       destination,
       recording.Options(128, recording.RefuseExisting),
     )
@@ -212,14 +224,18 @@ pub fn destination_replacement_is_explicit_and_persistence_failure_is_separate_t
   let destination = path()
   let assert Ok(Nil) = simplifile.write(destination, "existing")
   let assert Ok(recorded) =
-    cassette.record(http_config.default(), destination, recording.default())
+    cassette.record(
+      http_test_helpers.loopback_config(),
+      destination,
+      recording.default(),
+    )
   recording.finish_wait(recorded.recording, 5000)
   |> should.equal(Error(recording.CaptureFailed(recording.DestinationExists)))
   simplifile.read(destination) |> should.equal(Ok("existing"))
   let assert Ok(Nil) = http_gun.stop(recorded.client)
   let assert Ok(replacement) =
     cassette.record(
-      http_config.default(),
+      http_test_helpers.loopback_config(),
       destination,
       recording.Options(1000, recording.ReplaceExisting),
     )
@@ -238,7 +254,7 @@ pub fn publish_io_failure_keeps_successful_live_result_test() {
   let assert Ok(Nil) = simplifile.create_directory(destination)
   let assert Ok(recorded) =
     cassette.record(
-      http_config.default(),
+      http_test_helpers.loopback_config(),
       destination,
       recording.Options(1_000_000, recording.ReplaceExisting),
     )
@@ -272,7 +288,11 @@ pub fn finish_wait_never_drains_and_early_cancel_replays_partial_evidence_test()
     })
   let destination = path()
   let assert Ok(recorded) =
-    cassette.record(http_config.default(), destination, recording.default())
+    cassette.record(
+      http_test_helpers.loopback_config(),
+      destination,
+      recording.default(),
+    )
   let assert Ok(model) = types.model_id("synthetic-model")
   let assert Ok(call) =
     session.prepare(

@@ -10,6 +10,7 @@ import gleeunit/should
 import http_gun
 import http_gun/config as http_config
 import http_gun/error as http_error
+import http_test_helpers
 import llm_wire/config
 import llm_wire/provider
 import llm_wire/provider/openai
@@ -71,7 +72,7 @@ pub fn reducer_exception_releases_http_and_preserves_shared_client_test() {
       config.from_provider(adapter),
       types.new_request(model, [types.UserMessage("hello")]),
     )
-  let assert Ok(client) = http_gun.start(http_config.default())
+  let assert Ok(client) = http_gun.start(http_test_helpers.loopback_config())
   let consumer =
     process.spawn_unlinked(fn() {
       let _ = session.run(client, call)
@@ -114,7 +115,10 @@ pub fn prepared_buffered_http_gun_test() {
     )
   let assert Ok(client) =
     http_gun.start(
-      http_config.Config(..http_config.default(), deadline_ms: 60_000),
+      http_config.Config(
+        ..http_test_helpers.loopback_config(),
+        deadline_ms: 60_000,
+      ),
     )
   session.run(client, prepared)
   |> should.equal(Ok(session.RunText("hello", None)))
@@ -130,7 +134,7 @@ pub fn text_events() -> String {
 }
 
 pub fn closed_shared_client_keeps_conservative_http_evidence_test() {
-  let assert Ok(client) = http_gun.start(http_config.default())
+  let assert Ok(client) = http_gun.start(http_test_helpers.loopback_config())
   let assert Ok(Nil) = http_gun.stop(client)
   let assert Error(session.RunFailure(
     types.HttpFailure(http_error.ClientClosed),
@@ -162,7 +166,7 @@ fn prepared(port: Int, deadlines: types.Deadlines) -> session.PreparedCall {
 }
 
 pub fn pre_submission_http_limit_keeps_no_request_sent_test() {
-  let defaults = http_config.default()
+  let defaults = http_test_helpers.loopback_config()
   let assert Ok(client) =
     http_gun.start(
       http_config.Config(
@@ -195,7 +199,7 @@ pub fn pre_header_close_releases_shared_admission_test() {
       process.send(released, result)
       tcp.close(socket)
     })
-  let assert Ok(client) = http_gun.start(http_config.default())
+  let assert Ok(client) = http_gun.start(http_test_helpers.loopback_config())
   let assert Ok(stream) =
     session.stream(client, prepared(server.port, types.default_deadlines()))
   let assert Ok(Nil) = process.receive(accepted, 2000)
@@ -230,7 +234,7 @@ pub fn close_during_tls_connection_setup_releases_request_test() {
       config.openai(openai.options(key)) |> config.with_endpoint(endpoint),
       types.new_request(model, [types.UserMessage("hello")]),
     )
-  let assert Ok(client) = http_gun.start(http_config.default())
+  let assert Ok(client) = http_gun.start(http_test_helpers.loopback_config())
   let assert Ok(stream) = session.stream(client, call)
   let assert Ok(Nil) = process.receive(connecting, 2000)
   session.close(stream) |> should.equal(Ok(types.ConsumerClosed))
@@ -295,7 +299,7 @@ pub fn consumer_read_timeout_preserves_http_and_terminal_precedes_eof_test() {
       tcp.close(socket)
     })
   let assert Ok(release) = process.receive(gate, 1000)
-  let assert Ok(client) = http_gun.start(http_config.default())
+  let assert Ok(client) = http_gun.start(http_test_helpers.loopback_config())
   let call = prepared(server.port, types.Deadlines(3000, 1000, 10))
   let assert Ok(stream) = session.stream(client, call)
   session.next(stream)
@@ -321,7 +325,7 @@ pub fn keepalive_bytes_do_not_extend_semantic_idle_test() {
           True,
         )
     })
-  let assert Ok(client) = http_gun.start(http_config.default())
+  let assert Ok(client) = http_gun.start(http_test_helpers.loopback_config())
   let assert Error(session.RunFailure(
     types.DeadlineExceeded(types.IdleDeadline),
     evidence,
@@ -346,7 +350,7 @@ pub fn partial_status_body_keeps_bytes_when_semantic_idle_wins_test() {
       let _ = tcp.recv(socket, 0, 2000)
       tcp.close(socket)
     })
-  let assert Ok(client) = http_gun.start(http_config.default())
+  let assert Ok(client) = http_gun.start(http_test_helpers.loopback_config())
   let assert Error(session.RunFailure(
     types.DeadlineExceeded(types.IdleDeadline),
     evidence,
@@ -371,7 +375,7 @@ pub fn execution_starts_budget_and_delayed_headers_spend_it_test() {
     })
   let call = prepared(server.port, types.Deadlines(80, 2000, 10))
   process.sleep(100)
-  let assert Ok(client) = http_gun.start(http_config.default())
+  let assert Ok(client) = http_gun.start(http_test_helpers.loopback_config())
   let assert Error(session.RunFailure(
     types.DeadlineExceeded(types.OverallDeadline),
     _,
@@ -401,7 +405,7 @@ pub fn disconnect_preserves_raw_and_semantic_evidence_test() {
             True,
           )
       })
-    let assert Ok(client) = http_gun.start(http_config.default())
+    let assert Ok(client) = http_gun.start(http_test_helpers.loopback_config())
     let assert Error(session.RunFailure(_, evidence)) =
       session.run(client, prepared(server.port, types.default_deadlines()))
     evidence.response_bytes_observed |> should.be_true
@@ -424,7 +428,7 @@ pub fn consumer_death_cancels_worker_before_headers_test() {
       process.send(closed, tcp.recv(socket, 0, 3000))
       tcp.close(socket)
     })
-  let assert Ok(client) = http_gun.start(http_config.default())
+  let assert Ok(client) = http_gun.start(http_test_helpers.loopback_config())
   let ready = process.new_subject()
   let call = prepared(server.port, types.default_deadlines())
   let consumer =

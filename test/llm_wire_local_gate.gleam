@@ -11,6 +11,7 @@ import gleam/result
 import gleam/string
 import http_gun
 import http_gun/config as http_config
+import http_test_helpers
 import llm_wire/config
 import llm_wire/provider
 import llm_wire/session
@@ -178,7 +179,7 @@ pub fn main() -> Nil {
   let assert Ok(port) = simplifile.read("build/http-gun-local-port")
   let assert Ok(endpoint) =
     types.endpoint("https://127.0.0.1:" <> string.trim(port))
-  let defaults = http_config.default()
+  let defaults = http_test_helpers.loopback_config()
   let policy =
     http_config.Config(
       ..defaults,
