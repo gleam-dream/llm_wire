@@ -67,7 +67,12 @@ fn start(
           process.send(ready, #(control, token))
           case process.receive(control, deadline.remaining_ms(budget)) {
             Ok(More) -> {
-              let options = request_options.Options(Some(budget), Some(token))
+              let options =
+                request_options.Options(
+                  ..request_options.default(),
+                  deadline: Some(budget),
+                  cancellation: Some(token),
+                )
               let outcome =
                 http_gun.with_response_with_options(
                   client,
