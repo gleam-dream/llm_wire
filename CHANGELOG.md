@@ -31,6 +31,11 @@
 Fabric, the first agent-runtime consumer, reported these gaps against the
 candidate API.
 
+- `gleam_stdlib` is now `>= 0.70.0 and < 2.0.0` (was `< 1.0.0`), so an
+  application can combine LLM Wire with packages that need `gleam_stdlib` 1.x.
+  The dev dependency `simplifile` is `>= 2.7.0 and < 3.0.0` instead of an exact
+  pin. The manifests resolve `gleam_stdlib` 1.0.5; no source change was needed.
+
 - **Breaking:** `types.tool_name` returns `Result(ToolName, ToolNameError)` and
   admits only `^[a-zA-Z0-9_-]{1,64}$`, the grammar shared by the built-in
   providers. It no longer trims. A name that every provider would refuse now

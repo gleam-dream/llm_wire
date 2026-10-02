@@ -15,7 +15,7 @@ target = "erlang"
 gleam = ">= 1.18.0"
 
 [dependencies]
-gleam_stdlib = ">= 0.70.0 and < 1.0.0"
+gleam_stdlib = ">= 0.70.0 and < 2.0.0"
 gleam_json = ">= 3.0.0 and < 4.0.0"
 gleam_http = ">= 4.4.0 and < 5.0.0"
 json_blueprint = { path = "$package_root/../json_blueprint" }

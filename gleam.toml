@@ -8,7 +8,7 @@ description = "A bounded HTTP/SSE LLM client for Gleam with typed provider adapt
 internal_modules = ["llm_wire/internal", "llm_wire/internal/*"]
 
 [dependencies]
-gleam_stdlib = ">= 0.70.0 and < 1.0.0"
+gleam_stdlib = ">= 0.70.0 and < 2.0.0"
 gleam_json = ">= 3.0.0 and < 4.0.0"
 gleam_erlang = ">= 1.0.0 and < 2.0.0"
 gleam_otp = ">= 1.0.0 and < 2.0.0"
@@ -18,7 +18,7 @@ http_gun = { path = "../http_gun" }
 gleam_http = ">= 4.4.0 and < 5.0.0"
 
 [dev-dependencies]
-simplifile = "== 2.7.0"
+simplifile = ">= 2.7.0 and < 3.0.0"
 anthropic_gleam = ">= 0.1.1 and < 1.0.0"
 gleeunit = ">= 1.0.0 and < 2.0.0"
 mist = ">= 6.0.2 and < 7.0.0"
