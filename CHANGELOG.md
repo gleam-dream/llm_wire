@@ -25,6 +25,17 @@
   `session` include an example checked against the current API. `dev/gate` fails when a
   public module lacks one.
 
+- **Breaking:** migrated to the Sinal and Blueprint wave 2 APIs.
+  `types.tool_from_contract` takes a `json/blueprint/contract.Contract`
+  (was `runtime.RuntimeContract`). Tool schemas expose Blueprint's
+  `UnionSchema` instead of `FieldSchema`/`TaggedSchema`. Discovered and
+  structured values convert to JSON exactly through `value.to_json`, replacing
+  a bridge that went through `Float` and could lose precision. The text of
+  `OutputValidationError`, `InvalidArguments` and `PreparationError` reasons
+  now uses Blueprint's `describe_*` wording instead of inspected Gleam values.
+  `telemetry.observation_event()` keeps its type; subscribe with
+  `sinal.observe(event, run)`.
+
 ### Included
 
 - **Breaking:** removed `Continuation`, `StructuredContinuation`, all
