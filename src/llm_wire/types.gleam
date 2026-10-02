@@ -176,10 +176,15 @@ pub type Limits {
   )
 }
 
+/// Bounded defaults for every limit. `line_bytes_limit` equals
+/// `event_bytes_limit` (1 MiB) because OpenAI's final events
+/// (`response.output_text.done`, `response.output_item.done`,
+/// `response.completed`) repeat the whole answer on one SSE line, and Gemini
+/// sends each function call whole in one chunk.
 pub fn default_limits() -> Limits {
   Limits(
     chunk_bytes_limit: 65_536,
-    line_bytes_limit: 16_384,
+    line_bytes_limit: 1_048_576,
     event_bytes_limit: 1_048_576,
     request_bytes_limit: 1_048_576,
     provider_metadata_bytes_limit: 1_048_576,

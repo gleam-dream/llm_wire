@@ -1,6 +1,8 @@
 import gleam/bit_array
+import gleam/erlang/atom
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/string
 import gleeunit/should
 import llm_wire/internal/sse
 import llm_wire/types
@@ -254,4 +256,45 @@ fn split_boundaries(bits: BitArray) -> List(#(BitArray, BitArray)) {
     ]
     _ -> [#(<<>>, bits)]
   }
+}
+
+@external(erlang, "erlang", "monotonic_time")
+fn monotonic_time(unit: atom.Atom) -> Int
+
+fn feed_in_chunks(
+  framer: sse.Framer,
+  bits: BitArray,
+  size: Int,
+  acc: List(sse.ServerSentEvent),
+) -> List(sse.ServerSentEvent) {
+  case bit_array.byte_size(bits) <= size {
+    True -> {
+      let assert Ok(#(_framer, events)) = sse.feed(framer, bits)
+      list.append(acc, events)
+    }
+    False -> {
+      let assert Ok(head) = bit_array.slice(bits, 0, size)
+      let assert Ok(tail) =
+        bit_array.slice(bits, size, bit_array.byte_size(bits) - size)
+      let assert Ok(#(framer, events)) = sse.feed(framer, head)
+      feed_in_chunks(framer, tail, size, list.append(acc, events))
+    }
+  }
+}
+
+// A line under the default 1 MiB limit arriving in TCP-segment-sized chunks is
+// scanned once, not once per chunk. The quadratic scan took about 4 s here;
+// the linear one takes tens of milliseconds.
+pub fn long_line_in_small_chunks_is_scanned_in_linear_time_test() {
+  let payload = string.repeat("x", 1_040_000)
+  let stream = bit_array.from_string("data: " <> payload <> "\r\n\r\n")
+  let millisecond = atom.create("millisecond")
+  let started = monotonic_time(millisecond)
+  let events = feed_in_chunks(sse.new(types.default_limits()), stream, 1400, [])
+  let elapsed = monotonic_time(millisecond) - started
+  events
+  |> should.equal([
+    sse.ServerSentEvent(event: None, data: payload, id: None, retry: None),
+  ])
+  { elapsed < 1000 } |> should.be_true
 }

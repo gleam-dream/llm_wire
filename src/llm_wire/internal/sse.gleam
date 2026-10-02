@@ -64,8 +64,11 @@ pub fn feed(
             pending_line_len,
           ))
         False -> {
+          // The buffer holds no line terminator except possibly a trailing
+          // CR, so scanning resumes at its last byte. Rescanning the whole
+          // buffer on every chunk would make a long line cost quadratic time.
           let combined = bit_array.append(framer.buffer, chunk)
-          parse_lines(framer, combined, [], 0)
+          parse_lines(framer, combined, [], 0, int.max(buf_len - 1, 0))
         }
       }
     }
@@ -109,8 +112,9 @@ fn parse_lines(
   buffer: BitArray,
   emitted: List(ServerSentEvent),
   emitted_count: Int,
+  scan_from: Int,
 ) -> Result(#(Framer, List(ServerSentEvent)), types.WireError) {
-  case extract_line(buffer) {
+  case find_line_terminator(buffer, scan_from) {
     EndOfBuffer(remaining) -> {
       let remaining_size = bit_array.byte_size(remaining)
       case remaining_size > framer.limits.line_bytes_limit {
@@ -162,6 +166,7 @@ fn parse_lines(
                         remaining,
                         next_emitted,
                         next_count,
+                        0,
                       )
                   }
                 }
@@ -177,10 +182,6 @@ fn parse_lines(
 type LineExtract {
   EndOfBuffer(BitArray)
   LineFound(BitArray, BitArray)
-}
-
-fn extract_line(buffer: BitArray) -> LineExtract {
-  find_line_terminator(buffer, 0)
 }
 
 fn find_line_terminator(buffer: BitArray, offset: Int) -> LineExtract {

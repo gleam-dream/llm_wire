@@ -12,6 +12,14 @@
   `headers: fn() { [...] }`. `provider.headers` is replaced by
   `provider.reveal_headers`, and the new `types.reveal_api_key` is the explicit
   accessor a custom adapter uses to build its credential header.
+- The default `line_bytes_limit` is 1 MiB (was 16 KiB), equal to
+  `event_bytes_limit`. OpenAI replies over about 16 KB failed with
+  `ResourceLimitExceeded("line_bytes_limit", 16384, _)`, because
+  `response.output_text.done`, `response.output_item.done` and
+  `response.completed` repeat the whole text on one SSE line; a Gemini
+  function call over 16 KiB failed the same way. The limit stays
+  configurable. The SSE framer now resumes its line scan where the previous
+  chunk ended, so a long line costs linear rather than quadratic time.
 
 ### Included
 

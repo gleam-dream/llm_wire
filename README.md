@@ -62,7 +62,9 @@ never the key.
 `types.default_limits()` and `types.default_deadlines()` are bounded records.
 Update fields by name and attach them with `config.with_limits` and
 `config.with_deadlines`. `request_bytes_limit` bounds the outgoing JSON body;
-`event_bytes_limit` independently bounds each incoming SSE event.
+`event_bytes_limit` independently bounds each incoming SSE event, and
+`line_bytes_limit` bounds each SSE line. Both default to 1 MiB: OpenAI's final
+events repeat the whole answer on one `data:` line.
 `provider_metadata_bytes_limit` bounds retained call IDs, tool names, provider
 IDs/state, response IDs, and each response's opaque provider data. Preparation validates all limit and deadline fields before transport.
 
