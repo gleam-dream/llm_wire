@@ -1,107 +1,21 @@
-import gleam/float
 import gleam/json
 import gleam/list
 import gleam/result
-import gleam/string
 import json/blueprint/codec
-import json/blueprint/number
-import json/blueprint/parser
-import json/blueprint/parser_limits
-import json/blueprint/runtime
+import json/blueprint/contract
 import json/blueprint/value
 import llm_wire/types
 
 /// Converts Blueprint's canonical schema projection to ordinary provider JSON.
-/// Blueprint owns the schema semantics; this module only bridges its value
-/// representation to the provider envelope representation.
+/// Blueprint owns the schema semantics and the exact number conversion.
 pub fn codec_schema_to_json(
   schema: codec.Schema,
 ) -> Result(json.Json, types.WireError) {
-  blueprint_value_to_json(codec.schema_value(schema))
-}
-
-fn blueprint_value_to_json(
-  source: value.Value,
-) -> Result(json.Json, types.WireError) {
-  case source {
-    value.Null -> Ok(json.null())
-    value.Bool(item) -> Ok(json.bool(item))
-    value.String(item) -> Ok(json.string(item))
-    value.Number(item) -> number_to_json(item)
-    value.Array(items) -> {
-      let empty: Result(List(json.Json), types.WireError) = Ok([])
-      use encoded <- result.try(
-        list.fold(items, empty, fn(acc, item) {
-          use prior <- result.try(acc)
-          use encoded_item <- result.try(blueprint_value_to_json(item))
-          Ok(list.append(prior, [encoded_item]))
-        }),
-      )
-      Ok(json.array(encoded, fn(item) { item }))
-    }
-    value.Object(fields) -> {
-      let empty: Result(List(#(String, json.Json)), types.WireError) = Ok([])
-      use encoded <- result.try(
-        list.fold(fields, empty, fn(acc, field) {
-          use prior <- result.try(acc)
-          use encoded_value <- result.try(blueprint_value_to_json(field.1))
-          Ok(list.append(prior, [#(field.0, encoded_value)]))
-        }),
-      )
-      Ok(json.object(encoded))
-    }
-  }
-}
-
-fn number_to_json(
-  number_value: number.Number,
-) -> Result(json.Json, types.WireError) {
-  case number.is_integer(number_value) {
-    True ->
-      case number.integer_projection_limit(64) {
-        Ok(limit) ->
-          case number.to_int_exact(number_value, limit) {
-            Ok(integer) -> Ok(json.int(integer))
-            Error(_) -> number_to_float_json(number_value)
-          }
-        Error(_) -> number_to_float_json(number_value)
-      }
-    False -> number_to_float_json(number_value)
-  }
-}
-
-fn number_to_float_json(
-  number_value: number.Number,
-) -> Result(json.Json, types.WireError) {
-  let text = number.number_text(number_value)
-  case float.parse(text) {
-    Error(Nil) ->
-      Error(types.PreparationError(
-        "Number schema bound cannot be represented as a JSON number",
-      ))
-    Ok(projected) -> {
-      let encoded = json.float(projected)
-      case
-        parser.parse_value_from_string(
-          parser.default_limits(),
-          json.to_string(encoded),
-        )
-      {
-        Ok(value.Number(round_tripped)) ->
-          case number.compare(number_value, round_tripped) {
-            number.EqualTo -> Ok(encoded)
-            _ ->
-              Error(types.PreparationError(
-                "Number schema bound cannot be represented exactly as a JSON number",
-              ))
-          }
-        _ ->
-          Error(types.PreparationError(
-            "Number schema bound cannot be represented exactly as a JSON number",
-          ))
-      }
-    }
-  }
+  codec.schema_value(schema)
+  |> value.to_json
+  |> result.replace_error(types.PreparationError(
+    "Number schema bound cannot be represented exactly as a JSON number",
+  ))
 }
 
 /// Converts only the provider schema subset this adapter currently admits.
@@ -128,15 +42,14 @@ fn provider_schema_supported(schema: codec.Schema) -> Bool {
     | codec.NumberSchema
     | codec.BoolSchema
     | codec.IntegerRangeSchema(_, _) -> True
-    codec.ListSchema(item)
-    | codec.NullableSchema(item)
-    | codec.FieldSchema(_, item) -> provider_schema_supported(item)
+    codec.ListSchema(item) | codec.NullableSchema(item) ->
+      provider_schema_supported(item)
     codec.ObjectSchema(properties) ->
       list.all(properties, fn(property) {
         provider_schema_supported(property.schema)
       })
     codec.PairSchema(_, _)
-    | codec.TaggedSchema(_, _, _, _)
+    | codec.UnionSchema(_)
     | codec.NumberRangeSchema(_, _) -> False
   }
 }
@@ -156,9 +69,8 @@ pub fn google_function_parameters_schema(
 pub fn strict_output_schema(
   schema: codec.Schema,
 ) -> Result(json.Json, types.WireError) {
-  let normalized = normalize_object_equivalence(schema)
-  case object_root(normalized) {
-    True -> strict_schema(normalized)
+  case object_root(schema) {
+    True -> strict_schema(schema)
     False ->
       Error(types.PreparationError(
         "Structured output requires an object root schema",
@@ -171,34 +83,6 @@ fn object_root(schema: codec.Schema) -> Bool {
     codec.DescribedSchema(_, inner) -> object_root(inner)
     codec.ObjectSchema(_) -> True
     _ -> False
-  }
-}
-
-/// Blueprint's field codec describes the same closed, required object as a
-/// one-property object codec. Normalize that equivalence before provider
-/// admission, including inside arrays and other objects.
-fn normalize_object_equivalence(schema: codec.Schema) -> codec.Schema {
-  case schema {
-    codec.DescribedSchema(description, inner) ->
-      codec.DescribedSchema(description, normalize_object_equivalence(inner))
-    codec.FieldSchema(name, inner) ->
-      codec.ObjectSchema([
-        codec.PropertySchema(name, True, normalize_object_equivalence(inner)),
-      ])
-    codec.ObjectSchema(properties) ->
-      codec.ObjectSchema(
-        list.map(properties, fn(property) {
-          codec.PropertySchema(
-            ..property,
-            schema: normalize_object_equivalence(property.schema),
-          )
-        }),
-      )
-    codec.ListSchema(inner) ->
-      codec.ListSchema(normalize_object_equivalence(inner))
-    codec.NullableSchema(inner) ->
-      codec.NullableSchema(normalize_object_equivalence(inner))
-    _ -> schema
   }
 }
 
@@ -218,9 +102,8 @@ fn validate_strict_schema(
     | codec.IntegerRangeSchema(_, _)
     | codec.NumberSchema
     | codec.BoolSchema -> Ok(Nil)
-    codec.ListSchema(item)
-    | codec.NullableSchema(item)
-    | codec.FieldSchema(_, item) -> validate_strict_schema(item)
+    codec.ListSchema(item) | codec.NullableSchema(item) ->
+      validate_strict_schema(item)
     codec.ObjectSchema(properties) -> {
       case list.any(properties, fn(property) { !property.required }) {
         True ->
@@ -235,7 +118,7 @@ fn validate_strict_schema(
       }
     }
     codec.PairSchema(_, _)
-    | codec.TaggedSchema(_, _, _, _)
+    | codec.UnionSchema(_)
     | codec.NumberRangeSchema(_, _) ->
       Error(types.PreparationError(
         "Structured output uses an unsupported Blueprint schema variant",
@@ -246,9 +129,8 @@ fn validate_strict_schema(
 pub fn google_strict_output_schema(
   schema: codec.Schema,
 ) -> Result(json.Json, types.WireError) {
-  let normalized = normalize_object_equivalence(schema)
-  case object_root(normalized) {
-    True -> google_strict_schema(normalized)
+  case object_root(schema) {
+    True -> google_strict_schema(schema)
     False ->
       Error(types.PreparationError(
         "Structured output requires an object root schema",
@@ -285,8 +167,7 @@ fn validate_google_strict_schema(
           })
       }
     }
-    codec.FieldSchema(_, inner) | codec.ListSchema(inner) ->
-      validate_google_strict_schema(inner)
+    codec.ListSchema(inner) -> validate_google_strict_schema(inner)
     codec.StringSchema
     | codec.StringEnumSchema(_)
     | codec.IntSchema
@@ -294,7 +175,7 @@ fn validate_google_strict_schema(
     | codec.NumberSchema
     | codec.BoolSchema -> Ok(Nil)
     codec.PairSchema(_, _)
-    | codec.TaggedSchema(_, _, _, _)
+    | codec.UnionSchema(_)
     | codec.NumberRangeSchema(_, _) ->
       Error(types.PreparationError(
         "Structured output uses an unsupported Blueprint schema variant",
@@ -302,31 +183,31 @@ fn validate_google_strict_schema(
   }
 }
 
-/// Validates structured output string against an admitted Blueprint runtime contract
+/// Validates structured output string against an admitted Blueprint contract
 /// and decodes using the target codec.
 pub fn validate_and_decode_structured_output(
-  contract: runtime.RuntimeContract,
+  output_contract: contract.Contract,
   output_codec: codec.Codec(a),
   output_json: String,
   max_bytes: Int,
 ) -> Result(a, types.WireError) {
-  let assert Ok(parser_bounds) =
-    parser_limits.default() |> parser_limits.with_max_bytes(max_bytes)
-  case parser.parse_value_from_string(parser_bounds, output_json) {
+  let parser_bounds = value.default_limits() |> value.with_max_bytes(max_bytes)
+  case value.parse(output_json, parser_bounds) {
     Error(_) ->
       Error(types.OutputValidationError("Invalid JSON in structured output"))
     Ok(val) ->
-      case runtime.validate(contract, val) {
+      case contract.validate(output_contract, val) {
         Error(err) ->
           Error(types.OutputValidationError(
             "Structured output failed schema validation: "
-            <> string.inspect(err),
+            <> contract.describe_validation_error(err),
           ))
         Ok(validated) ->
-          case runtime.decode(output_codec, validated) {
+          case contract.decode(output_codec, validated) {
             Error(err) ->
               Error(types.OutputValidationError(
-                "Structured output failed codec decode: " <> string.inspect(err),
+                "Structured output failed codec decode: "
+                <> codec.describe_decode_error(err),
               ))
             Ok(decoded) -> Ok(decoded)
           }

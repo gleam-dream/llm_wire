@@ -14,9 +14,8 @@ import gleam/option.{type Option, None, Some}
 import gleam/string
 import http_gun/error as http_error
 import json/blueprint/codec
-import json/blueprint/parser
-import json/blueprint/parser_limits
-import json/blueprint/runtime
+import json/blueprint/contract
+import json/blueprint/value
 
 pub opaque type ModelId {
   ModelId(String)
@@ -323,8 +322,8 @@ pub opaque type ToolDefinition {
     name: ToolName,
     description: String,
     schema: codec.Schema,
-    contract: runtime.RuntimeContract,
-    decode_arguments: fn(runtime.ValidatedValue) -> Result(Nil, String),
+    contract: contract.Contract,
+    decode_arguments: fn(contract.ValidatedValue) -> Result(Nil, String),
   )
 }
 
@@ -335,23 +334,29 @@ pub fn tool_from_codec(
 ) -> Result(ToolDefinition, WireError) {
   case codec.schema(input_codec) {
     Ok(schema) ->
-      case runtime.from_schema(schema) {
+      case contract.from_schema(schema) {
         Error(error) ->
           Error(PreparationError(
-            "Invalid tool schema: " <> string.inspect(error),
+            "Invalid tool schema: " <> codec.describe_definition_error(error),
           ))
-        Ok(contract) ->
+        Ok(input_contract) ->
           Ok(
-            ToolDefinition(name, description, schema, contract, fn(validated) {
-              case runtime.decode(input_codec, validated) {
-                Ok(_) -> Ok(Nil)
-                Error(error) ->
-                  Error(
-                    "Tool arguments failed native decode: "
-                    <> string.inspect(error),
-                  )
-              }
-            }),
+            ToolDefinition(
+              name,
+              description,
+              schema,
+              input_contract,
+              fn(validated) {
+                case contract.decode(input_codec, validated) {
+                  Ok(_) -> Ok(Nil)
+                  Error(error) ->
+                    Error(
+                      "Tool arguments failed native decode: "
+                      <> codec.describe_decode_error(error),
+                    )
+                }
+              },
+            ),
           )
       }
     Error(_) -> Error(PreparationError("Codec has no schema"))
@@ -363,11 +368,15 @@ pub fn tool_from_codec(
 pub fn tool_from_contract(
   name: ToolName,
   description: String,
-  contract: runtime.RuntimeContract,
+  tool_contract: contract.Contract,
 ) -> ToolDefinition {
-  ToolDefinition(name, description, runtime.schema(contract), contract, fn(_) {
-    Ok(Nil)
-  })
+  ToolDefinition(
+    name,
+    description,
+    contract.schema(tool_contract),
+    tool_contract,
+    fn(_) { Ok(Nil) },
+  )
 }
 
 pub fn tool_name_of(definition: ToolDefinition) -> ToolName {
@@ -424,16 +433,15 @@ pub fn check_tool_arguments(
   max_bytes: Int,
   args_json: String,
 ) -> Result(Nil, String) {
-  let assert Ok(parser_bounds) =
-    parser_limits.default() |> parser_limits.with_max_bytes(max_bytes)
-  case parser.parse_value_from_string(parser_bounds, args_json) {
+  let parser_bounds = value.default_limits() |> value.with_max_bytes(max_bytes)
+  case value.parse(args_json, parser_bounds) {
     Error(_) -> Error("Invalid JSON in tool call arguments")
     Ok(parsed) ->
-      case runtime.validate(definition.contract, parsed) {
+      case contract.validate(definition.contract, parsed) {
         Error(error) ->
           Error(
             "Tool call arguments failed schema validation: "
-            <> string.inspect(error),
+            <> contract.describe_validation_error(error),
           )
         Ok(validated) -> definition.decode_arguments(validated)
       }

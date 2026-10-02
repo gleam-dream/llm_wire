@@ -6,7 +6,6 @@
 //// `observation_event()` to count or log calls. The metadata never carries
 //// request or response content, or credentials.
 
-import gleam/erlang/atom
 import sinal
 import sinal/fields
 
@@ -28,31 +27,26 @@ pub type Metadata {
 
 @internal
 pub fn observe(stage: Stage, provider: String, outcome: String) -> Nil {
-  let observation = observation_event()
-  let _ =
-    sinal.emit(observation, Nil, Metadata(stage_name(stage), provider, outcome))
-  Nil
+  sinal.emit(
+    observation_event(),
+    Nil,
+    Metadata(stage_name(stage), provider, outcome),
+  )
 }
 
 pub fn observation_event() -> sinal.Event(Nil, Metadata) {
-  let stage = fields.string(atom.create("stage"))
-  let provider = fields.string(atom.create("provider"))
-  let outcome = fields.string(atom.create("outcome"))
-  let assert Ok(first_two) = fields.pair(stage, provider)
-  let assert Ok(all_fields) = fields.pair(first_two, outcome)
   let metadata_fields =
-    fields.imap(
-      all_fields,
-      fn(values) { Metadata(values.0.0, values.0.1, values.1) },
-      fn(value) { #(#(value.stage, value.provider), value.outcome) },
-    )
-  let assert Ok(event) =
-    sinal.event(
-      [atom.create("llm_wire"), atom.create("observation")],
-      fields.empty(),
-      metadata_fields,
-    )
-  event
+    fields.record({
+      use stage <- fields.parameter
+      use provider <- fields.parameter
+      use outcome <- fields.parameter
+      Metadata(stage:, provider:, outcome:)
+    })
+    |> fields.and(fields.string("stage"), fn(m: Metadata) { m.stage })
+    |> fields.and(fields.string("provider"), fn(m) { m.provider })
+    |> fields.and(fields.string("outcome"), fn(m) { m.outcome })
+    |> fields.build
+  sinal.event(["llm_wire", "observation"], fields.empty(), metadata_fields)
 }
 
 fn stage_name(stage: Stage) -> String {

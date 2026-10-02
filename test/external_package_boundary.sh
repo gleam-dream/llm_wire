@@ -61,7 +61,7 @@ import http_gun/config as http_config
 import http_gun/testing as http_testing
 import gleam/list
 import json/blueprint/codec
-import json/blueprint/runtime
+import json/blueprint/contract
 import llm_wire/config
 import llm_wire/provider/openai
 import llm_wire/session
@@ -88,9 +88,8 @@ pub fn prepares_schema_only_tool_and_structured_output() {
   let assert Ok(key) = types.api_key("consumer-key")
   let assert Ok(model) = types.model_id("consumer-model")
   let assert Ok(name) = types.tool_name("lookup")
-  let assert Ok(contract) =
-    runtime.from_codec(codec.field("query", codec.string()))
-  let tool = types.tool_from_contract(name, "Lookup", contract)
+  let assert Ok(lookup_contract) = contract.from_codec(query_codec())
+  let tool = types.tool_from_contract(name, "Lookup", lookup_contract)
   let request =
     types.new_request(model, [types.UserMessage("Find a result")])
     |> types.with_tools([tool])
@@ -101,9 +100,19 @@ pub fn prepares_schema_only_tool_and_structured_output() {
       settings,
       request,
       "answer",
-      codec.field("answer", codec.string()),
+      answer_codec(),
     )
   #(prepared, structured)
+}
+
+fn query_codec() -> codec.Codec(String) {
+  use query <- codec.field("query", codec.string(), fn(query) { query })
+  codec.success(query)
+}
+
+fn answer_codec() -> codec.Codec(String) {
+  use answer <- codec.field("answer", codec.string(), fn(answer) { answer })
+  codec.success(answer)
 }
 
 pub fn prepare_next_round(
@@ -140,10 +149,8 @@ pub fn scripts_a_provider_without_a_socket() {
   Nil
 }
 
-pub fn observe_with_sinal(
-  id: sinal.HandlerId,
-) -> Result(sinal.Attachment, sinal.AttachError) {
-  sinal.observe(id, telemetry.observation_event(), fn(_, _metadata) { Nil })
+pub fn observe_with_sinal() -> sinal.Attachment {
+  sinal.observe(telemetry.observation_event(), fn(_, _metadata) { Nil })
 }
 EOF
 (cd "$positive" && gleam check --target erlang)

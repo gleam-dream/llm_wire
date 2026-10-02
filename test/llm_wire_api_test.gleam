@@ -6,9 +6,8 @@ import gleam/option.{type Option, None, Some}
 import gleam/string
 import gleeunit/should
 import json/blueprint/codec
+import json/blueprint/contract
 import json/blueprint/number
-import json/blueprint/parser
-import json/blueprint/runtime
 import json/blueprint/value
 import llm_wire/internal/api
 import llm_wire/internal/schema
@@ -35,20 +34,21 @@ pub fn prepare_openai_request_uses_responses_wire_test() {
   body |> string.contains("\"input\"") |> should.be_true
   body |> string.contains("\"max_output_tokens\":256") |> should.be_true
   body |> string.contains("\"type\":\"function\"") |> should.be_true
-  let assert Ok(actual) =
-    parser.parse_value_from_string(parser.default_limits(), body)
+  let assert Ok(actual) = value.parse(body, value.default_limits())
   let assert Some(value.Array([value.Object(tool_fields), ..])) =
     object_field(actual, "tools")
   let assert Some(actual_schema) = find_field(tool_fields, "parameters")
   let assert Ok(contract_schema) =
-    codec.schema(codec.field("value", codec.int()))
+    codec.schema(tool_fixtures.one_field("value", codec.int()))
   actual_schema |> should.equal(codec.schema_value(contract_schema))
 }
 
 pub fn schema_only_tool_validates_json_without_a_native_codec_test() {
   let assert Ok(name) = types.tool_name("remote_lookup")
   let assert Ok(contract) =
-    runtime.from_schema(codec.FieldSchema("id", codec.IntSchema))
+    contract.from_schema(
+      codec.ObjectSchema([codec.PropertySchema("id", True, codec.IntSchema)]),
+    )
   let tool = types.tool_from_contract(name, "Lookup", contract)
   types.validate_tool_arguments(tool, 128, "{\"id\":7}") |> should.be_ok
   types.validate_tool_arguments(tool, 128, "{\"id\":\"seven\"}")
@@ -73,7 +73,7 @@ pub fn schema_only_tool_validates_json_without_a_native_codec_test() {
 pub fn schema_only_tool_rejects_unsupported_projection_test() {
   let assert Ok(name) = types.tool_name("unsupported")
   let assert Ok(contract) =
-    runtime.from_schema(codec.PairSchema(codec.IntSchema, codec.IntSchema))
+    contract.from_schema(codec.PairSchema(codec.IntSchema, codec.IntSchema))
   let tool = types.tool_from_contract(name, "Unsupported", contract)
   let assert Ok(key) = types.api_key("test-key")
   let assert Ok(endpoint) = types.endpoint("http://127.0.0.1:4321/v1")
@@ -118,7 +118,7 @@ pub fn structured_parser_uses_admitted_text_bound_test() {
       request,
       limited,
       "answer_shape",
-      codec.field("answer", codec.int()),
+      tool_fixtures.one_field("answer", codec.int()),
     )
   case api.decode_structured_output(prepared, raw) {
     Error(types.OutputValidationError(_)) -> should.be_true(True)
@@ -131,14 +131,15 @@ pub fn structured_parser_uses_admitted_text_bound_test() {
       request,
       allowed,
       "answer_shape",
-      codec.field("answer", codec.int()),
+      tool_fixtures.one_field("answer", codec.int()),
     )
   api.decode_structured_output(prepared_allowed, raw)
   |> should.equal(Ok(7))
 }
 
 pub fn codec_schema_json_encodes_exact_blueprint_field_schema_and_numeric_bounds_test() {
-  let assert Ok(field_schema) = codec.schema(codec.field("value", codec.int()))
+  let assert Ok(field_schema) =
+    codec.schema(tool_fixtures.one_field("value", codec.int()))
   let assert Ok(field_json) = schema.codec_schema_to_json(field_schema)
   field_json
   |> should.equal(
@@ -155,10 +156,10 @@ pub fn codec_schema_json_encodes_exact_blueprint_field_schema_and_numeric_bounds
     ]),
   )
 
-  let assert Ok(number_limits) = number.number_limits(64, 64, 64)
-  let assert Ok(minimum) = number.parse_number(number_limits, "1.5")
-  let assert Ok(maximum) = number.parse_number(number_limits, "2.5")
-  let assert Ok(range_codec) = codec.number_between(minimum, maximum)
+  let number_limits = number.limits(64, 64, 64)
+  let assert Ok(minimum) = number.parse("1.5", number_limits)
+  let assert Ok(maximum) = number.parse("2.5", number_limits)
+  let range_codec = codec.number_between(minimum, maximum)
   let assert Ok(range_schema) = codec.schema(range_codec)
   let assert Ok(range_json) = schema.codec_schema_to_json(range_schema)
   range_json
@@ -179,8 +180,12 @@ pub fn codec_schema_projection_matches_blueprint_for_recursive_forms_test() {
     codec.NumberSchema,
     codec.BoolSchema,
     codec.ListSchema(codec.NullableSchema(codec.StringSchema)),
-    codec.NullableSchema(codec.FieldSchema("label", codec.StringSchema)),
-    codec.FieldSchema("enabled", codec.BoolSchema),
+    codec.NullableSchema(
+      codec.ObjectSchema([
+        codec.PropertySchema("label", True, codec.StringSchema),
+      ]),
+    ),
+    codec.ObjectSchema([codec.PropertySchema("enabled", True, codec.BoolSchema)]),
     codec.ObjectSchema([
       codec.PropertySchema("name", True, codec.StringSchema),
       codec.PropertySchema(
@@ -195,10 +200,7 @@ pub fn codec_schema_projection_matches_blueprint_for_recursive_forms_test() {
   list.each(schemas, fn(contract_schema) {
     let assert Ok(projected_json) = schema.codec_schema_to_json(contract_schema)
     let assert Ok(projected_value) =
-      parser.parse_value_from_string(
-        parser.default_limits(),
-        json.to_string(projected_json),
-      )
+      value.parse(json.to_string(projected_json), value.default_limits())
     projected_value |> should.equal(codec.schema_value(contract_schema))
   })
 }
@@ -410,7 +412,7 @@ pub fn structured_output_is_admitted_and_decoded_with_native_codec_test() {
   let assert Ok(model) = types.model_id("gpt-test")
   let config = api.openai_adapter(key, endpoint, None, None)
   let request = types.new_request(model, [types.UserMessage("return a count")])
-  let output_codec = codec.object(codec.required("answer", codec.int()))
+  let output_codec = tool_fixtures.one_field("answer", codec.int())
   let assert Ok(prepared) =
     api.prepare_structured(
       config,
@@ -438,7 +440,10 @@ pub fn structured_output_rejects_optional_strict_schema_test() {
   let assert Ok(model) = types.model_id("gpt-test")
   let config = api.openai_adapter(key, endpoint, None, None)
   let request = types.new_request(model, [types.UserMessage("hello")])
-  let output_codec = codec.object(codec.optional("note", codec.string()))
+  let output_codec = {
+    use item <- codec.optional_field("note", codec.string(), fn(item) { item })
+    codec.success(item)
+  }
   case
     api.prepare_structured(
       config,
@@ -455,10 +460,9 @@ pub fn structured_output_rejects_optional_strict_schema_test() {
 
 pub fn lifecycle_observation_contains_only_fixed_metadata_test() {
   let event = telemetry.observation_event()
-  let assert Ok(handler_id) = sinal.handler_id("llm_wire_api_observation_test")
   let received = process.new_subject()
-  let assert Ok(attachment) =
-    sinal.observe(handler_id, event, fn(_measurements, metadata) {
+  let attachment =
+    sinal.observe(event, fn(_measurements, metadata) {
       process.send(received, metadata)
     })
 

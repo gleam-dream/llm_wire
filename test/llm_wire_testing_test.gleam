@@ -138,7 +138,7 @@ pub fn scripted_structured_output_is_validated_and_decoded_test() {
       testing.config(),
       request([types.UserMessage("Answer")]),
       "answer",
-      codec.field("answer", codec.int()),
+      tool_fixtures.one_field("answer", codec.int()),
     )
 
   let assert Ok(session.StructuredValue(42, "{\"answer\":42}", None)) =

@@ -11,7 +11,7 @@ import gleam/order.{Gt, Lt}
 import gleam/result
 import gleam/string
 import json/blueprint/codec
-import json/blueprint/runtime
+import json/blueprint/contract
 import llm_wire/internal/anthropic
 import llm_wire/internal/call_admission
 import llm_wire/internal/google
@@ -63,7 +63,7 @@ type StructuredFormat {
 pub opaque type PreparedStructuredCall(output) {
   PreparedStructuredCall(
     prepared: PreparedCall,
-    contract: runtime.RuntimeContract,
+    contract: contract.Contract,
     output_codec: codec.Codec(output),
     limits: types.Limits,
   )
@@ -213,14 +213,15 @@ pub fn prepare_structured(
             config,
             output_schema,
           ))
-          use contract <- result.try(case runtime.from_schema(output_schema) {
-            Ok(value) -> Ok(value)
-            Error(error) ->
-              Error(types.PreparationError(
+          use output_contract <- result.try(
+            contract.from_schema(output_schema)
+            |> result.map_error(fn(error) {
+              types.PreparationError(
                 "Structured output schema cannot be admitted: "
-                <> string.inspect(error),
-              ))
-          })
+                <> codec.describe_definition_error(error),
+              )
+            }),
+          )
           let format = StructuredFormat(name, schema_json)
           use prepared <- result.try(prepare_with_format(
             config,
@@ -228,7 +229,12 @@ pub fn prepare_structured(
             limits,
             Some(format),
           ))
-          Ok(PreparedStructuredCall(prepared, contract, output_codec, limits))
+          Ok(PreparedStructuredCall(
+            prepared,
+            output_contract,
+            output_codec,
+            limits,
+          ))
         }
       }
   }

@@ -16,6 +16,7 @@ import llm_wire/provider/openai
 import llm_wire/session
 import llm_wire/testing
 import llm_wire/types
+import tool_fixtures
 
 const secret = "sk-secret-redaction-0123456789"
 
@@ -116,7 +117,7 @@ pub fn prepared_calls_do_not_print_the_key_test() {
         settings,
         request(),
         "answer",
-        codec.field("answer", codec.int()),
+        tool_fixtures.one_field("answer", codec.int()),
       )
     hidden(structured)
   })

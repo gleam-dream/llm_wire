@@ -315,7 +315,7 @@ pub fn caller_supplied_structured_codec_and_correlated_calls_test() {
     Nil
   })
   let settings = local_config(server.port)
-  let output_codec = codec.object(codec.required("answer", codec.int()))
+  let output_codec = tool_fixtures.one_field("answer", codec.int())
   let assert Ok(prepared) =
     session.prepare_structured(
       settings,

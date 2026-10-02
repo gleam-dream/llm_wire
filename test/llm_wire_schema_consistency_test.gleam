@@ -3,7 +3,7 @@ import gleam/list
 import gleam/string
 import gleeunit/should
 import json/blueprint/codec
-import json/blueprint/runtime
+import json/blueprint/contract
 import llm_wire/config
 import llm_wire/internal/schema
 import llm_wire/provider/anthropic as anthropic_provider
@@ -11,20 +11,20 @@ import llm_wire/provider/google as google_provider
 import llm_wire/provider/openai as openai_provider
 import llm_wire/session
 import llm_wire/types
+import tool_fixtures
 
 fn single_field_schema() -> codec.Schema {
-  codec.FieldSchema("answer", codec.IntSchema)
-}
-
-fn equivalent_object_schema() -> codec.Schema {
   codec.ObjectSchema([codec.PropertySchema("answer", True, codec.IntSchema)])
 }
 
 pub fn described_tool_schema_survives_contract_and_provider_projection_test() {
   let input =
-    codec.field("city", codec.describe(codec.string(), "City to look up"))
+    tool_fixtures.one_field(
+      "city",
+      codec.describe(codec.string(), "City to look up"),
+    )
     |> codec.describe("Weather request")
-  let assert Ok(contract) = runtime.from_codec(input)
+  let assert Ok(contract) = contract.from_codec(input)
   let assert Ok(name) = types.tool_name("lookup_weather")
   let tool = types.tool_from_contract(name, "Look up weather", contract)
   let assert Ok(projected) = schema.provider_schema(types.tool_schema(tool))
@@ -72,16 +72,11 @@ pub fn described_tool_schema_survives_contract_and_provider_projection_test() {
   |> should.be_true
 }
 
-pub fn strict_admission_normalizes_field_and_object_schema_test() {
+pub fn strict_admission_projects_single_field_object_schema_test() {
   let assert Ok(field_json) = schema.strict_output_schema(single_field_schema())
-  let assert Ok(object_json) =
-    schema.strict_output_schema(equivalent_object_schema())
-  field_json |> should.equal(object_json)
   let assert Ok(google_field_json) =
     schema.google_strict_output_schema(single_field_schema())
-  let assert Ok(google_object_json) =
-    schema.google_strict_output_schema(equivalent_object_schema())
-  google_field_json |> should.equal(google_object_json)
+  google_field_json |> should.equal(field_json)
   field_json
   |> should.equal(
     json.object([
@@ -102,7 +97,7 @@ pub fn configured_structured_prepare_accepts_field_codec_for_all_providers_test(
   let assert Ok(key) = types.api_key("test-key")
   let assert Ok(model) = types.model_id("model-test")
   let request = types.new_request(model, [types.UserMessage("answer")])
-  let output_codec = codec.field("answer", codec.int())
+  let output_codec = tool_fixtures.one_field("answer", codec.int())
 
   let assert Ok(openai) =
     session.prepare_structured(
@@ -152,15 +147,24 @@ pub fn optional_field_is_not_converted_to_nullable_required_test() {
 
 pub fn unsupported_vocabulary_and_google_nullable_restriction_remain_test() {
   let unsupported =
-    codec.FieldSchema(
-      "answer",
-      codec.PairSchema(codec.IntSchema, codec.IntSchema),
-    )
+    codec.ObjectSchema([
+      codec.PropertySchema(
+        "answer",
+        True,
+        codec.PairSchema(codec.IntSchema, codec.IntSchema),
+      ),
+    ])
   schema.strict_output_schema(unsupported) |> should.be_error
   schema.google_strict_output_schema(unsupported) |> should.be_error
 
   let nullable =
-    codec.FieldSchema("answer", codec.NullableSchema(codec.IntSchema))
+    codec.ObjectSchema([
+      codec.PropertySchema(
+        "answer",
+        True,
+        codec.NullableSchema(codec.IntSchema),
+      ),
+    ])
   schema.strict_output_schema(nullable) |> should.be_ok
   case schema.google_strict_output_schema(nullable) {
     Error(types.PreparationError(message)) ->

@@ -100,7 +100,7 @@ fn workflow(client: http_gun.Client, settings: config.Config) -> Nil {
       settings,
       request,
       "answer",
-      codec.field("answer", codec.int()),
+      tool_fixtures.one_field("answer", codec.int()),
     )
   let assert Ok(session.StructuredValue(42, "{\"answer\":42}", _)) =
     session.run_structured(client, call)

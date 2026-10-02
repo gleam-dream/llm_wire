@@ -191,7 +191,7 @@ pub fn structured_calls_report_issues_test() {
       report(testing.config()),
       lookup_request(),
       "answer",
-      codec.field("answer", codec.string()),
+      tool_fixtures.one_field("answer", codec.string()),
     )
 
   let assert Ok(session.StructuredNeedsTools(turn, _)) =

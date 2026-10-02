@@ -38,7 +38,7 @@ pub fn buffered_open_failure_preserves_pretransport_retry_evidence_test() {
       settings,
       request(False),
       "answer",
-      codec.field("answer", codec.int()),
+      tool_fixtures.one_field("answer", codec.int()),
     )
   case session.run_structured(owned_http, structured) {
     Error(session.RunFailure(types.ConfigurationError(_), retry)) ->

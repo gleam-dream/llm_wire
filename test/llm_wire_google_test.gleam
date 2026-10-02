@@ -313,10 +313,7 @@ pub fn google_function_declaration_uses_json_schema_profile_and_stop_limit_test(
     types.tool_from_codec(
       tool_name,
       "Shape input",
-      codec.object(codec.required(
-        "values",
-        codec.nullable(codec.list(codec.int())),
-      )),
+      tool_fixtures.one_field("values", codec.nullable(codec.list(codec.int()))),
     )
   let request =
     types.new_request(model, [types.UserMessage("shape")])
@@ -344,16 +341,16 @@ pub fn google_function_declaration_uses_json_schema_profile_and_stop_limit_test(
     _ -> should.fail()
   }
 
-  let assert Ok(number_limits) = number.number_limits(64, 64, 64)
-  let assert Ok(minimum) = number.parse_number(number_limits, "1")
-  let assert Ok(maximum) = number.parse_number(number_limits, "2")
-  let assert Ok(range) = codec.number_between(minimum, maximum)
+  let number_limits = number.limits(64, 64, 64)
+  let assert Ok(minimum) = number.parse("1", number_limits)
+  let assert Ok(maximum) = number.parse("2", number_limits)
+  let range = codec.number_between(minimum, maximum)
   let assert Ok(range_name) = types.tool_name("range")
   let assert Ok(range_tool) =
     types.tool_from_codec(
       range_name,
       "Range input",
-      codec.field("value", range),
+      tool_fixtures.one_field("value", range),
     )
   let range_request =
     types.with_tools(types.new_request(model, [types.UserMessage("range")]), [
@@ -373,7 +370,7 @@ pub fn google_structured_output_accepts_valid_schema_and_rejects_nullable_test()
   let request = types.new_request(model, [types.UserMessage("Extract")])
 
   // Valid non-nullable schema: should succeed
-  let valid_codec = codec.object(codec.required("count", codec.int()))
+  let valid_codec = tool_fixtures.one_field("count", codec.int())
   case
     api.prepare_structured(
       config,
@@ -395,7 +392,7 @@ pub fn google_structured_output_accepts_valid_schema_and_rejects_nullable_test()
 
   // Nullable schema: Google Gemini responseSchema does not admit anyOf / nullables, must be rejected
   let invalid_codec =
-    codec.object(codec.required("maybe_note", codec.nullable(codec.string())))
+    tool_fixtures.one_field("maybe_note", codec.nullable(codec.string()))
   case
     api.prepare_structured(
       config,

@@ -109,10 +109,14 @@ import json/blueprint/codec
 import llm_wire/session
 import llm_wire/types
 
+fn echo_input() -> codec.Codec(String) {
+  use text <- codec.field("text", codec.string(), fn(text) { text })
+  codec.success(text)
+}
+
 let assert Ok(name) = types.tool_name("echo")
-let assert Ok(echo_tool) = types.tool_from_codec(
-  name, "Echo text", codec.field("text", codec.string()),
-)
+let assert Ok(echo_tool) =
+  types.tool_from_codec(name, "Echo text", echo_input())
 let request =
   types.new_request(model, [types.UserMessage("Echo hello")])
   |> types.with_tools([echo_tool])
@@ -146,8 +150,8 @@ OpenAI, Anthropic, and Google. It does not trim, and it returns a typed
 `types.ToolNameError` (`EmptyToolName`, `InvalidToolNameCharacter`, or
 `ToolNameTooLong`) instead of a provider error.
 
-`types.tool_from_contract(name, description, runtime_contract)` constructs a
-schema-only tool from an admitted Blueprint `runtime.RuntimeContract` without a
+`types.tool_from_contract(name, description, contract)` constructs a
+schema-only tool from an admitted Blueprint `contract.Contract` without a
 dummy native type. The selected provider projects its schema during
 preparation; unsupported variants fail there. Returned argument JSON receives
 the same bounded schema validation as a codec-backed tool.
@@ -184,14 +188,17 @@ codec for one request. Use `session.run_structured` for a decoded
 request and call `prepare_structured` with the desired codec again.
 
 ```gleam
-let output_codec = codec.field("answer", codec.int())
+let output_codec = {
+  use answer <- codec.field("answer", codec.int(), fn(answer) { answer })
+  codec.success(answer)
+}
 let assert Ok(prepared) =
   session.prepare_structured(settings, request, "answer_shape", output_codec)
 let result = session.run_structured(client, prepared)
 ```
 
 The structured schema must be a closed object with required properties.
-`codec.field` and an equivalent one-property `codec.object` are both admitted.
+A record built with `codec.field` is admitted.
 Optional fields remain optional and fail strict admission. Google additionally
 rejects nullable schemas. Unsupported provider schema forms fail during
 preparation. Structured-output JSON parsing uses the admitted text byte bound
@@ -374,9 +381,8 @@ import llm_wire/telemetry
 import sinal
 
 let received = process.new_subject()
-let assert Ok(handler_id) = sinal.handler_id("my_llm_observer")
-let assert Ok(attachment) =
-  sinal.observe(handler_id, telemetry.observation_event(), fn(_, metadata) {
+let attachment =
+  sinal.observe(telemetry.observation_event(), fn(_, metadata) {
     process.send(received, metadata)
   })
 // At application shutdown:
