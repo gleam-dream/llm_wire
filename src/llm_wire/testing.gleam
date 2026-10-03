@@ -25,16 +25,34 @@
 //// talks to a built-in provider, keep its configuration and lower the reply
 //// into that provider's wire with `events_for(message.OpenAI, reply)`,
 //// instead of writing the provider's server-sent events by hand.
+////
+//// A provider's failures are scripted the same way. `rate_limited`,
+//// `overloaded` and `http_status` write the error status and body of a
+//// built-in provider, `interrupted` cuts a reply off, `invalid_output` is a
+//// final text no schema accepts, and `with_retry_after` adds the
+//// `Retry-After` header to an exchange:
+////
+//// ```gleam
+//// let limited =
+////   testing.exchange(prepared, testing.rate_limited(message.OpenAI))
+////   |> testing.with_retry_after(duration.seconds(2))
+//// ```
+////
+//// A fake HTTP server serves a reply without unwrapping it:
+//// `http_response(message.OpenAI, reply)` is a `gleam/http` response. To feed
+//// code that takes a `llm_wire.Failure`, build one with `failure` instead of
+//// running a call.
 
 import gleam/bit_array
 import gleam/dynamic/decode
-import gleam/http/response
+import gleam/http/response.{type Response as HttpResponse}
 import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import gleam/time/duration.{type Duration}
 import http_gun/error as http_error
 import http_gun/testing as http_testing
 import llm_wire
@@ -87,6 +105,227 @@ pub fn refusal(reason: String) -> Reply {
 /// Output cut off at the token limit after `partial_text`.
 pub fn output_limited(partial_text: String) -> Reply {
   Events(list.append(text_events(partial_text), [end_event("length", "")]))
+}
+
+/// A final text that is not valid JSON. A plain call answers with it; a
+/// structured call fails with `error.InvalidOutput` carrying this text.
+pub fn invalid_output() -> Reply {
+  text("this is not valid structured output")
+}
+
+/// The connection drops after the reply's content, before its end, so the
+/// call fails with an `error.Http` transport failure and `sent: MaybeSent`.
+/// Apply it before `events_for`, which then also drops the provider's
+/// terminal events. A `Status` reply is unchanged.
+pub fn interrupted(reply: Reply) -> Reply {
+  case reply {
+    Events(chunks) -> Interrupted(drop_end(chunks))
+    Interrupted(_) | Status(..) -> reply
+  }
+}
+
+fn drop_end(chunks: List(String)) -> List(String) {
+  case list.reverse(chunks) {
+    [last, ..rest] ->
+      case string.starts_with(last, "event: end\n") {
+        True -> list.reverse(rest)
+        False -> chunks
+      }
+    [] -> chunks
+  }
+}
+
+/// HTTP 429 with `provider`'s rate-limit error body. The call fails with
+/// `error.Status(429, ..)`. Add the header with `with_retry_after`.
+pub fn rate_limited(provider: Provider) -> Reply {
+  http_status(provider, 429, "Rate limit reached")
+}
+
+/// `provider`'s overload error: HTTP 529 on Anthropic and 503 on every other
+/// wire.
+pub fn overloaded(provider: Provider) -> Reply {
+  case provider {
+    message.Anthropic -> http_status(provider, 529, "Overloaded")
+    _ -> http_status(provider, 503, "The service is overloaded")
+  }
+}
+
+/// An error `status` whose body carries `message`, shaped as `provider`
+/// shapes its errors (a `Custom` provider gets the bare message). The call
+/// fails with `error.Status(status, ..)`. `Status` sends any body as is.
+pub fn http_status(provider: Provider, status: Int, message: String) -> Reply {
+  Status(status, error_body(provider, status, message))
+}
+
+/// Answer with `Retry-After: seconds`, rounding a fraction up. Use it on an
+/// exchange of an error reply. An exchange that fails before a response is
+/// unchanged.
+pub fn with_retry_after(
+  exchange: http_testing.Exchange,
+  delay: Duration,
+) -> http_testing.Exchange {
+  case http_testing.reply(exchange) {
+    http_testing.Respond(http, ending) ->
+      http_testing.exchange(
+        http_testing.request(exchange),
+        http_testing.Respond(
+          response.set_header(http, "retry-after", whole_seconds(delay)),
+          ending,
+        ),
+      )
+    http_testing.Reject(_) -> exchange
+  }
+}
+
+fn whole_seconds(delay: Duration) -> String {
+  let #(seconds, nanos) = duration.to_seconds_and_nanoseconds(delay)
+  let seconds = case nanos > 0 {
+    True -> seconds + 1
+    False -> seconds
+  }
+  int.to_string(int.max(seconds, 0))
+}
+
+/// A `llm_wire.Failure` for `error` from `provider`, as a failed call would
+/// return it, without running a call. `sent` follows the error: `NotSent`
+/// for an HTTP Gun failure that sent nothing, `Completed` for a status, a
+/// provider error or invalid output, `MaybeSent` otherwise. There is no
+/// partial output and no usage; change a field with a record update:
+/// `llm_wire.Failure(..testing.failure(p, e), partial_output: True)`.
+pub fn failure(provider: Provider, error: error.Error) -> llm_wire.Failure {
+  llm_wire.Failure(
+    error:,
+    sent: case error {
+      error.Http(failure) ->
+        case http_error.evidence(failure) {
+          http_error.NotSent -> llm_wire.NotSent
+          http_error.MaybeSent -> llm_wire.MaybeSent
+        }
+      error.Status(..) | error.Provider(..) | error.InvalidOutput(..) ->
+        llm_wire.Completed
+      error.Protocol(_)
+      | error.LimitExceeded(..)
+      | error.DeadlineExceeded(_)
+      | error.Cancelled
+      | error.Stopped -> llm_wire.MaybeSent
+    },
+    partial_output: False,
+    provider:,
+    usage: None,
+  )
+}
+
+/// `reply` as `provider` would send it, for a fake HTTP server: a
+/// `gleam/http` response with the whole body in one string. Events get
+/// status 200 and `text/event-stream`; a `Status` reply keeps its status,
+/// and its body is `application/json` when it starts with `{`, else
+/// `text/plain`. A server that must cut an interrupted reply off does so
+/// itself; here it is the chunks so far.
+pub fn http_response(provider: Provider, reply: Reply) -> HttpResponse(String) {
+  case events_for(provider, reply) {
+    Events(chunks) | Interrupted(chunks) ->
+      response.new(200)
+      |> response.set_header("content-type", "text/event-stream")
+      |> response.set_body(string.concat(chunks))
+    Status(code, body) ->
+      response.new(code)
+      |> response.set_header(
+        "content-type",
+        case string.starts_with(body, "{") {
+          True -> "application/json"
+          False -> "text/plain"
+        },
+      )
+      |> response.set_body(body)
+  }
+}
+
+fn error_body(provider: Provider, status: Int, message: String) -> String {
+  case provider {
+    message.Custom(_) -> message
+    message.OpenAI ->
+      json.object([
+        #(
+          "error",
+          json.object([
+            #("message", json.string(message)),
+            #("type", json.string(openai_type(status))),
+            #("param", json.null()),
+            #("code", json.nullable(openai_code(status), json.string)),
+          ]),
+        ),
+      ])
+      |> json.to_string
+    message.Anthropic ->
+      json.object([
+        #("type", json.string("error")),
+        #(
+          "error",
+          json.object([
+            #("type", json.string(anthropic_type(status))),
+            #("message", json.string(message)),
+          ]),
+        ),
+      ])
+      |> json.to_string
+    message.Google ->
+      json.object([
+        #(
+          "error",
+          json.object([
+            #("code", json.int(status)),
+            #("message", json.string(message)),
+            #("status", json.string(google_status(status))),
+          ]),
+        ),
+      ])
+      |> json.to_string
+  }
+}
+
+fn openai_type(status: Int) -> String {
+  case status {
+    429 -> "requests"
+    status if status >= 500 -> "server_error"
+    _ -> "invalid_request_error"
+  }
+}
+
+fn openai_code(status: Int) -> Option(String) {
+  case status {
+    429 -> Some("rate_limit_exceeded")
+    401 -> Some("invalid_api_key")
+    _ -> None
+  }
+}
+
+fn anthropic_type(status: Int) -> String {
+  case status {
+    400 -> "invalid_request_error"
+    401 -> "authentication_error"
+    402 -> "billing_error"
+    403 -> "permission_error"
+    404 -> "not_found_error"
+    413 -> "request_too_large"
+    429 -> "rate_limit_error"
+    504 -> "timeout_error"
+    529 -> "overloaded_error"
+    _ -> "api_error"
+  }
+}
+
+fn google_status(status: Int) -> String {
+  case status {
+    400 -> "INVALID_ARGUMENT"
+    401 -> "UNAUTHENTICATED"
+    403 -> "PERMISSION_DENIED"
+    404 -> "NOT_FOUND"
+    429 -> "RESOURCE_EXHAUSTED"
+    500 -> "INTERNAL"
+    503 -> "UNAVAILABLE"
+    504 -> "DEADLINE_EXCEEDED"
+    _ -> "UNKNOWN"
+  }
 }
 
 /// Report `usage` with the reply. A `Status` reply is unchanged.

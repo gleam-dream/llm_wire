@@ -187,9 +187,23 @@ pub type RetryProspect {
   Unknown
 }
 
-/// The retry decision for a failure, and the delay the provider asked for.
+/// The retry decision for a failure and when to act on it. Read the fields
+/// by label; it may gain fields.
 pub type RetryAdvice {
-  RetryAdvice(prospect: RetryProspect, after: Option(Duration))
+  RetryAdvice(prospect: RetryProspect, delay: RetryDelay)
+}
+
+/// How long to wait before another attempt, and who chose the time. A
+/// scheduler that distinguishes the two can snooze for a provider's delay
+/// without counting an attempt, and back off otherwise.
+pub type RetryDelay {
+  /// The provider's own `Retry-After`, read from the response headers. LLM
+  /// Wire does not cap it: bound it before sleeping or scheduling. A date
+  /// in the past is a zero delay.
+  RetryAfter(Duration)
+  /// The provider named no delay: choose a backoff. Also the delay of a
+  /// failure that carried no response headers, such as a timeout.
+  Backoff
 }
 
 // --- configuration -----------------------------------------------------------
@@ -683,10 +697,18 @@ pub fn describe_failure(failure: Failure) -> String {
 /// and timeout failures may help; refused destinations, invalid requests
 /// and limits will not. HTTP statuses 408, 429, 500, 502, 503 and 504 (and
 /// Anthropic's 529) may help. Provider error codes are matched exactly per
-/// provider; prose is never parsed. `after` is the `Retry-After` delay the
-/// provider sent, in delay seconds or as an HTTP date. LLM Wire never
-/// retries by itself, and `MayHelp` does not make a `MaybeSent` call free:
-/// it may have spent tokens.
+/// provider; prose is never parsed. The `delay` is `RetryAfter` when the
+/// provider sent a readable `Retry-After` (delay seconds or an HTTP date)
+/// and `Backoff` otherwise. LLM Wire never retries by itself, and `MayHelp`
+/// does not make a `MaybeSent` call free: it may have spent tokens.
+///
+/// ```gleam
+/// case llm_wire.advise(failure) {
+///   RetryAdvice(MayHelp, delay: RetryAfter(wait)) -> snooze(wait)
+///   RetryAdvice(MayHelp, delay: Backoff) -> retry_with_backoff()
+///   RetryAdvice(_, _) -> give_up(llm_wire.describe_failure(failure))
+/// }
+/// ```
 pub fn advise(failure: Failure) -> RetryAdvice {
   case failure.error {
     error.Http(http_failure) ->
@@ -701,18 +723,25 @@ pub fn advise(failure: Failure) -> RetryAdvice {
           | http_error.Misuse
           | http_error.Playback -> WillNotHelpUnchanged
         },
-        retry_after.from_headers(http_error.headers(http_failure)),
+        delay(retry_after.from_headers(http_error.headers(http_failure))),
       )
     error.Status(code, _, after) ->
-      RetryAdvice(assess_status(failure.provider, code), after)
+      RetryAdvice(assess_status(failure.provider, code), delay(after))
     error.Provider(Some(code), _) ->
-      RetryAdvice(assess_code(failure.provider, code), None)
-    error.Provider(None, _) -> RetryAdvice(Unknown, None)
-    error.DeadlineExceeded(_) -> RetryAdvice(MayHelp, None)
+      RetryAdvice(assess_code(failure.provider, code), Backoff)
+    error.Provider(None, _) -> RetryAdvice(Unknown, Backoff)
+    error.DeadlineExceeded(_) -> RetryAdvice(MayHelp, Backoff)
     error.LimitExceeded(..) | error.Cancelled ->
-      RetryAdvice(WillNotHelpUnchanged, None)
+      RetryAdvice(WillNotHelpUnchanged, Backoff)
     error.Protocol(_) | error.InvalidOutput(..) | error.Stopped ->
-      RetryAdvice(Unknown, None)
+      RetryAdvice(Unknown, Backoff)
+  }
+}
+
+fn delay(after: Option(Duration)) -> RetryDelay {
+  case after {
+    Some(wait) -> RetryAfter(wait)
+    None -> Backoff
   }
 }
 

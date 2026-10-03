@@ -223,7 +223,7 @@ pub fn status_prospect_does_not_infer_policy_from_body_or_retry_hint_test() {
   ))
   |> should.equal(llm_wire.RetryAdvice(
     llm_wire.MayHelp,
-    Some(duration.seconds(60)),
+    llm_wire.RetryAfter(duration.seconds(60)),
   ))
   llm_wire.advise(failure(
     message.OpenAI,
@@ -231,7 +231,7 @@ pub fn status_prospect_does_not_infer_policy_from_body_or_retry_hint_test() {
   ))
   |> should.equal(llm_wire.RetryAdvice(
     llm_wire.WillNotHelpUnchanged,
-    Some(duration.seconds(1)),
+    llm_wire.RetryAfter(duration.seconds(1)),
   ))
 }
 
@@ -294,15 +294,20 @@ pub fn http_failures_are_classified_by_their_kind_test() {
     let assert error.Http(inner) = failed.error
     http_error.kind(inner) |> should.equal(kind)
     llm_wire.advise(failed)
-    |> should.equal(llm_wire.RetryAdvice(expected, None))
+    |> should.equal(llm_wire.RetryAdvice(expected, llm_wire.Backoff))
   })
 }
 
 fn after(headers: List(#(String, String))) -> Option(duration.Duration) {
-  llm_wire.advise(http_failure(
-    http_error.RequestFailed(http_error.PeerClosed),
-    headers,
-  )).after
+  case
+    llm_wire.advise(http_failure(
+      http_error.RequestFailed(http_error.PeerClosed),
+      headers,
+    )).delay
+  {
+    llm_wire.RetryAfter(wait) -> Some(wait)
+    llm_wire.Backoff -> None
+  }
 }
 
 pub fn http_failures_read_retry_after_in_seconds_test() {
@@ -329,4 +334,50 @@ pub fn http_failures_read_retry_after_as_an_http_date_test() {
 
 fn providers() -> List(message.Provider) {
   [message.OpenAI, message.Anthropic, message.Google, message.Custom("example")]
+}
+
+// --- typed delay ------------------------------------------------------------
+
+pub fn a_provider_delay_and_a_missing_one_are_different_advice_test() {
+  let with_header =
+    failure(message.OpenAI, error.Status(503, "", Some(duration.seconds(30))))
+  let without = failure(message.OpenAI, error.Status(503, "", None))
+  llm_wire.advise(with_header)
+  |> should.equal(llm_wire.RetryAdvice(
+    llm_wire.MayHelp,
+    llm_wire.RetryAfter(duration.seconds(30)),
+  ))
+  llm_wire.advise(without)
+  |> should.equal(llm_wire.RetryAdvice(llm_wire.MayHelp, llm_wire.Backoff))
+}
+
+pub fn failures_without_response_headers_advise_a_backoff_test() {
+  let cases = [
+    error.DeadlineExceeded(error.WholeCall),
+    error.Provider(Some("rate_limit_exceeded"), "slow down"),
+    error.Provider(None, "unknown"),
+    error.Cancelled,
+    error.Stopped,
+    error.Protocol("bad frame"),
+  ]
+  list.each(cases, fn(problem) {
+    llm_wire.advise(failure(message.OpenAI, problem)).delay
+    |> should.equal(llm_wire.Backoff)
+  })
+}
+
+/// grind's choice: snooze for a provider's delay, back off otherwise, and
+/// discard when a retry will not help.
+pub fn a_scheduler_chooses_snooze_backoff_or_discard_from_the_advice_test() {
+  let choose = fn(problem) {
+    case llm_wire.advise(failure(message.Anthropic, problem)) {
+      llm_wire.RetryAdvice(llm_wire.MayHelp, llm_wire.RetryAfter(_)) -> "snooze"
+      llm_wire.RetryAdvice(llm_wire.MayHelp, llm_wire.Backoff) -> "backoff"
+      llm_wire.RetryAdvice(_, _) -> "discard"
+    }
+  }
+  choose(error.Status(429, "", Some(duration.seconds(2))))
+  |> should.equal("snooze")
+  choose(error.Status(529, "", None)) |> should.equal("backoff")
+  choose(error.Status(401, "", None)) |> should.equal("discard")
 }

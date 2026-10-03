@@ -186,7 +186,8 @@ fn read(
 // --- retry advice ------------------------------------------------------------
 
 /// Run, and run again while `advise` says another attempt may help, waiting
-/// the provider's `Retry-After` or `fallback`. LLM Wire never retries itself.
+/// the provider's `Retry-After` or, when it named none, `fallback`. LLM Wire
+/// never retries itself.
 pub fn run_with_retries(
   client: http_gun.Client,
   prepared: llm_wire.Prepared(o),
@@ -196,9 +197,12 @@ pub fn run_with_retries(
   case llm_wire.run(client, prepared) {
     Error(failure) if attempts > 1 ->
       case llm_wire.advise(failure) {
-        llm_wire.RetryAdvice(prospect: llm_wire.MayHelp, after:) -> {
+        llm_wire.RetryAdvice(prospect: llm_wire.MayHelp, delay:) -> {
           process.sleep(
-            duration.to_milliseconds(option.unwrap(after, fallback)),
+            duration.to_milliseconds(case delay {
+              llm_wire.RetryAfter(wait) -> wait
+              llm_wire.Backoff -> fallback
+            }),
           )
           run_with_retries(client, prepared, attempts - 1, fallback)
         }
@@ -441,10 +445,12 @@ pub fn main() -> Nil {
   }
   let assert Ok("Once upon a time") = process.receive(deltas, 0)
 
-  // Retry advice: a 503 may help, and the second attempt answers.
+  // Retry advice: a rate limit with a Retry-After may help, and the second
+  // attempt answers.
   let assert Ok(llm_wire.Answer(text: "back", ..)) = {
     use client <- scripted([
-      testing.exchange(story, testing.Status(503, "busy")),
+      testing.exchange(story, testing.rate_limited(message.OpenAI))
+        |> testing.with_retry_after(duration.seconds(0)),
       testing.exchange(
         story,
         testing.events_for(message.OpenAI, testing.text("back")),

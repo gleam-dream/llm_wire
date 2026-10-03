@@ -340,7 +340,7 @@ pub fn status_failures_honor_retry_after_seconds_and_dates_test() {
   llm_wire.advise(failure)
   |> should.equal(llm_wire.RetryAdvice(
     llm_wire.MayHelp,
-    Some(duration.seconds(7)),
+    llm_wire.RetryAfter(duration.seconds(7)),
   ))
   let assert Error(dated) =
     respond(
@@ -353,7 +353,7 @@ pub fn status_failures_honor_retry_after_seconds_and_dates_test() {
   llm_wire.advise(dated)
   |> should.equal(llm_wire.RetryAdvice(
     llm_wire.MayHelp,
-    Some(duration.seconds(0)),
+    llm_wire.RetryAfter(duration.seconds(0)),
   ))
   let assert Error(bad_request) = respond(prepared, 400, [], "")
   llm_wire.advise(bad_request).prospect

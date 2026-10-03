@@ -2,6 +2,30 @@
 
 ## Unreleased — initial release candidate
 
+### Changed in wave 5
+
+[docs/migration-wave-5.md](docs/migration-wave-5.md) lists each item with
+its dependents.
+
+- **Breaking:** `RetryAdvice(prospect, after: Option(Duration))` became
+  `RetryAdvice(prospect, delay: RetryDelay)`. `RetryDelay` is
+  `RetryAfter(Duration)`, the provider's own `Retry-After`, or `Backoff`, no
+  provider delay. A scheduler that snoozes for a provider's delay and backs
+  off otherwise (grind) matches on it directly. `advise(failure).prospect` is
+  unchanged.
+- `llm_wire/testing` scripts a provider's failures: `rate_limited(provider)`,
+  `overloaded(provider)` and `http_status(provider, status, message)` write
+  the error status and body of OpenAI, Anthropic and Google; `interrupted`
+  cuts a reply off after its content; `invalid_output` is a final text no
+  schema accepts; `with_retry_after` adds `Retry-After` to an exchange.
+  `events_for` passes these replies through unchanged.
+- `testing.http_response(provider, reply)` is a `gleam/http` response for a
+  fake server, so no caller unwraps `Events`, `Interrupted` and `Status`.
+- `testing.failure(provider, error)` builds a `llm_wire.Failure` for tests
+  that do not run a call.
+- Existing `testing` items are unchanged: `Reply`, `events_for` and
+  `exchange` keep their types.
+
 ### Changed in the wave 4 API redesign
 
 Every public module changed; [docs/migration-wave-4.md](docs/migration-wave-4.md)

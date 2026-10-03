@@ -162,14 +162,20 @@ an `error.Error`; `error.Http` carries HTTP Gun's opaque `Failure`, so
 
 ```gleam
 case llm_wire.advise(failure) {
-  llm_wire.RetryAdvice(llm_wire.MayHelp, after:) -> schedule(after)
+  llm_wire.RetryAdvice(llm_wire.MayHelp, delay: llm_wire.RetryAfter(wait)) ->
+    snooze(wait)
+  llm_wire.RetryAdvice(llm_wire.MayHelp, delay: llm_wire.Backoff) ->
+    retry_with_backoff()
   _ -> give_up(llm_wire.describe_failure(failure))
 }
 ```
 
 `advise` decides from the failure alone: HTTP Gun failures by `Kind`, HTTP
-statuses, and provider error codes matched exactly per provider. `after` is
-the provider's `Retry-After`, in delay seconds or as an HTTP date.
+statuses, and provider error codes matched exactly per provider. The `delay`
+says who chose the wait. `RetryAfter(duration)` is the provider's own
+`Retry-After`, in delay seconds or as an HTTP date, so a scheduler can snooze
+without counting an attempt; LLM Wire does not cap it. `Backoff` means the
+provider named no delay and the caller's backoff applies.
 
 ## Own the HTTP client
 
@@ -212,9 +218,25 @@ let assert Ok(client) = http_testing.playback(script, http_config.default())
 ```
 
 `text`, `tool_calls`, `refusal`, `output_limited` and `with_usage` describe a
-reply. To test code configured for a built-in provider, keep its configuration
-and lower the reply into that wire with `testing.events_for(message.OpenAI,
-reply)`. HTTP Gun's cassettes record and replay the same exchanges.
+success. To test code configured for a built-in provider, keep its
+configuration and lower the reply into that wire with
+`testing.events_for(message.OpenAI, reply)`. The failures a provider produces
+are replies too: `rate_limited`, `overloaded` and `http_status` write the
+error status and body of a built-in provider, `interrupted` cuts a reply off
+after its content, and `invalid_output` is a final text that no schema
+accepts. `with_retry_after` adds the header to an exchange:
+
+```gleam
+let limited =
+  testing.exchange(prepared, testing.rate_limited(message.OpenAI))
+  |> testing.with_retry_after(duration.seconds(2))
+```
+
+A fake HTTP server serves a reply with `testing.http_response(provider,
+reply)`, a `gleam/http` response, without unwrapping `Events` or `Status`. To
+feed code that takes a `llm_wire.Failure`, build one with
+`testing.failure(provider, error)` instead of running a call. HTTP Gun's
+cassettes record and replay the same exchanges.
 
 ## Observe
 

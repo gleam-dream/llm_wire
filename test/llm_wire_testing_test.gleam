@@ -6,6 +6,7 @@ import gleam/bit_array
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import gleam/time/duration
 import gleeunit/should
 import http_gun/error as http_error
 import http_gun/testing as http_testing
@@ -376,4 +377,308 @@ pub fn events_for_long_openai_text_succeeds_test() {
       testing.text(long),
     )
   text |> should.equal(long)
+}
+
+// --- failure replies ----------------------------------------------------------
+
+fn hi() -> llm_wire.Request(String) {
+  request([llm_wire.user("Hi")])
+}
+
+fn run_in(
+  config: llm_wire.Config,
+  reply: testing.Reply,
+) -> Result(llm_wire.Outcome(String), llm_wire.Failure) {
+  let assert Ok(prepared) = llm_wire.prepare(config, hi())
+  http_test_helpers.run_reply(prepared, reply)
+}
+
+pub fn interrupted_is_a_transport_failure_after_the_content_in_every_wire_test() {
+  use #(provider, config) <- list.each(wires())
+  let reply =
+    testing.interrupted(testing.text("partial"))
+    |> testing.events_for(provider, _)
+  let assert testing.Interrupted([_, ..]) = reply
+  let assert Error(failure) = run_in(config, reply)
+  let assert error.Http(http_failure) = failure.error
+  http_error.reason(http_failure)
+  |> should.equal(http_error.RequestFailed(http_error.PeerClosed))
+  failure.sent |> should.equal(llm_wire.MaybeSent)
+  failure.provider |> should.equal(provider)
+  // The text had streamed before the connection dropped.
+  failure.partial_output |> should.be_true
+}
+
+pub fn interrupted_drops_the_scripted_end_and_keeps_the_rest_test() {
+  let assert testing.Events(whole) = testing.text("partial")
+  let assert testing.Interrupted(cut) =
+    testing.interrupted(testing.text("partial"))
+  list.length(cut) |> should.equal(list.length(whole) - 1)
+  list.take(whole, list.length(cut)) |> should.equal(cut)
+}
+
+pub fn interrupted_leaves_status_and_interrupted_replies_alone_test() {
+  testing.interrupted(testing.Status(503, "busy"))
+  |> should.equal(testing.Status(503, "busy"))
+  let cut = testing.Interrupted(["x"])
+  testing.interrupted(cut) |> should.equal(cut)
+}
+
+pub fn interrupted_on_the_scripted_wire_fails_the_call_test() {
+  let assert Error(failure) =
+    run_in(testing.config(), testing.interrupted(testing.text("partial")))
+  let assert error.Http(_) = failure.error
+  failure.partial_output |> should.be_true
+}
+
+pub fn rate_limited_is_a_429_status_in_every_wire_test() {
+  use #(provider, config) <- list.each(wires())
+  let assert Error(failure) = run_in(config, testing.rate_limited(provider))
+  let assert error.Status(429, body, None) = failure.error
+  string.contains(body, "Rate limit reached") |> should.be_true
+  failure.provider |> should.equal(provider)
+  failure.sent |> should.equal(llm_wire.Completed)
+  llm_wire.advise(failure)
+  |> should.equal(llm_wire.RetryAdvice(llm_wire.MayHelp, llm_wire.Backoff))
+}
+
+pub fn retry_after_makes_the_advice_a_provider_delay_in_every_wire_test() {
+  use #(provider, config) <- list.each(wires())
+  let assert Ok(prepared) = llm_wire.prepare(config, hi())
+  use client <- http_test_helpers.with_script([
+    testing.exchange(prepared, testing.rate_limited(provider))
+    |> testing.with_retry_after(duration.seconds(7)),
+  ])
+  let assert Error(failure) = llm_wire.run(client, prepared)
+  let assert error.Status(429, _, Some(delay)) = failure.error
+  delay |> should.equal(duration.seconds(7))
+  llm_wire.advise(failure)
+  |> should.equal(llm_wire.RetryAdvice(
+    llm_wire.MayHelp,
+    llm_wire.RetryAfter(duration.seconds(7)),
+  ))
+}
+
+fn retry_after_header(exchange: http_testing.Exchange) -> Result(String, Nil) {
+  let assert http_testing.Respond(http, _) = http_testing.reply(exchange)
+  list.key_find(http.headers, "retry-after")
+}
+
+pub fn retry_after_rounds_a_fraction_up_to_whole_seconds_test() {
+  let assert Ok(prepared) = llm_wire.prepare(testing.config(), hi())
+  let limited = testing.exchange(prepared, testing.rate_limited(message.OpenAI))
+  retry_after_header(limited) |> should.equal(Error(Nil))
+  retry_after_header(testing.with_retry_after(
+    limited,
+    duration.milliseconds(1500),
+  ))
+  |> should.equal(Ok("2"))
+  retry_after_header(testing.with_retry_after(limited, duration.seconds(0)))
+  |> should.equal(Ok("0"))
+}
+
+pub fn with_retry_after_keeps_the_request_and_the_body_test() {
+  let assert Ok(prepared) = llm_wire.prepare(testing.config(), hi())
+  let plain = testing.exchange(prepared, testing.Status(429, "slow"))
+  let delayed = testing.with_retry_after(plain, duration.seconds(3))
+  http_testing.request(delayed) |> should.equal(http_testing.request(plain))
+  let assert http_testing.Respond(before, _) = http_testing.reply(plain)
+  let assert http_testing.Respond(after, _) = http_testing.reply(delayed)
+  after.status |> should.equal(before.status)
+  after.body |> should.equal(before.body)
+}
+
+pub fn with_retry_after_leaves_an_exchange_without_a_response_alone_test() {
+  let assert Ok(prepared) = llm_wire.prepare(testing.config(), hi())
+  let request =
+    http_testing.request(testing.exchange(prepared, testing.text("")))
+  let rejected =
+    http_testing.exchange(
+      request,
+      http_testing.Reject(http_error.new(
+        http_error.RequestFailed(http_error.ConnectionReset),
+        http_error.NotSent,
+      )),
+    )
+  testing.with_retry_after(rejected, duration.seconds(1))
+  |> should.equal(rejected)
+}
+
+pub fn overloaded_uses_each_providers_status_test() {
+  let status = fn(provider) {
+    let assert testing.Status(code, _) = testing.overloaded(provider)
+    code
+  }
+  status(message.OpenAI) |> should.equal(503)
+  status(message.Google) |> should.equal(503)
+  status(message.Anthropic) |> should.equal(529)
+  status(message.Custom("acme")) |> should.equal(503)
+}
+
+pub fn overloaded_fails_with_a_status_that_may_help_in_every_wire_test() {
+  use #(provider, config) <- list.each(wires())
+  let assert Error(failure) = run_in(config, testing.overloaded(provider))
+  let assert error.Status(code, _, None) = failure.error
+  { code == 503 || code == 529 } |> should.be_true
+  llm_wire.advise(failure).prospect |> should.equal(llm_wire.MayHelp)
+}
+
+pub fn error_bodies_follow_each_providers_shape_test() {
+  let body = fn(reply) {
+    let assert testing.Status(_, body) = reply
+    body
+  }
+  body(testing.rate_limited(message.OpenAI))
+  |> string.contains("\"type\":\"requests\"")
+  |> should.be_true
+  body(testing.rate_limited(message.Anthropic))
+  |> string.contains("\"type\":\"rate_limit_error\"")
+  |> should.be_true
+  body(testing.overloaded(message.Anthropic))
+  |> string.contains("\"type\":\"overloaded_error\"")
+  |> should.be_true
+  body(testing.rate_limited(message.Google))
+  |> string.contains("\"status\":\"RESOURCE_EXHAUSTED\"")
+  |> should.be_true
+  body(testing.http_status(message.Google, 503, "down"))
+  |> string.contains("\"status\":\"UNAVAILABLE\"")
+  |> should.be_true
+  body(testing.http_status(message.Custom("acme"), 500, "boom"))
+  |> should.equal("boom")
+}
+
+pub fn http_status_fails_with_that_status_in_every_wire_test() {
+  use #(provider, config) <- list.each(wires())
+  let assert Error(failure) =
+    run_in(config, testing.http_status(provider, 400, "bad request"))
+  let assert error.Status(400, body, None) = failure.error
+  string.contains(body, "bad request") |> should.be_true
+  llm_wire.advise(failure).prospect
+  |> should.equal(llm_wire.WillNotHelpUnchanged)
+}
+
+pub fn events_for_leaves_a_failure_reply_as_built_test() {
+  use #(provider, _) <- list.each(wires())
+  let reply = testing.rate_limited(provider)
+  testing.events_for(provider, reply) |> should.equal(reply)
+}
+
+pub fn invalid_output_fails_a_structured_call_with_the_raw_text_test() {
+  use #(provider, config) <- list.each(wires())
+  let source =
+    hi()
+    |> llm_wire.with_output(
+      "answer",
+      tool_fixtures.one_field("answer", codec.int()),
+    )
+  let assert Ok(prepared) = llm_wire.prepare(config, source)
+  let assert Error(failure) =
+    http_test_helpers.run_reply(
+      prepared,
+      testing.events_for(provider, testing.invalid_output()),
+    )
+  let assert error.InvalidOutput(raw_output:, ..) = failure.error
+  raw_output |> should.equal("this is not valid structured output")
+  failure.sent |> should.equal(llm_wire.Completed)
+}
+
+pub fn invalid_output_is_an_ordinary_answer_to_a_plain_call_test() {
+  let assert Ok(llm_wire.Answer(..)) =
+    run_in(testing.config(), testing.invalid_output())
+}
+
+// --- fake servers ---------------------------------------------------------------
+
+pub fn http_response_sends_the_lowered_events_as_one_body_test() {
+  let http = testing.http_response(message.OpenAI, testing.text("hi"))
+  http.status |> should.equal(200)
+  http.headers
+  |> list.key_find("content-type")
+  |> should.equal(Ok("text/event-stream"))
+  let assert testing.Events(chunks) =
+    testing.events_for(message.OpenAI, testing.text("hi"))
+  http.body |> should.equal(string.concat(chunks))
+}
+
+pub fn http_response_keeps_a_failure_status_and_picks_its_content_type_test() {
+  let limited =
+    testing.http_response(
+      message.Anthropic,
+      testing.rate_limited(message.Anthropic),
+    )
+  limited.status |> should.equal(429)
+  limited.headers
+  |> list.key_find("content-type")
+  |> should.equal(Ok("application/json"))
+  let proxy =
+    testing.http_response(message.OpenAI, testing.Status(502, "bad gateway"))
+  proxy.status |> should.equal(502)
+  proxy.body |> should.equal("bad gateway")
+  proxy.headers
+  |> list.key_find("content-type")
+  |> should.equal(Ok("text/plain"))
+}
+
+pub fn http_response_of_an_interrupted_reply_has_the_chunks_so_far_test() {
+  let whole = testing.http_response(message.OpenAI, testing.text("partial"))
+  let cut =
+    testing.http_response(
+      message.OpenAI,
+      testing.interrupted(testing.text("partial")),
+    )
+  cut.status |> should.equal(200)
+  { string.length(cut.body) < string.length(whole.body) } |> should.be_true
+}
+
+// --- failure values ---------------------------------------------------------------
+
+pub fn failure_builds_what_a_failed_call_returns_test() {
+  let built = testing.failure(message.OpenAI, error.Status(429, "slow", None))
+  built.provider |> should.equal(message.OpenAI)
+  built.sent |> should.equal(llm_wire.Completed)
+  built.partial_output |> should.be_false
+  built.usage |> should.equal(None)
+  // A scripted call returns the same evidence.
+  let assert Error(returned) =
+    run_in(
+      openai.new("k") |> openai.config,
+      testing.http_status(message.OpenAI, 429, "slow"),
+    )
+  returned.sent |> should.equal(built.sent)
+  returned.provider |> should.equal(built.provider)
+  returned.usage |> should.equal(built.usage)
+  returned.partial_output |> should.equal(built.partial_output)
+}
+
+pub fn failure_follows_the_error_for_what_was_sent_test() {
+  let sent = fn(problem) { testing.failure(message.Google, problem).sent }
+  sent(error.Provider(Some("INTERNAL"), "x"))
+  |> should.equal(llm_wire.Completed)
+  sent(error.Cancelled) |> should.equal(llm_wire.MaybeSent)
+  sent(error.DeadlineExceeded(error.IdleGap))
+  |> should.equal(llm_wire.MaybeSent)
+  sent(
+    error.Http(http_error.new(
+      http_error.RequestFailed(http_error.ConnectionReset),
+      http_error.NotSent,
+    )),
+  )
+  |> should.equal(llm_wire.NotSent)
+  sent(
+    error.Http(http_error.new(
+      http_error.RequestFailed(http_error.ConnectionReset),
+      http_error.MaybeSent,
+    )),
+  )
+  |> should.equal(llm_wire.MaybeSent)
+}
+
+pub fn a_built_failure_feeds_advise_and_describe_test() {
+  let built = testing.failure(message.Anthropic, error.Status(529, "", None))
+  llm_wire.advise(built).prospect |> should.equal(llm_wire.MayHelp)
+  llm_wire.describe_failure(built)
+  |> string.contains("anthropic")
+  |> should.be_true
+  let partial = llm_wire.Failure(..built, partial_output: True)
+  partial.partial_output |> should.be_true
 }
