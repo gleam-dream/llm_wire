@@ -28,9 +28,10 @@ library revision. The authoritative wire contract is
 
 Inject pure provider `config.Config` and an application-owned `http_gun.Client`
 into the same agent flow. Start/supervise the client once and pass it to `run`,
-`stream` and their structured counterparts. Set its deadline ceiling to cover
-Fabric's longest LLM budget. Put trust and connection policy at client startup;
-remove the old pool/CA/idle-eviction settings.
+`stream` and their structured counterparts. Each LLM call's budget replaces the
+client's request timeout, so no raised ceiling is needed. Put trust and
+connection policy at client startup; remove the old pool/CA/idle-eviction
+settings.
 
 Use HTTP Gun script clients or load its current cassette schema and start strict
 playback. `llm_wire/testing` now supplies pure semantic replies and

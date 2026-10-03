@@ -14,13 +14,13 @@ but are not invoked here, preventing an accidental provider call. Real local
 recording of text, tool-result and structured workflows is exercised by
 `test/llm_wire_recording_test.gleam` in the parent package.
 
-The application owns the shared client's entire lifetime. `http_child` uses
-`http_gun.child` and `supervision.map_data` to publish each newly started client;
-the application must route calls to that capability after a restart. Requests
+The application owns the shared client's entire lifetime. `http_child`
+supervises it under a name with `http_gun.supervised`, and `http_client` reaches
+it with `http_gun.named`, so the handle stays valid across restarts. Requests
 remain independently prepared, and a single call never stops the client.
 
 The twelve scripted exchanges consist of one buffered call, one early-closed
 stream and ten simultaneous calls. Their replies are identical deliberately.
 For distinct replies to identical concurrent requests, coordinate admission
-order explicitly. The example sets a 120-second client ceiling so HTTP Gun's
-default 30-second ceiling does not truncate the default 60-second LLM budget.
+order explicitly. The example uses HTTP Gun's default configuration: each LLM
+call's own budget replaces the client's request timeout.

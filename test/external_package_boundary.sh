@@ -143,9 +143,9 @@ pub fn scripts_a_provider_without_a_socket() {
   let request = types.new_request(model, [types.UserMessage("hello")])
   let settings = testing.config() |> config.with_tool_call_checks(types.ReportInvalidToolCalls)
   let assert Ok(prepared) = session.prepare(settings, request)
-  let assert Ok(client) = http_testing.start(http_config.default(), [testing.exchange(prepared, testing.text("scripted"))])
+  let assert Ok(client) = http_testing.playback(http_testing.script([testing.exchange(prepared, testing.text("scripted"))]), http_config.default())
   let assert Ok(session.RunText("scripted", _)) = session.run(client, prepared)
-  let assert Ok(Nil) = http_gun.stop(client)
+  http_gun.stop(client)
   Nil
 }
 

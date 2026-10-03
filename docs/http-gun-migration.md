@@ -26,11 +26,12 @@ The caller owns history, tool execution, retry decisions and persistence.
 ## Session lifetime
 
 Each execution creates one absolute deadline before reducer/owner startup.
-Preparation does not start time. The same deadline enters HTTP Gun request
-options and the semantic owner; admission, connection, headers and body consume
-it. A spent deadline remains zero. No public caller-supplied absolute deadline
-is introduced. HTTP Gun additionally applies its client ceiling; configure it
-above the longest LLM budget (defaults differ: HTTP 30s, LLM 60s).
+Preparation does not start time. The same deadline enters an HTTP Gun
+`with_deadline` view and the semantic owner; admission, connection, headers and
+body consume it. A spent deadline remains zero. No public caller-supplied
+absolute deadline is introduced. The view's deadline replaces the client's
+request timeout, and the view lifts the client's idle timeout, so neither HTTP
+Gun default cuts LLM Wire's overall, idle or first-token waits.
 
 The semantic owner creates one linked Gleam worker. That worker creates its
 cancellation token and keeps the `with_token` scope open throughout HTTP opening,
@@ -75,16 +76,15 @@ the typed reason in `types.HttpFailure`, except the two semantic translations:
 | `DeadlineExceeded`                    | `DeadlineExceeded(OverallDeadline)`                                          |
 | `Cancelled`                           | `CancelledLocally`                                                           |
 | Any other typed `Reason`              | `HttpFailure(reason)`; retry prospect stays unknown                          |
-| `NotSubmitted`                        | Initial classification `NoRequestSent`                                       |
-| `MayHaveBeenSent`                     | Initial classification `RequestMayHaveReachedProvider`                       |
+| `NotSent`                             | Initial classification `NoRequestSent`                                       |
+| `MaybeSent`                           | Initial classification `RequestMayHaveReachedProvider`                       |
 | Independently observed response bytes | OR into `response_bytes_observed`; never erase them on a later failure       |
 | Reducer or admitted semantic progress | OR into `semantic_progress_observed`; retain stronger reducer classification |
 | Existing `EffectUnknown`              | Remains dominant                                                             |
 
-HTTP evidence is one input, merged monotonically with reducer evidence. A stopped
-client can conservatively return `MayHaveBeenSent` at HTTP Gun's call boundary;
-LLM Wire does not reinterpret that as pre-submission. Request-size rejection
-provides the tested `NotSubmitted` case. A local reset never produces
+HTTP evidence is one input, merged monotonically with reducer evidence; LLM Wire
+never reinterprets it. A stopped client and a request-size rejection provide
+the tested `NotSent` cases. A local reset never produces
 `ProviderCancellationConfirmed`.
 
 LLM Wire interprets status and response headers. Only status 200 with

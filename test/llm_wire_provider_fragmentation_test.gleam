@@ -5,7 +5,7 @@ import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import gleeunit/should
-import http_gun/fixture
+import http_gun/testing as http_testing
 import http_test_helpers
 import llm_wire/config
 import llm_wire/internal/anthropic
@@ -157,12 +157,12 @@ fn check_session_fragments(raw: String, provider: types.Provider) -> Nil {
   let chunks =
     raw |> string.replace("\n", "\r\n") |> bit_array.from_string |> bytes([])
   let reply =
-    fixture.Respond(
+    http_testing.Respond(
       response.Response(200, [#("content-type", "text/event-stream")], chunks),
-      fixture.Complete([]),
+      http_testing.Finished([]),
     )
   use client <- http_test_helpers.with_script([
-    fixture.Exchange(exchange.request, reply),
+    http_testing.exchange(http_testing.request(exchange), reply),
   ])
   let assert Ok(session.RunText("oé🦊", _)) = session.run(client, call)
   Nil

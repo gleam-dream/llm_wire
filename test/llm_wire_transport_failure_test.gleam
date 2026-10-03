@@ -4,24 +4,17 @@ import llm_wire/internal/http_client
 import llm_wire/types
 
 pub fn http_deadline_keeps_deadline_classification_test() {
-  http_client.wire_error(error.Failure(
-    error.DeadlineExceeded,
-    error.MayHaveBeenSent,
-  ))
+  http_client.wire_error(error.new(error.DeadlineExceeded, error.MaybeSent))
   |> should.equal(types.DeadlineExceeded(types.OverallDeadline))
 }
 
 pub fn diagnostic_text_does_not_determine_failure_category_test() {
-  http_client.wire_error(error.Failure(
-    error.InvalidConfig("overall deadline exceeded"),
-    error.NotSubmitted,
-  ))
-  |> should.equal(
-    types.HttpFailure(error.InvalidConfig("overall deadline exceeded")),
-  )
-  http_client.wire_error(error.Failure(
+  // Another timeout is not the call's overall deadline.
+  http_client.wire_error(error.new(error.IdleTimeout, error.NotSent))
+  |> should.equal(types.HttpFailure(error.IdleTimeout))
+  http_client.wire_error(error.new(
     error.ConnectionFailed(error.ConnectionRefused),
-    error.NotSubmitted,
+    error.NotSent,
   ))
   |> should.equal(
     types.HttpFailure(error.ConnectionFailed(error.ConnectionRefused)),

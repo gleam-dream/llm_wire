@@ -16,7 +16,7 @@ import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import http_gun/error as http_error
-import http_gun/fixture
+import http_gun/testing as http_testing
 import llm_wire/config
 import llm_wire/provider
 import llm_wire/session
@@ -336,31 +336,31 @@ fn parse(
 pub fn exchange(
   prepared: session.PreparedCall,
   reply: Reply,
-) -> fixture.Exchange {
+) -> http_testing.Exchange {
   session.fixture_exchange(prepared, http_reply(reply))
 }
 
 pub fn structured_exchange(
   prepared: session.PreparedStructuredCall(output),
   reply: Reply,
-) -> fixture.Exchange {
+) -> http_testing.Exchange {
   session.structured_fixture_exchange(prepared, http_reply(reply))
 }
 
-pub fn http_reply(reply: Reply) -> fixture.Reply {
+pub fn http_reply(reply: Reply) -> http_testing.Reply {
   let #(status, chunks, ending) = case reply {
-    Events(chunks) -> #(200, chunks, fixture.Complete([]))
+    Events(chunks) -> #(200, chunks, http_testing.Finished([]))
     Interrupted(chunks) -> #(
       200,
       chunks,
-      fixture.Failed(http_error.Failure(
+      http_testing.Aborted(http_error.new(
         http_error.RequestFailed(http_error.PeerClosed),
-        http_error.MayHaveBeenSent,
+        http_error.MaybeSent,
       )),
     )
-    Status(code, text) -> #(code, [text], fixture.Complete([]))
+    Status(code, text) -> #(code, [text], http_testing.Finished([]))
   }
-  fixture.Respond(
+  http_testing.Respond(
     response.new(status)
       |> response.set_header("content-type", "text/event-stream")
       |> response.set_body(list.map(chunks, bit_array.from_string)),

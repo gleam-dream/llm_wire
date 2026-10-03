@@ -11,7 +11,7 @@ import gleam/list
 import gleam/option.{Some}
 import gleam/string
 import gleeunit/should
-import http_gun/fixture
+import http_gun/testing as http_testing
 import http_test_helpers
 import llm_wire/config
 import llm_wire/provider/google as google_options
@@ -67,16 +67,16 @@ fn run_raw(
   let assert Ok(call) = session.prepare(settings, request(tools))
   let exchange = testing.exchange(call, testing.text("unused"))
   let reply =
-    fixture.Respond(
+    http_testing.Respond(
       response.Response(
         200,
         [#("content-type", "text/event-stream")],
         chunks(raw, 1400),
       ),
-      fixture.Complete([]),
+      http_testing.Finished([]),
     )
   use client <- http_test_helpers.with_script([
-    fixture.Exchange(exchange.request, reply),
+    http_testing.exchange(http_testing.request(exchange), reply),
   ])
   session.run(client, call)
 }

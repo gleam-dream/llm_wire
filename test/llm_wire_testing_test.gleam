@@ -206,7 +206,7 @@ pub fn exhausted_script_fails_without_a_reply_test() {
     session.prepare(testing.config(), request([types.UserMessage("Hi")]))
 
   let assert Error(session.RunFailure(
-    types.HttpFailure(http_error.FixtureExhausted),
+    types.HttpFailure(http_error.PlaybackExhausted),
     evidence,
   )) = session.run(client, prepared)
   evidence |> should.equal(types.initial_retry_evidence())

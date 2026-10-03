@@ -788,10 +788,10 @@ pub fn real_http_disconnect_mid_stream_test() {
 
 pub fn gun_tls_stream_with_pinned_ca_test() {
   use owned_http <- http_test_helpers.with_settings(
-    http_config.Config(
-      ..http_test_helpers.loopback_config(),
-      trust: http_config.CustomCa("test/fixtures/llm-wire-test-ca.crt"),
-    ),
+    http_test_helpers.loopback_config()
+    |> http_config.with_trust(http_config.CustomCa(
+      "test/fixtures/llm-wire-test-ca.crt",
+    )),
   )
   let port_subject = process.new_subject()
   let payload =
@@ -843,10 +843,10 @@ pub fn gun_tls_stream_with_pinned_ca_test() {
 
 pub fn gun_tls_rejects_hostname_mismatch_test() {
   use owned_http <- http_test_helpers.with_settings(
-    http_config.Config(
-      ..http_test_helpers.loopback_config(),
-      trust: http_config.CustomCa("test/fixtures/llm-wire-test-ca.crt"),
-    ),
+    http_test_helpers.loopback_config()
+    |> http_config.with_trust(http_config.CustomCa(
+      "test/fixtures/llm-wire-test-ca.crt",
+    )),
   )
   let port_subject = process.new_subject()
   let handler = fn(_request) {

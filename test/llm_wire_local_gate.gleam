@@ -150,7 +150,7 @@ fn batch(client: http_gun.Client, call: session.PreparedCall, n: Int) -> Nil {
     |> list.first
     |> result.unwrap(0)
   }
-  let assert Ok(stats) = http_gun.snapshot(client)
+  let assert Ok(stats) = http_gun.stats(client)
   io.println(
     json.to_string(
       json.object([
@@ -179,21 +179,16 @@ pub fn main() -> Nil {
   let assert Ok(port) = simplifile.read("build/http-gun-local-port")
   let assert Ok(endpoint) =
     types.endpoint("https://127.0.0.1:" <> string.trim(port))
-  let defaults = http_test_helpers.loopback_config()
   let policy =
-    http_config.Config(
-      ..defaults,
-      protocol: http_config.RequireHttp2,
-      trust: http_config.CustomCa("test/fixtures/llm-wire-test-ca.crt"),
-      deadline_ms: 120_000,
-      limits: http_config.Limits(
-        ..defaults.limits,
-        connections: 1,
-        per_origin: 1,
-        active: 2048,
-        waiting: 2048,
-      ),
-    )
+    http_test_helpers.loopback_config()
+    |> http_config.with_protocol(http_config.RequireHttp2)
+    |> http_config.with_trust(http_config.CustomCa(
+      "test/fixtures/llm-wire-test-ca.crt",
+    ))
+    |> http_config.with_max_connections(1)
+    |> http_config.with_max_connections_per_origin(1)
+    |> http_config.with_max_open_bodies(2048)
+    |> http_config.with_max_queued_requests(2048)
   let assert Ok(client) = http_gun.start(policy)
   let small = prepared(endpoint, "/small.sse")
   let long = prepared(endpoint, "/long.sse")
@@ -213,6 +208,6 @@ pub fn main() -> Nil {
   list.each([1, 10, 100, 1000], fn(n) { batch(client, small, n) })
   let assert Ok(types.ConsumerClosed) = session.close(slow)
   let assert Ok(session.RunText("hello", _)) = session.run(client, small)
-  let assert Ok(Nil) = http_gun.stop(client)
+  http_gun.stop(client)
   Nil
 }

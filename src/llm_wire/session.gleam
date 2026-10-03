@@ -38,7 +38,7 @@
 import gleam/option.{type Option}
 import gleam/result
 import http_gun
-import http_gun/fixture
+import http_gun/testing as http_testing
 import json/blueprint/codec
 import llm_wire/config
 import llm_wire/internal/api
@@ -373,20 +373,18 @@ pub fn structured_request_json(
 @internal
 pub fn fixture_exchange(
   prepared: PreparedCall,
-  reply: fixture.Reply,
-) -> fixture.Exchange {
-  fixture.Exchange(fixture.sanitise(api.http_request(prepared.call)), reply)
+  reply: http_testing.Reply,
+) -> http_testing.Exchange {
+  http_testing.exchange(api.http_request(prepared.call), reply)
 }
 
 @internal
 pub fn structured_fixture_exchange(
   prepared: PreparedStructuredCall(output),
-  reply: fixture.Reply,
-) -> fixture.Exchange {
-  fixture.Exchange(
-    fixture.sanitise(
-      api.http_request(api.structured_prepared_call(prepared.call)),
-    ),
+  reply: http_testing.Reply,
+) -> http_testing.Exchange {
+  http_testing.exchange(
+    api.http_request(api.structured_prepared_call(prepared.call)),
     reply,
   )
 }

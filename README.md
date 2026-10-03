@@ -31,8 +31,8 @@ import llm_wire/session
 import llm_wire/types
 
 // Start once in application startup; share across independent calls.
-// This ceiling must cover the longest configured LLM overall budget.
-let http_policy = http_config.Config(..http_config.default(), deadline_ms: 120_000)
+// Each call's own budget replaces the client's request timeout.
+let http_policy = http_config.default()
 let assert Ok(client) = http_gun.start(http_policy)
 let assert Ok(key) = types.api_key("sk-...")
 let assert Ok(model) = types.model_id("gpt-...")
@@ -68,9 +68,9 @@ events repeat the whole answer on one `data:` line.
 `provider_metadata_bytes_limit` bounds retained call IDs, tool names, provider
 IDs/state, response IDs, and each response's opaque provider data. Preparation validates all limit and deadline fields before transport.
 
-HTTP policy belongs to client startup. To use a private CA, set
-`trust: http_config.CustomCa("certs/local-ca.pem")` in the HTTP policy before
-`http_gun.start`. Verification includes the certificate and hostname. LLM Wire
+HTTP policy belongs to client startup. To use a private CA, add
+`http_config.with_trust(http_config.CustomCa("certs/local-ca.pem"))` to the HTTP
+policy before `http_gun.start`. Verification includes the certificate and hostname. LLM Wire
 still rejects remote plaintext endpoints; HTTP is admitted only for loopback.
 The old per-call CA restriction and pool settings are removed. There is no
 replacement for the prerelease idle-connection eviction setting.
@@ -83,12 +83,9 @@ call fails before submission with `HttpFailure(DestinationRejected)`:
 ```gleam
 import http_gun/destination
 
-let defaults = http_config.default()
-let local_policy = http_config.Config(
-  ..defaults,
-  deadline_ms: 120_000,
-  destination: destination.Policy(..defaults.destination, allow_loopback: True),
-)
+let local_policy =
+  http_config.default()
+  |> http_config.with_destination(destination.default() |> destination.allow_loopback)
 let assert Ok(local_client) = http_gun.start(local_policy)
 ```
 
@@ -257,15 +254,17 @@ Prepare remains pure. Pass an explicitly started `http_gun.Client` to `run`,
 `stream`, `run_structured`, or `stream_structured`. Calls neither start a hidden
 pool nor stop the shared client. Stop it with `http_gun.stop(client)` at
 application shutdown. Client shutdown unblocks outstanding calls with typed
-failures. Use `http_gun.child(policy)` under an application supervisor and publish
-the returned capability through your application registry; a restart supplies a
-new client. The [compiled consumer](examples/consumer/src/llm_wire_consumer.gleam)
+failures. Use `http_gun.supervised(policy, name)` under an application supervisor
+and reach the client with `http_gun.named(name)`; the handle stays valid across
+restarts. The [compiled consumer](examples/consumer/src/llm_wire_consumer.gleam)
 shows the child specification, concurrent independent calls, and early close.
 
 Each execution starts one absolute overall budget. Admission, connection,
 headers and body spend that same budget. Preparing early spends none of it.
-HTTP Gun applies the earlier of this deadline and its client ceiling (30 seconds
-by default, versus LLM Wire's 60 seconds). Raise the ceiling at startup as shown.
+The call sends through an HTTP Gun view whose deadline is this budget and
+replaces the client's request timeout, so HTTP Gun's 30-second default no
+longer cuts it. The view also lifts the client's idle timeout: LLM Wire's own
+idle timer decides how long a first token or a gap between events may take.
 Consumer `ReadTimeout` leaves the stream usable. Semantic idle is independent:
 keepalive and non-progress bytes do not reset it. A provider terminal returns
 without waiting for HTTP EOF, and closes locally without draining.
@@ -320,10 +319,10 @@ import http_gun/testing as http_testing
 import llm_wire/testing
 
 let assert Ok(call) = session.prepare(testing.config(), request)
-let exchanges = [testing.exchange(call, testing.text("hello"))]
-let assert Ok(client) = http_testing.start(http_policy, exchanges)
+let script = http_testing.script([testing.exchange(call, testing.text("hello"))])
+let assert Ok(client) = http_testing.playback(script, http_policy)
 let result = session.run(client, call)
-let _ = http_gun.stop(client)
+http_gun.stop(client)
 ```
 
 `text`, `tool_calls`, `refusal`, `output_limited`, and `with_usage` build semantic
@@ -333,30 +332,29 @@ status response. For structured calls use `testing.structured_exchange`.
 There is no retained request-history process. Inspect the finite expected
 exchanges your test already owns; no additional inspection queue accumulates.
 
-HTTP Gun owns the binary-capable fixture schema and live recorder:
+HTTP Gun owns the binary-capable cassette schema and live recorder:
 
 ```gleam
 import http_gun/cassette
-import http_gun/recording
 
 // Offline startup; load errors are explicit and there is no network fallback.
-let assert Ok(tape) = cassette.load("fixtures/lookup.json", 8_388_608)
-let assert Ok(client) = cassette.playback(tape, http_policy)
+let assert Ok(script) = cassette.load("fixtures/lookup.json", 8_388_608)
+let assert Ok(client) = http_testing.playback(script, http_policy)
 // Run your ordinary application flow(client, ...) and stop at shutdown.
 
 // Recording startup opens real HTTP when the application executes calls.
 let assert Ok(recorded) = cassette.record(
   http_policy, "fixtures/new.json",
-  recording.Options(8_388_608, recording.RefuseExisting),
+  cassette.options() |> cassette.with_max_bytes(8_388_608),
 )
 // Run the same flow(recorded.client, ...), consuming or closing every stream.
-let captured = recording.finish_wait(recorded.recording, 5000)
-let _ = http_gun.stop(recorded.client)
+let captured = cassette.finish(recorded.recording, 5000)
+http_gun.stop(recorded.client)
 ```
 
 Capture/persistence failure is separate from HTTP and semantic outcomes.
-`finish_wait` waits for consumed/closed requests and never drains them. Choose
-`ReplaceExisting` explicitly when replacing a fixture. Capture is bounded;
+`cassette.finish` waits for consumed/closed requests and never drains them. Add
+`cassette.replace_existing` explicitly when replacing a fixture. Capture is bounded;
 publication has atomic visibility, without a power-loss durability promise.
 
 Matching preserves method, target, query, body bytes and significant headers.

@@ -9,9 +9,7 @@ import gleeunit/should
 import http_gun
 import http_gun/cassette
 import http_gun/config as http_config
-import http_gun/error as http_error
-import http_gun/fixture
-import http_gun/recording
+import http_gun/testing as http_testing
 import http_test_helpers
 import json/blueprint/codec
 import llm_wire/config
@@ -58,7 +56,7 @@ fn serve(
     let assert Ok(socket) = fake_server.accept_connection(server, 5000)
     let assert Ok(_) = fake_server.read_request_headers(socket, 5000)
     process.send(seen, Nil)
-    let assert fixture.Respond(response, _) = testing.http_reply(reply)
+    let assert http_testing.Respond(response, _) = testing.http_reply(reply)
     let _ =
       fake_server.send_sse_stream(
         socket,
@@ -117,20 +115,20 @@ pub fn live_recording_and_offline_replay_preserve_text_tools_and_structured_test
     cassette.record(
       http_test_helpers.loopback_config(),
       destination,
-      recording.Options(1_000_000, recording.RefuseExisting),
+      cassette.options() |> cassette.with_max_bytes(1_000_000),
     )
   workflow(recorded.client, settings)
   list.each(replies(), fn(_) {
     let assert Ok(Nil) = process.receive(seen, 1000)
   })
-  recording.finish_wait(recorded.recording, 5000)
+  cassette.finish(recorded.recording, 5000)
   |> should.equal(Ok(destination))
-  let assert Ok(Nil) = http_gun.stop(recorded.client)
+  http_gun.stop(recorded.client)
   fake_server.stop(server)
   let assert Ok(tape) = cassette.load(destination, 1_000_000)
-  let assert Ok(client) = cassette.playback(tape, http_config.default())
+  let assert Ok(client) = http_testing.playback(tape, http_config.default())
   workflow(client, settings)
-  let assert Ok(Nil) = http_gun.stop(client)
+  http_gun.stop(client)
   let assert Ok(Nil) = simplifile.delete(destination)
 }
 
@@ -157,7 +155,7 @@ pub fn concurrent_recording_keeps_admission_order_when_second_finishes_first_tes
     cassette.record(
       http_test_helpers.loopback_config(),
       destination,
-      recording.default(),
+      cassette.options(),
     )
   let assert Ok(model) = types.model_id("fixture")
   let assert Ok(call) =
@@ -172,25 +170,25 @@ pub fn concurrent_recording_keeps_admission_order_when_second_finishes_first_tes
   |> should.equal(Ok(session.RunText("second", None)))
   process.send(release_first, Nil)
   session.collect(first) |> should.equal(Ok(session.RunText("first", None)))
-  recording.finish_wait(recorded.recording, 5000)
+  cassette.finish(recorded.recording, 5000)
   |> should.equal(Ok(destination))
-  let assert Ok(Nil) = http_gun.stop(recorded.client)
+  http_gun.stop(recorded.client)
   fake_server.stop(server)
   let assert Ok(tape) = cassette.load(destination, 1_000_000)
-  let assert Ok(client) = cassette.playback(tape, http_config.default())
+  let assert Ok(client) = http_testing.playback(tape, http_config.default())
   let assert Ok(first) = session.stream(client, call)
   // First progress proves offline admission before the second semantic session.
   let assert Ok(session.NextProgress(types.TextDelta(_, "first"))) =
     session.next(first)
   session.run(client, call) |> should.equal(Ok(session.RunText("second", None)))
   session.collect(first) |> should.equal(Ok(session.RunText("first", None)))
-  let assert Ok(Nil) = http_gun.stop(client)
+  http_gun.stop(client)
   let assert Ok(Nil) = simplifile.delete(destination)
   Nil
 }
 
 fn send_text(socket: tcp.Socket, text: String) -> Nil {
-  let assert fixture.Respond(response, _) =
+  let assert http_testing.Respond(response, _) =
     testing.http_reply(testing.text(text))
   let _ =
     fake_server.send_sse_stream(
@@ -210,12 +208,12 @@ pub fn capture_budget_failure_does_not_change_live_semantic_outcomes_test() {
     cassette.record(
       http_test_helpers.loopback_config(),
       destination,
-      recording.Options(128, recording.RefuseExisting),
+      cassette.options() |> cassette.with_max_bytes(128),
     )
   workflow(recorded.client, local_settings(server))
-  recording.finish_wait(recorded.recording, 5000)
-  |> should.equal(Error(recording.CaptureFailed(recording.CaptureLimit)))
-  let assert Ok(Nil) = http_gun.stop(recorded.client)
+  cassette.finish(recorded.recording, 5000)
+  |> should.equal(Error(cassette.CaptureFailed(cassette.CaptureLimit)))
+  http_gun.stop(recorded.client)
   simplifile.is_file(destination) |> should.equal(Ok(False))
   fake_server.stop(server)
 }
@@ -227,21 +225,23 @@ pub fn destination_replacement_is_explicit_and_persistence_failure_is_separate_t
     cassette.record(
       http_test_helpers.loopback_config(),
       destination,
-      recording.default(),
+      cassette.options(),
     )
-  recording.finish_wait(recorded.recording, 5000)
-  |> should.equal(Error(recording.CaptureFailed(recording.DestinationExists)))
+  cassette.finish(recorded.recording, 5000)
+  |> should.equal(Error(cassette.CaptureFailed(cassette.DestinationExists)))
   simplifile.read(destination) |> should.equal(Ok("existing"))
-  let assert Ok(Nil) = http_gun.stop(recorded.client)
+  http_gun.stop(recorded.client)
   let assert Ok(replacement) =
     cassette.record(
       http_test_helpers.loopback_config(),
       destination,
-      recording.Options(1000, recording.ReplaceExisting),
+      cassette.options()
+        |> cassette.with_max_bytes(1000)
+        |> cassette.replace_existing,
     )
-  recording.finish_wait(replacement.recording, 5000)
+  cassette.finish(replacement.recording, 5000)
   |> should.equal(Ok(destination))
-  let assert Ok(Nil) = http_gun.stop(replacement.client)
+  http_gun.stop(replacement.client)
   cassette.load(destination, 1000) |> should.be_ok
   let assert Ok(Nil) = simplifile.delete(destination)
 }
@@ -256,14 +256,16 @@ pub fn publish_io_failure_keeps_successful_live_result_test() {
     cassette.record(
       http_test_helpers.loopback_config(),
       destination,
-      recording.Options(1_000_000, recording.ReplaceExisting),
+      cassette.options()
+        |> cassette.with_max_bytes(1_000_000)
+        |> cassette.replace_existing,
     )
   workflow(recorded.client, local_settings(server))
-  let assert Error(recording.CaptureFailed(recording.IoFailure(
-    http_error.PublishFixture,
+  let assert Error(cassette.CaptureFailed(cassette.IoFailure(
+    cassette.PublishFile,
     _,
-  ))) = recording.finish_wait(recorded.recording, 5000)
-  let assert Ok(Nil) = http_gun.stop(recorded.client)
+  ))) = cassette.finish(recorded.recording, 5000)
+  http_gun.stop(recorded.client)
   let assert Ok(Nil) = simplifile.delete(destination)
   fake_server.stop(server)
 }
@@ -291,7 +293,7 @@ pub fn finish_wait_never_drains_and_early_cancel_replays_partial_evidence_test()
     cassette.record(
       http_test_helpers.loopback_config(),
       destination,
-      recording.default(),
+      cassette.options(),
     )
   let assert Ok(model) = types.model_id("synthetic-model")
   let assert Ok(call) =
@@ -302,20 +304,20 @@ pub fn finish_wait_never_drains_and_early_cancel_replays_partial_evidence_test()
   let assert Ok(stream) = session.stream(recorded.client, call)
   let assert Ok(session.NextProgress(types.TextDelta(_, "partial"))) =
     session.next(stream)
-  recording.finish_wait(recorded.recording, 10)
-  |> should.equal(Error(recording.WaitTimeout))
+  cassette.finish(recorded.recording, 10)
+  |> should.equal(Error(cassette.WaitTimeout))
   session.close(stream) |> should.equal(Ok(types.ConsumerClosed))
-  recording.finish_wait(recorded.recording, 5000)
+  cassette.finish(recorded.recording, 5000)
   |> should.equal(Ok(destination))
   let assert Ok(Error(_)) = process.receive(closed, 2000)
-  let assert Ok(Nil) = http_gun.stop(recorded.client)
+  http_gun.stop(recorded.client)
   fake_server.stop(server)
   let assert Ok(tape) = cassette.load(destination, 1_000_000)
-  let assert Ok(client) = cassette.playback(tape, http_config.default())
+  let assert Ok(client) = http_testing.playback(tape, http_config.default())
   let assert Error(session.RunFailure(types.CancelledLocally, evidence)) =
     session.run(client, call)
   evidence.response_bytes_observed |> should.be_true
   evidence.semantic_progress_observed |> should.be_true
-  let assert Ok(Nil) = http_gun.stop(client)
+  http_gun.stop(client)
   let assert Ok(Nil) = simplifile.delete(destination)
 }

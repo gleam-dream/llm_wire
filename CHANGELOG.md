@@ -36,6 +36,18 @@
   `telemetry.observation_event()` keeps its type; subscribe with
   `sinal.observe(event, run)`.
 
+- **Breaking:** migrated to the HTTP Gun wave 3 API. `testing.exchange`,
+  `testing.structured_exchange` and `testing.http_reply` return
+  `http_gun/testing.Exchange` and `http_gun/testing.Reply` (were
+  `http_gun/fixture`); give them to `http_gun/testing.playback` with
+  `testing.script`. `types.HttpFailure` still carries `http_gun/error.Reason`,
+  whose variants follow HTTP Gun (for example `PlaybackExhausted`,
+  `PlaybackMismatch`, `IdleTimeout`). Each call now sends through an HTTP Gun
+  view: its overall budget replaces the client's request timeout, and the
+  client's idle timeout is lifted, so HTTP Gun's 30 s defaults no longer cut
+  the 60 s budget or a slow first token. Applications drop the raised
+  `deadline_ms` ceiling. The test cassette is converted to schema 2.
+
 ### Included
 
 - **Breaking:** removed `Continuation`, `StructuredContinuation`, all

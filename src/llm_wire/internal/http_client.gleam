@@ -8,9 +8,9 @@ import gleam/string
 import http_gun
 import http_gun/body
 import http_gun/cancellation
+import http_gun/config as http_config
 import http_gun/deadline
 import http_gun/error as http_error
-import http_gun/request_options
 import llm_wire/internal/api
 import llm_wire/internal/owner
 import llm_wire/provider
@@ -29,9 +29,7 @@ pub fn open(
   checks: types.ToolCallChecks,
 ) -> Result(owner.Stream, types.WireError) {
   // Preparation is pure. This single absolute budget begins at execution.
-  use budget <- result.try(
-    deadline.after(deadlines.overall_timeout_ms) |> result.map_error(wire_error),
-  )
+  let budget = deadline.after(deadlines.overall_timeout_ms)
   use adapter <- result.try(api.prepared_adapter(prepared))
   let tools = api.prepared_tools(prepared)
   use reducer <- result.try(provider.new_reducer(adapter, limits, tools))
@@ -61,75 +59,71 @@ fn start(
   // Created in the semantic owner: abnormal owner death terminates this worker.
   let worker =
     process.spawn(fn() {
-      let outcome =
-        cancellation.with_token(fn(token) {
-          let control = process.new_subject()
-          process.send(ready, #(control, token))
-          case process.receive(control, deadline.remaining_ms(budget)) {
-            Ok(More) -> {
-              let options =
-                request_options.Options(
-                  ..request_options.default(),
-                  deadline: Some(budget),
-                  cancellation: Some(token),
-                )
-              let outcome =
-                http_gun.with_response_with_options(
-                  client,
-                  api.http_request(prepared),
-                  options,
-                  fn(response) {
-                    owner.request_was_sent(stream)
-                    case response.status {
-                      200 ->
-                        case validate_headers(response.headers) {
-                          Ok(Nil) ->
-                            read(response.body, control, stream, limits)
-                          Error(error) ->
-                            owner.feed_failure(
-                              stream,
-                              error,
-                              types.RetryEvidence(
-                                types.RequestMayHaveReachedProvider,
-                                True,
-                                False,
-                              ),
-                            )
-                        }
-                      status ->
-                        error_body(
-                          response.body,
-                          response.headers,
-                          status,
-                          stream,
-                          int.min(65_536, limits.response_body_bytes_limit),
-                          [],
-                          0,
-                        )
-                    }
-                  },
-                )
-              case outcome {
-                Ok(_) -> Nil
-                Error(failure) -> fail(stream, failure, False)
-              }
-            }
-            Ok(Stop) -> Nil
-            Error(Nil) ->
-              fail(
-                stream,
-                http_error.Failure(
-                  http_error.DeadlineExceeded,
-                  http_error.NotSubmitted,
-                ),
-                False,
+      cancellation.with_token(fn(token) {
+        let control = process.new_subject()
+        process.send(ready, #(control, token))
+        case process.receive(control, deadline.remaining_ms(budget)) {
+          Ok(More) -> {
+            // The call's budget replaces the client's request timeout, so a
+            // shorter client default no longer cuts it. The semantic owner
+            // runs the first-token and idle timers; the client's idle
+            // timeout is lifted so it cannot cut them, and the budget still
+            // bounds every wait.
+            let call =
+              client
+              |> http_gun.with_deadline(budget)
+              |> http_gun.with_idle_timeout(http_config.Infinity)
+              |> http_gun.with_cancellation(token)
+            let outcome =
+              http_gun.with_response(
+                call,
+                api.http_request(prepared),
+                fn(failure) { failure },
+                fn(response) {
+                  owner.request_was_sent(stream)
+                  case response.status {
+                    200 ->
+                      case validate_headers(response.headers) {
+                        Ok(Nil) -> read(response.body, control, stream, limits)
+                        Error(error) ->
+                          owner.feed_failure(
+                            stream,
+                            error,
+                            types.RetryEvidence(
+                              types.RequestMayHaveReachedProvider,
+                              True,
+                              False,
+                            ),
+                          )
+                      }
+                    status ->
+                      error_body(
+                        response.body,
+                        response.headers,
+                        status,
+                        stream,
+                        int.min(65_536, limits.response_body_bytes_limit),
+                        [],
+                        0,
+                      )
+                  }
+                  Ok(Nil)
+                },
               )
+            case outcome {
+              Ok(_) -> Nil
+              Error(failure) -> fail(stream, failure, False)
+            }
           }
-        })
-      case outcome {
-        Ok(_) -> Nil
-        Error(failure) -> fail(stream, failure, False)
-      }
+          Ok(Stop) -> Nil
+          Error(Nil) ->
+            fail(
+              stream,
+              http_error.new(http_error.DeadlineExceeded, http_error.NotSent),
+              False,
+            )
+        }
+      })
     })
   case process.receive(ready, 1000) {
     Ok(#(control, token)) ->
@@ -152,15 +146,15 @@ fn start(
   }
 }
 
-// A read timeout preserves this single credit. The semantic owner controls its
-// own idle and overall timers and can cancel the token while next is blocked.
+// The semantic owner controls its own idle and overall timers and cancels the
+// token, which ends a blocked next, when one of them fires.
 fn read(
   source: body.Body,
   control: process.Subject(Control),
   stream: owner.Stream,
   limits: types.Limits,
 ) -> Nil {
-  case body.next(source, 1000) {
+  case body.next(source) {
     Ok(body.Chunk(bytes)) ->
       case bit_array.byte_size(bytes) > limits.chunk_bytes_limit {
         True ->
@@ -186,8 +180,6 @@ fn read(
         }
       }
     Ok(body.End(_)) -> owner.feed_eof(stream)
-    Error(http_error.Failure(http_error.ReadTimeout, _)) ->
-      read(source, control, stream, limits)
     Error(failure) -> fail(stream, failure, False)
   }
 }
@@ -201,7 +193,7 @@ fn error_body(
   chunks: List(BitArray),
   size: Int,
 ) -> Nil {
-  case body.next(source, 1000) {
+  case body.next(source) {
     Ok(body.End(_)) -> {
       let text =
         bit_array.concat(list.reverse(chunks))
@@ -251,8 +243,6 @@ fn error_body(
           )
       }
     }
-    Error(http_error.Failure(http_error.ReadTimeout, _)) ->
-      error_body(source, headers, status, stream, limit, chunks, size)
     Error(failure) -> fail(stream, failure, size > 0)
   }
 }
@@ -298,9 +288,9 @@ fn fail(stream: owner.Stream, failure: http_error.Failure, bytes: Bool) -> Nil {
     stream,
     wire_error(failure),
     types.RetryEvidence(
-      case failure.evidence {
-        http_error.NotSubmitted -> types.NoRequestSent
-        http_error.MayHaveBeenSent -> types.RequestMayHaveReachedProvider
+      case http_error.evidence(failure) {
+        http_error.NotSent -> types.NoRequestSent
+        http_error.MaybeSent -> types.RequestMayHaveReachedProvider
       },
       bytes,
       False,
@@ -309,7 +299,7 @@ fn fail(stream: owner.Stream, failure: http_error.Failure, bytes: Bool) -> Nil {
 }
 
 pub fn wire_error(failure: http_error.Failure) -> types.WireError {
-  case failure.reason {
+  case http_error.reason(failure) {
     http_error.DeadlineExceeded -> types.DeadlineExceeded(types.OverallDeadline)
     http_error.Cancelled -> types.CancelledLocally
     reason -> types.HttpFailure(reason)

@@ -6,7 +6,6 @@ import gleam/otp/supervision
 import http_gun
 import http_gun/cassette
 import http_gun/config as http_config
-import http_gun/recording
 import http_gun/testing as http_testing
 import llm_wire/config
 import llm_wire/session
@@ -14,17 +13,22 @@ import llm_wire/testing
 import llm_wire/types
 
 pub fn http_policy() -> http_config.Config {
-  // HTTP Gun applies this ceiling even when an LLM call has a longer budget.
-  http_config.Config(..http_config.default(), deadline_ms: 120_000)
+  // Each LLM call's own budget replaces the client's request timeout, so the
+  // HTTP Gun defaults need no raised ceiling.
+  http_config.default()
 }
 
-/// Publish each newly supervised capability to the application's registry.
-/// A restart replaces the client; callers must obtain the new capability.
+/// Supervise the shared client under `name`; `http_gun.named(name)` reaches
+/// it from anywhere, across restarts.
 pub fn http_child(
-  ready: process.Subject(http_gun.Client),
-) -> supervision.ChildSpecification(Nil) {
-  http_gun.child(http_policy())
-  |> supervision.map_data(fn(client) { process.send(ready, client) })
+  name: process.Name(http_gun.Message),
+) -> supervision.ChildSpecification(http_gun.Client) {
+  http_gun.supervised(http_policy(), name)
+}
+
+/// The application's handle to the supervised client.
+pub fn http_client(name: process.Name(http_gun.Message)) -> http_gun.Client {
+  http_gun.named(name)
 }
 
 /// The same flow accepts live, scripted, playback and recording clients.
@@ -48,7 +52,7 @@ pub fn flow(client: http_gun.Client, call: session.PreparedCall) -> Nil {
 pub fn live(call: session.PreparedCall) -> Nil {
   let assert Ok(client) = http_gun.start(http_policy())
   flow(client, call)
-  let assert Ok(Nil) = http_gun.stop(client)
+  http_gun.stop(client)
   Nil
 }
 
@@ -57,19 +61,19 @@ pub fn record(call: session.PreparedCall, destination: String) -> Nil {
     cassette.record(
       http_policy(),
       destination,
-      recording.Options(1_000_000, recording.RefuseExisting),
+      cassette.options() |> cassette.with_max_bytes(1_000_000),
     )
   flow(recorded.client, call)
-  let assert Ok(_) = recording.finish_wait(recorded.recording, 5000)
-  let assert Ok(Nil) = http_gun.stop(recorded.client)
+  let assert Ok(_) = cassette.finish(recorded.recording, 5000)
+  http_gun.stop(recorded.client)
   Nil
 }
 
 pub fn playback(call: session.PreparedCall, path: String) -> Nil {
-  let assert Ok(tape) = cassette.load(path, 1_000_000)
-  let assert Ok(client) = cassette.playback(tape, http_policy())
+  let assert Ok(script) = cassette.load(path, 1_000_000)
+  let assert Ok(client) = http_testing.playback(script, http_policy())
   flow(client, call)
-  let assert Ok(Nil) = http_gun.stop(client)
+  http_gun.stop(client)
   Nil
 }
 
@@ -84,15 +88,15 @@ pub fn main() -> Nil {
   // Concurrent identical requests deliberately have identical replies. Distinct
   // order-sensitive exchanges require application-controlled admission ordering.
   let exchanges = list.repeat(testing.exchange(call, testing.text("hello")), 12)
-  let assert Ok(client) = http_testing.start(http_policy(), exchanges)
+  let script = http_testing.script(exchanges)
+  let assert Ok(client) = http_testing.playback(script, http_policy())
   flow(client, call)
   let assert Error(session.RunFailure(types.HttpFailure(_), _)) =
     session.run(client, call)
-  let assert Ok(Nil) = http_gun.stop(client)
-  let assert Ok(tape) = cassette.new(exchanges)
-  let assert Ok(tape) = cassette.parse(cassette.encode(tape), 1_000_000)
-  let assert Ok(client) = cassette.playback(tape, http_policy())
+  http_gun.stop(client)
+  let assert Ok(script) = cassette.parse(cassette.encode(script), 1_000_000)
+  let assert Ok(client) = http_testing.playback(script, http_policy())
   flow(client, call)
-  let assert Ok(Nil) = http_gun.stop(client)
+  http_gun.stop(client)
   Nil
 }

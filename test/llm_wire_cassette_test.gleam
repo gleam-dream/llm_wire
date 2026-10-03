@@ -12,7 +12,8 @@ import http_gun
 import http_gun/cassette
 import http_gun/config as http_config
 import http_gun/error
-import http_gun/fixture
+import http_gun/redaction
+import http_gun/testing as http_testing
 import http_test_helpers
 import llm_wire/config
 import llm_wire/provider/openai
@@ -48,9 +49,9 @@ fn reply(text: String) -> testing.Reply {
 }
 
 fn encoded() -> String {
-  let assert Ok(tape) =
-    cassette.new([testing.exchange(prepared("Hello"), reply("loaded"))])
-  cassette.encode(tape)
+  cassette.encode(
+    http_testing.script([testing.exchange(prepared("Hello"), reply("loaded"))]),
+  )
 }
 
 pub fn identical_requests_consume_distinct_replies_in_order_test() {
@@ -62,7 +63,7 @@ pub fn identical_requests_consume_distinct_replies_in_order_test() {
   session.run(client, call) |> should.equal(Ok(session.RunText("first", None)))
   session.run(client, call) |> should.equal(Ok(session.RunText("second", None)))
   let assert Error(session.RunFailure(
-    types.HttpFailure(error.FixtureExhausted),
+    types.HttpFailure(error.PlaybackExhausted),
     evidence,
   )) = session.run(client, call)
   evidence |> should.equal(types.initial_retry_evidence())
@@ -74,7 +75,7 @@ pub fn mismatches_do_not_consume_the_expected_exchange_test() {
     testing.exchange(call, reply("correct")),
   ])
   let assert Error(session.RunFailure(
-    types.HttpFailure(error.FixtureMismatch(0)),
+    types.HttpFailure(error.PlaybackMismatch(0)),
     evidence,
   )) = session.run(client, prepared("Wrong"))
   evidence |> should.equal(types.initial_retry_evidence())
@@ -84,10 +85,10 @@ pub fn mismatches_do_not_consume_the_expected_exchange_test() {
 
 pub fn cassette_json_round_trip_drives_the_same_public_flow_test() {
   let assert Ok(tape) = cassette.parse(encoded(), 100_000)
-  let assert Ok(client) = cassette.playback(tape, http_config.default())
+  let assert Ok(client) = http_testing.playback(tape, http_config.default())
   session.run(client, prepared("Hello"))
   |> should.equal(Ok(session.RunText("loaded", None)))
-  let assert Ok(Nil) = http_gun.stop(client)
+  http_gun.stop(client)
   string.contains(encoded(), "synthetic-cassette-secret") |> should.be_false
   string.contains(encoded(), "content-type") |> should.be_true
 }
@@ -95,26 +96,19 @@ pub fn cassette_json_round_trip_drives_the_same_public_flow_test() {
 pub fn disk_fixtures_replace_only_the_transport_test() {
   let assert Ok(tape) =
     cassette.load("test/fixtures/http-gun-text.json", 100_000)
-  let assert Ok(client) = cassette.playback(tape, http_config.default())
+  let assert Ok(client) = http_testing.playback(tape, http_config.default())
   session.run(client, prepared("Hello"))
   |> should.equal(Ok(session.RunText("loaded", None)))
-  let assert Ok(Nil) = http_gun.stop(client)
+  http_gun.stop(client)
 }
 
 pub fn malformed_and_incompatible_cassettes_fail_explicitly_test() {
-  cassette.parse("{", 100)
-  |> should.equal(
-    Error(error.Failure(error.FixtureCorrupt, error.NotSubmitted)),
-  )
+  cassette.parse("{", 100) |> should.equal(Error(cassette.Corrupt))
   cassette.parse("{\"http_gun\":99,\"exchanges\":[]}", 100)
-  |> should.equal(
-    Error(error.Failure(error.FixtureVersion(99), error.NotSubmitted)),
-  )
+  |> should.equal(Error(cassette.UnsupportedVersion(99)))
   cassette.parse("{\"version\":1,\"exchanges\":[]}", 100) |> should.be_error
   cassette.load("/private/tmp/llm-wire-fixture-does-not-exist", 100)
-  |> should.equal(
-    Error(error.Failure(error.FixtureMissing, error.NotSubmitted)),
-  )
+  |> should.equal(Error(cassette.Missing))
 }
 
 pub fn byte_bounds_apply_to_parse_and_disk_load_test() {
@@ -122,59 +116,53 @@ pub fn byte_bounds_apply_to_parse_and_disk_load_test() {
   let bytes = string.byte_size(raw)
   cassette.parse(raw, bytes) |> should.be_ok
   cassette.parse(raw, bytes - 1)
-  |> should.equal(
-    Error(error.Failure(
-      error.LimitExceeded(error.FixtureBytes, bytes - 1, bytes),
-      error.NotSubmitted,
-    )),
-  )
+  |> should.equal(Error(cassette.TooLarge(bytes - 1, bytes)))
   cassette.load("test/fixtures/http-gun-text.json", 5)
-  |> should.equal(
-    Error(error.Failure(
-      error.LimitExceeded(error.FixtureBytes, 5, 6),
-      error.NotSubmitted,
-    )),
-  )
+  |> should.equal(Error(cassette.TooLarge(5, 6)))
   cassette.parse(raw, -1) |> should.be_error
 }
 
 pub fn binary_chunks_preserve_split_utf8_and_crlf_test() {
   let call = prepared("Hello")
   let original = testing.exchange(call, reply("héllo"))
-  let assert fixture.Respond(response, ending) = original.reply
+  let assert http_testing.Respond(response, ending) =
+    http_testing.reply(original)
   let bytes = bit_array.concat(response.body)
   let chunks = byte_chunks(bytes)
   let exchange =
-    fixture.Exchange(
-      original.request,
-      fixture.Respond(response.set_body(response, chunks), ending),
+    http_testing.exchange(
+      http_testing.request(original),
+      http_testing.Respond(response.set_body(response, chunks), ending),
     )
-  let assert Ok(tape) = cassette.new([exchange])
-  let assert Ok(parsed) = cassette.parse(cassette.encode(tape), 100_000)
-  let assert Ok(client) = cassette.playback(parsed, http_config.default())
+  let assert Ok(parsed) =
+    cassette.parse(cassette.encode(http_testing.script([exchange])), 100_000)
+  let assert Ok(client) = http_testing.playback(parsed, http_config.default())
   session.run(client, call) |> should.equal(Ok(session.RunText("héllo", None)))
-  let assert Ok(Nil) = http_gun.stop(client)
+  http_gun.stop(client)
 }
 
 pub fn cassette_construction_rejects_invalid_status_and_bit_arrays_test() {
-  let request = testing.exchange(prepared("Hello"), reply("x")).request
-  cassette.new([
-    fixture.Exchange(
+  let request =
+    http_testing.request(testing.exchange(prepared("Hello"), reply("x")))
+  http_testing.script([
+    http_testing.exchange(
       request,
-      fixture.Respond(
+      http_testing.Respond(
         response.new(99) |> response.set_body([]),
-        fixture.Complete([]),
+        http_testing.Finished([]),
       ),
     ),
   ])
-  |> should.be_error
-  cassette.new([
-    fixture.Exchange(
+  |> http_testing.playback(http_config.default())
+  |> should.equal(Error(http_gun.InvalidScript(0)))
+  http_testing.script([
+    http_testing.exchange(
       http_request.set_body(request, <<1:1>>),
-      fixture.Reject(error.Failure(error.ClientClosed, error.NotSubmitted)),
+      http_testing.Reject(error.new(error.ClientClosed, error.NotSent)),
     ),
   ])
-  |> should.be_error
+  |> http_testing.playback(http_config.default())
+  |> should.equal(Error(http_gun.InvalidScript(0)))
 }
 
 pub fn recorded_status_and_interruption_keep_normal_error_evidence_test() {
@@ -204,8 +192,7 @@ pub fn required_schema_fields_and_tags_are_checked_test() {
       "url",
       "headers",
       "body",
-      "bytes",
-      "base64",
+      "text",
       "chunks",
       "status",
       "ending",
@@ -225,41 +212,38 @@ pub fn required_schema_fields_and_tags_are_checked_test() {
 pub fn invalid_utf8_file_is_a_typed_failure_test() {
   let path = "/private/tmp/llm-wire-invalid-utf8-fixture"
   let assert Ok(Nil) = simplifile.write_bits(path, <<255, 0>>)
-  cassette.load(path, 2)
-  |> should.equal(
-    Error(error.Failure(error.FixtureCorrupt, error.NotSubmitted)),
-  )
+  cassette.load(path, 2) |> should.equal(Error(cassette.Corrupt))
   let assert Ok(Nil) = simplifile.delete(path)
 }
 
 pub fn significant_headers_must_match_and_credentials_are_excluded_test() {
   let call = prepared("Hello")
   let expected = testing.exchange(call, reply("matched"))
+  let expected_request = http_testing.request(expected)
   let wrong =
-    fixture.Exchange(
-      http_request.set_header(expected.request, "openai-project", "significant"),
-      expected.reply,
+    http_testing.exchange(
+      http_request.set_header(expected_request, "openai-project", "significant"),
+      http_testing.reply(expected),
     )
   use client <- http_test_helpers.with_script([wrong])
   let assert Error(session.RunFailure(
-    types.HttpFailure(error.FixtureMismatch(_)),
+    types.HttpFailure(error.PlaybackMismatch(_)),
     _,
   )) = session.run(client, call)
   // Matching is exact for significant headers; excluded credentials don't alter it.
-  fixture.matches(
-    expected.request,
-    http_request.set_header(
-      expected.request,
+  let key = http_testing.match_key(redaction.default(), _)
+  key(expected_request)
+  |> should.equal(
+    key(http_request.set_header(
+      expected_request,
       "authorization",
       "Bearer different",
-    ),
+    )),
   )
-  |> should.be_true
-  fixture.matches(
-    expected.request,
-    http_request.Request(..expected.request, method: http.Get),
-  )
-  |> should.be_false
+  key(expected_request)
+  |> should.not_equal(key(
+    http_request.Request(..expected_request, method: http.Get),
+  ))
 }
 
 pub fn replayed_partial_stream_preserves_interruption_evidence_test() {

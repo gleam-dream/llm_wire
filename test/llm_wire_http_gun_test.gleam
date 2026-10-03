@@ -85,7 +85,7 @@ pub fn reducer_exception_releases_http_and_preserves_shared_client_test() {
     |> process.selector_receive(3000)
   let assert Ok(Error(_)) = process.receive(closed, 3000)
   wait_released(client, 200) |> should.be_true
-  let assert Ok(Nil) = http_gun.stop(client)
+  http_gun.stop(client)
   fake_server.stop(server)
 }
 
@@ -113,16 +113,50 @@ pub fn prepared_buffered_http_gun_test() {
       settings,
       types.new_request(model, [types.UserMessage("hi")]),
     )
-  let assert Ok(client) =
-    http_gun.start(
-      http_config.Config(
-        ..http_test_helpers.loopback_config(),
-        deadline_ms: 60_000,
-      ),
-    )
+  let assert Ok(client) = http_gun.start(http_test_helpers.loopback_config())
   session.run(client, prepared)
   |> should.equal(Ok(session.RunText("hello", None)))
-  let assert Ok(Nil) = http_gun.stop(client)
+  http_gun.stop(client)
+  fake_server.stop(server)
+}
+
+/// The call's own budget replaces HTTP Gun's request timeout, and the client's
+/// idle timeout does not cut a slow first token or a gap between events: the
+/// semantic owner's timers alone decide.
+pub fn client_timeouts_do_not_cut_the_call_budget_test() {
+  let assert Ok(server) = fake_server.start()
+  let assert [first, ..rest] =
+    string.split(text_events(), "event: response.output_text.delta")
+  let _ =
+    process.spawn_unlinked(fn() {
+      let assert Ok(socket) = fake_server.accept_connection(server, 5000)
+      let assert Ok(_) = fake_server.read_request_headers(socket, 5000)
+      process.sleep(300)
+      let _ =
+        fake_server.send_sse_stream(
+          socket,
+          [
+            #(0, bit_array.from_string(first)),
+            #(
+              300,
+              bit_array.from_string(
+                "event: response.output_text.delta"
+                <> string.join(rest, "event: response.output_text.delta"),
+              ),
+            ),
+          ],
+          True,
+        )
+    })
+  let assert Ok(client) =
+    http_gun.start(
+      http_test_helpers.loopback_config()
+      |> http_config.with_request_timeout(http_config.Milliseconds(100))
+      |> http_config.with_idle_timeout(http_config.Milliseconds(100)),
+    )
+  session.run(client, prepared(server.port, types.Deadlines(5000, 2000, 10)))
+  |> should.equal(Ok(session.RunText("hello", None)))
+  http_gun.stop(client)
   fake_server.stop(server)
 }
 
@@ -133,19 +167,15 @@ pub fn text_events() -> String {
   <> "event: response.completed\ndata: {\"response\":{\"id\":\"r\",\"status\":\"completed\"}}\n\n"
 }
 
-pub fn closed_shared_client_keeps_conservative_http_evidence_test() {
+pub fn closed_shared_client_keeps_http_evidence_test() {
   let assert Ok(client) = http_gun.start(http_test_helpers.loopback_config())
-  let assert Ok(Nil) = http_gun.stop(client)
+  http_gun.stop(client)
+  // HTTP Gun reports a stopped client as `NotSent`; the evidence passes through.
   let assert Error(session.RunFailure(
     types.HttpFailure(http_error.ClientClosed),
     retry,
   )) = session.run(client, prepared(1, types.default_deadlines()))
-  retry
-  |> should.equal(types.RetryEvidence(
-    types.RequestMayHaveReachedProvider,
-    False,
-    False,
-  ))
+  retry |> should.equal(types.initial_retry_evidence())
 }
 
 fn prepared(port: Int, deadlines: types.Deadlines) -> session.PreparedCall {
@@ -166,13 +196,10 @@ fn prepared(port: Int, deadlines: types.Deadlines) -> session.PreparedCall {
 }
 
 pub fn pre_submission_http_limit_keeps_no_request_sent_test() {
-  let defaults = http_test_helpers.loopback_config()
   let assert Ok(client) =
     http_gun.start(
-      http_config.Config(
-        ..defaults,
-        limits: http_config.Limits(..defaults.limits, request_bytes: 1),
-      ),
+      http_test_helpers.loopback_config()
+      |> http_config.with_max_request_body_bytes(1),
     )
   let assert Error(session.RunFailure(
     types.HttpFailure(http_error.LimitExceeded(
@@ -183,7 +210,7 @@ pub fn pre_submission_http_limit_keeps_no_request_sent_test() {
     retry,
   )) = session.run(client, prepared(1, types.default_deadlines()))
   retry |> should.equal(types.initial_retry_evidence())
-  let assert Ok(Nil) = http_gun.stop(client)
+  http_gun.stop(client)
 }
 
 pub fn pre_header_close_releases_shared_admission_test() {
@@ -207,7 +234,7 @@ pub fn pre_header_close_releases_shared_admission_test() {
   session.close(stream) |> should.equal(Ok(types.AlreadyTerminal))
   let assert Ok(Error(_)) = process.receive(released, 2000)
   wait_released(client, 200) |> should.be_true
-  let assert Ok(Nil) = http_gun.stop(client)
+  http_gun.stop(client)
   fake_server.stop(server)
 }
 
@@ -240,7 +267,7 @@ pub fn close_during_tls_connection_setup_releases_request_test() {
   session.close(stream) |> should.equal(Ok(types.ConsumerClosed))
   let assert Ok(Ok(Nil)) = process.receive(closed, 2000)
   wait_released(client, 200) |> should.be_true
-  let assert Ok(Nil) = http_gun.stop(client)
+  http_gun.stop(client)
   fake_server.stop(server)
 }
 
@@ -257,8 +284,8 @@ fn await_tls_socket_close(
 }
 
 fn wait_released(client: http_gun.Client, attempts: Int) -> Bool {
-  let assert Ok(stats) = http_gun.snapshot(client)
-  case stats.bodies == 0 && stats.waiting == 0, attempts {
+  let assert Ok(stats) = http_gun.stats(client)
+  case stats.open_bodies == 0 && stats.queued_requests == 0, attempts {
     True, _ -> True
     False, 0 -> False
     False, _ -> {
@@ -308,7 +335,7 @@ pub fn consumer_read_timeout_preserves_http_and_terminal_precedes_eof_test() {
   session.collect(stream) |> should.equal(Ok(session.RunText("hello", None)))
   let assert Ok(Error(_)) = process.receive(closed, 2000)
   wait_released(client, 200) |> should.be_true
-  let assert Ok(Nil) = http_gun.stop(client)
+  http_gun.stop(client)
   fake_server.stop(server)
 }
 
@@ -333,7 +360,7 @@ pub fn keepalive_bytes_do_not_extend_semantic_idle_test() {
   evidence.response_bytes_observed |> should.be_true
   evidence.semantic_progress_observed |> should.be_false
   wait_released(client, 200) |> should.be_true
-  let assert Ok(Nil) = http_gun.stop(client)
+  http_gun.stop(client)
   fake_server.stop(server)
 }
 
@@ -358,7 +385,7 @@ pub fn partial_status_body_keeps_bytes_when_semantic_idle_wins_test() {
     session.run(client, prepared(server.port, types.Deadlines(3000, 100, 10)))
   evidence.response_bytes_observed |> should.be_true
   evidence.semantic_progress_observed |> should.be_false
-  let assert Ok(Nil) = http_gun.stop(client)
+  http_gun.stop(client)
   fake_server.stop(server)
 }
 
@@ -382,7 +409,7 @@ pub fn execution_starts_budget_and_delayed_headers_spend_it_test() {
   )) = session.run(client, call)
   let assert Ok(Nil) = process.receive(accepted, 0)
   wait_released(client, 200) |> should.be_true
-  let assert Ok(Nil) = http_gun.stop(client)
+  http_gun.stop(client)
   fake_server.stop(server)
 }
 
@@ -411,7 +438,7 @@ pub fn disconnect_preserves_raw_and_semantic_evidence_test() {
     evidence.response_bytes_observed |> should.be_true
     evidence.semantic_progress_observed |> should.equal(input.1)
     evidence.classification |> should.equal(types.RequestMayHaveReachedProvider)
-    let assert Ok(Nil) = http_gun.stop(client)
+    http_gun.stop(client)
     fake_server.stop(server)
   })
 }
@@ -442,6 +469,6 @@ pub fn consumer_death_cancels_worker_before_headers_test() {
   process.kill(consumer)
   let assert Ok(Error(_)) = process.receive(closed, 2000)
   wait_released(client, 200) |> should.be_true
-  let assert Ok(Nil) = http_gun.stop(client)
+  http_gun.stop(client)
   fake_server.stop(server)
 }

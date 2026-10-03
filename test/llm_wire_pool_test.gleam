@@ -17,18 +17,11 @@ import llm_wire/types
 import llm_wire_http_gun_test
 
 fn settings(active: Int, waiting: Int, connections: Int) -> http_config.Config {
-  let base = http_test_helpers.loopback_config()
-  http_config.Config(
-    ..base,
-    deadline_ms: 5000,
-    limits: http_config.Limits(
-      ..base.limits,
-      active: active,
-      waiting: waiting,
-      connections: connections,
-      per_origin: connections,
-    ),
-  )
+  http_test_helpers.loopback_config()
+  |> http_config.with_max_open_bodies(active)
+  |> http_config.with_max_queued_requests(waiting)
+  |> http_config.with_max_connections(connections)
+  |> http_config.with_max_connections_per_origin(connections)
 }
 
 fn request(port: Int, timeout: Int) -> session.PreparedCall {
@@ -88,8 +81,8 @@ fn wait_counts(
   waiting: Int,
   tries: Int,
 ) -> Bool {
-  let assert Ok(stats) = http_gun.snapshot(client)
-  case stats.bodies == bodies && stats.waiting == waiting, tries {
+  let assert Ok(stats) = http_gun.stats(client)
+  case stats.open_bodies == bodies && stats.queued_requests == waiting, tries {
     True, _ -> True
     False, 0 -> False
     False, _ -> {
@@ -102,10 +95,10 @@ fn wait_counts(
 pub fn shared_client_lifecycle_and_invalid_limits_test() {
   http_gun.start(settings(0, 0, 0)) |> should.be_error
   let assert Ok(client) = http_gun.start(settings(1, 1, 1))
-  let assert Ok(snapshot) = http_gun.snapshot(client)
-  #(snapshot.connections, snapshot.bodies, snapshot.waiting)
+  let assert Ok(snapshot) = http_gun.stats(client)
+  #(snapshot.connections, snapshot.open_bodies, snapshot.queued_requests)
   |> should.equal(#(0, 0, 0))
-  let assert Ok(Nil) = http_gun.stop(client)
+  http_gun.stop(client)
 }
 
 pub fn sequential_llm_requests_reuse_one_connection_test() {
@@ -132,9 +125,9 @@ pub fn sequential_llm_requests_reuse_one_connection_test() {
     |> should.equal(Ok(session.RunText("hello", None)))
   })
   let assert Ok(Nil) = process.receive(completed, 1000)
-  let assert Ok(stats) = http_gun.snapshot(client)
+  let assert Ok(stats) = http_gun.stats(client)
   stats.connections |> should.equal(1)
-  let assert Ok(Nil) = http_gun.stop(client)
+  http_gun.stop(client)
   fake_server.stop(server)
 }
 
@@ -147,7 +140,7 @@ pub fn peer_close_reclaims_connection_for_fresh_call_test() {
     process.send(release, Nil)
     session.collect(stream) |> should.equal(Ok(session.RunText("hello", None)))
   })
-  let assert Ok(Nil) = http_gun.stop(client)
+  http_gun.stop(client)
   fake_server.stop(server)
 }
 
@@ -163,7 +156,7 @@ pub fn queue_deadline_releases_only_its_waiter_test() {
   wait_counts(client, 1, 0, 200) |> should.be_true
   process.send(release, Nil)
   session.collect(first) |> should.equal(Ok(session.RunText("hello", None)))
-  let assert Ok(Nil) = http_gun.stop(client)
+  http_gun.stop(client)
   fake_server.stop(server)
 }
 
@@ -180,7 +173,7 @@ pub fn queued_call_runs_after_first_finishes_test() {
   let assert Ok(release) = process.receive(accepted, 1000)
   process.send(release, Nil)
   session.collect(second) |> should.equal(Ok(session.RunText("hello", None)))
-  let assert Ok(Nil) = http_gun.stop(client)
+  http_gun.stop(client)
   fake_server.stop(server)
 }
 
@@ -196,7 +189,7 @@ pub fn queued_cancellation_does_not_consume_connection_or_disturb_owner_test() {
   wait_counts(client, 1, 0, 200) |> should.be_true
   process.send(release, Nil)
   session.collect(first) |> should.equal(Ok(session.RunText("hello", None)))
-  let assert Ok(Nil) = http_gun.stop(client)
+  http_gun.stop(client)
   fake_server.stop(server)
 }
 
@@ -216,7 +209,7 @@ pub fn admission_overflow_is_not_submitted_test() {
   let _ = session.close(second)
   let _ = session.close(first)
   process.send(release, Nil)
-  let assert Ok(Nil) = http_gun.stop(client)
+  http_gun.stop(client)
   fake_server.stop(server)
 }
 
@@ -228,7 +221,7 @@ pub fn shared_client_shutdown_unblocks_active_and_waiting_calls_test() {
   let assert Ok(release) = process.receive(accepted, 1000)
   let assert Ok(second) = session.stream(client, call)
   wait_counts(client, 1, 1, 200) |> should.be_true
-  let assert Ok(Nil) = http_gun.stop(client)
+  http_gun.stop(client)
   session.collect(first) |> should.be_error
   session.collect(second) |> should.be_error
   process.send(release, Nil)
