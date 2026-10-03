@@ -1,467 +1,232 @@
 # llm_wire
 
-A bounded LLM client for Gleam on Erlang/OTP. `llm_wire/config` holds provider
-and execution settings; `llm_wire/session` prepares, runs, streams, and
-collects single interactions. `llm_wire/types` holds the request, message, tool call,
-and tool result values shared across those paths. Preparation checks local
-options and schemas before a network request.
+A bounded LLM client for Gleam on Erlang/OTP. It prepares a request without
+I/O, runs or streams it through your own `http_gun.Client`, and returns typed
+outcomes and failures. It speaks OpenAI Responses, Anthropic Messages and
+Google GenerateContent, and any HTTP/SSE provider you add. The caller owns the
+conversation and the tool loop; LLM Wire never retries.
 
-The package targets Gleam 1.18 or newer on Erlang/OTP. The checked-in Nix
-development shell uses OTP 28; other OTP versions have not been verified in
-this release candidate. The JavaScript target is unsupported. The current
-dependency manifest uses local HTTP Gun, Blueprint and Sinal path dependencies, so the
-package is not yet ready for an independent registry install.
-
-The initial release scope and remaining release decisions are recorded in
-[CHANGELOG.md](CHANGELOG.md). The exercised behavior is tracked in
-[DESIGN-COVERAGE.md](DESIGN-COVERAGE.md).
+The package targets Gleam 1.18 or newer on Erlang/OTP; the Nix dev shell uses
+OTP 28. The JavaScript target is unsupported. Dependencies on HTTP Gun,
+Blueprint and Sinal are local path dependencies until those packages publish.
 
 ## Make a call
 
-Build provider options, then compose common execution settings. Preparation
-returns `WireError`; execution returns `session.RunFailure(error, retry)` so a
-caller can decide whether a request might have reached the provider.
-
 ```gleam
+import gleam/io
 import http_gun
 import http_gun/config as http_config
-import llm_wire/config
-import llm_wire/provider/openai
-import llm_wire/session
-import llm_wire/types
+import llm_wire
+import llm_wire/openai
 
-// Start once in application startup; share across independent calls.
-// Each call's own budget replaces the client's request timeout.
-let http_policy = http_config.default()
-let assert Ok(client) = http_gun.start(http_policy)
-let assert Ok(key) = types.api_key("sk-...")
-let assert Ok(model) = types.model_id("gpt-...")
-let options = openai.options(key) |> openai.with_project("my-project")
-let limits = types.Limits(
-  ..types.default_limits(),
-  request_bytes_limit: 524_288,
-)
-let settings = config.openai(options) |> config.with_limits(limits)
-let request =
-  types.new_request(model, [types.UserMessage("Hello")])
-  |> types.with_max_tokens(256)
-let assert Ok(prepared) = session.prepare(settings, request)
-let outcome = session.run(client, prepared)
-```
-
-Use `config.anthropic(anthropic.options(key))` or
-`config.google(google.options(key))` for the other built-in adapters. Their
-provider-specific options live in `llm_wire/provider/anthropic` and
-`llm_wire/provider/google`. All three enter the same bounded HTTP/SSE runtime.
-`RunText`, `RunToolCalls`, `RunOutputLimited`, and `RunRefusal` are distinct
-successful outcomes. The library does not run tools or retry automatically.
-`types.ApiKey` holds the key in a closure: `string.inspect` of the key, the
-provider options, the config or a prepared call shows a function reference,
-never the key.
-
-`types.default_limits()` and `types.default_deadlines()` are bounded records.
-Update fields by name and attach them with `config.with_limits` and
-`config.with_deadlines`. `request_bytes_limit` bounds the outgoing JSON body;
-`event_bytes_limit` independently bounds each incoming SSE event, and
-`line_bytes_limit` bounds each SSE line. Both default to 1 MiB: OpenAI's final
-events repeat the whole answer on one `data:` line.
-`provider_metadata_bytes_limit` bounds retained call IDs, tool names, provider
-IDs/state, response IDs, and each response's opaque provider data. Preparation validates all limit and deadline fields before transport.
-
-HTTP policy belongs to client startup. To use a private CA, add
-`http_config.with_trust(http_config.CustomCa("certs/local-ca.pem"))` to the HTTP
-policy before `http_gun.start`. Verification includes the certificate and hostname. LLM Wire
-still rejects remote plaintext endpoints; HTTP is admitted only for loopback.
-The old per-call CA restriction and pool settings are removed. There is no
-replacement for the prerelease idle-connection eviction setting.
-
-HTTP Gun's default destination policy admits public addresses only. A local
-model server, such as Ollama on `localhost`, needs a client whose policy allows
-loopback; a server on a private network needs `allow_private`. Otherwise every
-call fails before submission with `HttpFailure(DestinationRejected)`:
-
-```gleam
-import http_gun/destination
-
-let local_policy =
-  http_config.default()
-  |> http_config.with_destination(destination.default() |> destination.allow_loopback)
-let assert Ok(local_client) = http_gun.start(local_policy)
-```
-
-Keep the default policy for clients that reach hosted providers; the loopback
-opt-in applies to every request through that client.
-
-## Build a conversation with tool results
-
-`RunToolCalls(turn, usage)` returns an immutable `types.AssistantTurn` with text,
-calls, response ID, provider data, and reported issues. It holds no conversation,
-configuration, or callback. Your application owns the message list and tool loop.
-Keep the returned turn intact as an `AssistantTurnMessage` so signed provider
-parts remain attached to the correct response.
-
-```gleam
-import gleam/list
-import json/blueprint/codec
-import llm_wire/session
-import llm_wire/types
-
-fn echo_input() -> codec.Codec(String) {
-  use text <- codec.field("text", codec.string(), get: fn(text) { text })
-  codec.success(text)
-}
-
-let assert Ok(name) = types.tool_name("echo")
-let assert Ok(echo_tool) =
-  types.tool_from_codec(name, "Echo text", echo_input())
-let request =
-  types.new_request(model, [types.UserMessage("Echo hello")])
-  |> types.with_tools([echo_tool])
-let assert Ok(prepared) = session.prepare(settings, request)
-case session.run(client, prepared) {
-  Ok(session.RunToolCalls(turn, _usage)) -> {
-    // Your application executes the calls and creates their result messages.
-    let results = list.map(turn.calls, fn(call) {
-      types.ToolResultMessage(call.id, "hello")
-    })
-    let next_request = types.Request(
-      ..request,
-      messages: list.append(request.messages, [
-        types.AssistantTurnMessage(turn), ..results
-      ]),
-    )
-    let assert Ok(next) = session.prepare(settings, next_request)
-    session.run(client, next)
+pub fn main() -> Nil {
+  let assert Ok(client) = http_gun.start(http_config.default())
+  let config = openai.new("sk-...") |> openai.config
+  let request = llm_wire.request("gpt-5", [llm_wire.user("Hello")])
+  let assert Ok(prepared) = llm_wire.prepare(config, request)
+  case llm_wire.run(client, prepared) {
+    Ok(llm_wire.Answer(text:, ..)) -> io.println(text)
+    Ok(_) -> io.println("no final answer")
+    Error(failure) -> io.println(llm_wire.describe_failure(failure))
   }
-  other -> other
+  http_gun.stop(client)
 }
 ```
 
-Each assistant tool batch must be followed by exactly one result per call.
-Preparation rejects missing, duplicate, unknown, and orphan results before I/O
-and orders results within each batch. Call IDs may recur in different turns.
-Historical calls need not name a tool present in the current catalog.
+`anthropic.new(key) |> anthropic.config` and `google.new(key) |> google.config`
+select the other built-in providers. `llm_wire.with_endpoint(config, url)`
+points a configuration at a compatible server.
 
-`types.tool_name` admits `^[a-zA-Z0-9_-]{1,64}$`, the name grammar shared by
-OpenAI, Anthropic, and Google. It does not trim, and it returns a typed
-`types.ToolNameError` (`EmptyToolName`, `InvalidToolNameCharacter`, or
-`ToolNameTooLong`) instead of a provider error.
+`prepare` checks the configuration, messages, tools and schemas and encodes the
+body once; it returns a typed `error.PrepareError` and performs no I/O. A
+prepared call runs any number of times, for example to retry.
 
-`types.tool_from_contract(name, description, contract)` constructs a
-schema-only tool from an admitted Blueprint `contract.Contract` without a
-dummy native type. The selected provider projects its schema during
-preparation; unsupported variants fail there. Returned argument JSON receives
-the same bounded schema validation as a codec-backed tool.
+## Defaults
 
-Handle another `RunToolCalls` result by extending the conversation again if your
-application permits it. Set an application limit on tool rounds.
+| Setting                                                          | Default                                                              | Setter                                                       |
+| ---------------------------------------------------------------- | -------------------------------------------------------------------- | ------------------------------------------------------------ |
+| whole call, start to final event                                 | 600 s                                                                | `llm_wire.with_call_timeout(config, After(d))`               |
+| first token, start to first progress event                       | 180 s                                                                | `llm_wire.with_first_token_timeout`                          |
+| idle gap between provider events, after the first progress event | 60 s, reset by every event, including tool-argument deltas and pings | `llm_wire.with_idle_timeout`                                 |
+| `next`                                                           | waits for the next event, bounded by the timers above                | `llm_wire.next_within(stream, d)` for a shorter wait         |
+| SSE line / event                                                 | 1 MiB / 1 MiB                                                        | `with_limit(config, limit.LineBytes \| limit.EventBytes, n)` |
+| request body                                                     | 1 MiB                                                                | `limit.RequestBytes`                                         |
+| transport chunk                                                  | 64 KiB                                                               | `limit.ChunkBytes`                                           |
+| streamed response                                                | 8 MiB                                                                | `limit.ResponseBodyBytes`                                    |
+| non-200 body kept in `error.Status`                              | 64 KiB                                                               | `limit.ErrorBodyBytes`                                       |
+| queued progress                                                  | 500 items, 2 MiB                                                     | `limit.QueueCount`, `limit.QueueBytes`                       |
+| open blocks                                                      | 64                                                                   | `limit.ActiveBlocks`                                         |
+| text per block / per response                                    | 1 MiB / 4 MiB                                                        | `limit.TextBytesPerBlock`, `limit.TotalTextBytes`            |
+| tool arguments per call / per response                           | 1 MiB / 4 MiB                                                        | `limit.ArgumentBytesPerCall`, `limit.TotalArgumentBytes`     |
+| ids, signatures and replay data                                  | 1 MiB                                                                | `limit.ProviderMetadataBytes`                                |
+| unrecognized event name                                          | 16 KiB                                                               | `limit.ExtensionBytes`                                       |
+| invalid tool calls                                               | fail the response                                                    | `with_tool_call_checks(config, tool.ReportInvalidToolCalls)` |
+| plaintext `http://`                                              | loopback addresses only, decided by HTTP Gun's destination policy    | none                                                         |
+| retries and tool rounds                                          | none; `advise` and the caller's loop                                 | none                                                         |
+| connect, pool wait, TLS trust, destinations                      | HTTP Gun's client configuration                                      | `http_gun/config`                                            |
 
-By default a response whose call names an undeclared tool, or whose arguments
-are not valid JSON or fail the tool schema, fails with `ProtocolError`. An agent
-that answers such calls itself selects reporting instead:
+`llm_wire.Infinity` lifts a timeout and must be chosen explicitly. Every
+timeout is a `gleam/time/duration.Duration`. Each call's whole-call budget
+replaces the HTTP Gun client's request timeout and lifts its idle timeout, so a
+client default never cuts a long reasoning stream; the client's connect and
+pool timeouts, destinations and trust still apply. A limit that is exceeded
+fails with `error.LimitExceeded(limit, ..)`, naming the setting that raises it.
 
-```gleam
-let settings =
-  config.openai(openai.options(key))
-  |> config.with_tool_call_checks(types.ReportInvalidToolCalls)
-// After session.run returns RunToolCalls(turn, _):
-let issues = turn.issues
-// [types.UnknownTool(call_id), types.InvalidArguments(call_id, reason), ...]
-```
-
-Every call stays in `turn.calls`. Supply an error result for each reported call
-when building the next request. OpenAI receives argument text verbatim;
-Anthropic and Google require an object, so unsigned argument text that is not a
-JSON object is sent as `{"unparsed_arguments": text}`. Signed Google parts remain
-unchanged. Argument bounds, duplicate call IDs, and invalid tool names still
-fail the response. Streamed and structured tool responses expose the same turn.
-
-## Structured output and streaming
-
-`session.prepare_structured(settings, request, name, codec)` selects the output
-codec for one request. Use `session.run_structured` for a decoded
-`StructuredValue`, or match `StructuredNeedsTools(turn, usage)`,
-`StructuredOutputLimited`, and `StructuredRefusal`. After tools run, build a new
-request and call `prepare_structured` with the desired codec again.
+## Tools and the conversation
 
 ```gleam
-let output_codec = {
-  use answer <- codec.field("answer", codec.int(), get: fn(answer) { answer })
-  codec.success(answer)
-}
-let assert Ok(prepared) =
-  session.prepare_structured(settings, request, "answer_shape", output_codec)
-let result = session.run_structured(client, prepared)
-```
+import llm_wire
+import llm_wire/message
+import llm_wire/tool
 
-The structured schema must be a closed object with required properties.
-A record built with `codec.field` is admitted.
-Optional fields remain optional and fail strict admission. Google additionally
-rejects nullable schemas. Unsupported provider schema forms fail during
-preparation. Structured-output JSON parsing uses the admitted text byte bound
-while retaining Blueprint's bounded depth and number policy.
-
-For progress events, open a stream and read until a terminal outcome:
-
-```gleam
-fn read_stream(stream: session.Stream) -> Result(session.Terminal, session.ReadError) {
-  case session.next(stream) {
-    Ok(session.NextProgress(_progress)) -> {
-      // Handle progress here.
-      read_stream(stream)
-    }
-    Ok(session.StreamTerminal(terminal)) -> Ok(terminal)
-    Error(session.StreamReadError(types.ReadTimeout)) -> read_stream(stream)
-    Error(error) -> Error(error)
+let weather = tool.new("get_weather", "Current weather", weather_codec)
+let request =
+  llm_wire.request("gpt-5", [llm_wire.user("Weather in Paris?")])
+  |> llm_wire.with_tools([weather])
+let assert Ok(prepared) = llm_wire.prepare(config, request)
+case llm_wire.run(client, prepared) {
+  Ok(llm_wire.NeedsTools(turn:, ..)) -> {
+    let results =
+      list.map(turn.calls, fn(call) {
+        let assert Ok(city) = tool.decode_arguments(call, weather_codec)
+        llm_wire.tool_result(call, lookup(city))
+      })
+    let next = llm_wire.append(request, [message.Assistant(turn), ..results])
+    llm_wire.prepare(config, next)
   }
+  _ -> todo
 }
-
-let assert Ok(stream) = session.stream(client, prepared)
-let terminal = read_stream(stream)
 ```
 
-`session.next` takes its read timeout from the prepared config. A stream
-retains its prepared call for transport settings and response interpretation.
-Use `session.close(stream)` when abandoning a stream. Structured streaming uses
-`session.stream_structured`, `session.next_structured`, and
-`session.close_structured` with the same ownership pattern.
+`tool.new` is for declarations in source code and panics, naming the tool, on
+a definition bug. `tool.from_contract` and `tool.from_json_schema` (for an MCP
+`inputSchema`) take runtime data and return a typed `tool.ToolError`.
 
-## Conversation ownership
+An `AssistantTurn` carries the provider's replay data, such as Gemini's signed
+parts, in `provider_data`; append it unchanged. Persist conversations with
+`message.to_json` / `message.decoder`, or a turn with `message.turn_to_json` /
+`message.turn_decoder`. A store that keeps a turn's text and calls itself uses
+`turn_replay_to_json` / `turn_replay_decoder(text, calls)`, the format Fabric
+stores as `llm_wire.turn.v1`.
 
-Fabric or another consumer owns agent progress, storage, pause/resume, and
-protection against duplicate tool effects. LLM Wire has no continuation handles,
-checkpoint export/import, or durable execution format. Its prepared values belong
-to one request. Supply the complete conversation explicitly on every request.
+With `tool.ReportInvalidToolCalls`, a call to an unknown tool or with invalid
+arguments is returned with the others and listed in `NeedsTools.issues`; answer
+it with `tool.describe_issue(issue)`.
 
-An `AssistantTurn` is response data, not an execution record. Provider data is
-interpreted by the configured adapter and must remain with its original text and
-calls. Cross-provider turns and contradictory Google raw parts fail preparation.
-See the [boundary contract](docs/caller-owned-conversation.md) and
-[Fabric migration notes](docs/fabric-migration.md).
+## Structured output
 
-## Assess another attempt
+```gleam
+let request =
+  llm_wire.request("gpt-5", [llm_wire.user("Extract the invoice")])
+  |> llm_wire.with_output("invoice", invoice_codec)
+let assert Ok(prepared) = llm_wire.prepare(config, request)
+case llm_wire.run(client, prepared) {
+  Ok(llm_wire.Answer(output: invoice, ..)) -> save(invoice)
+  Error(llm_wire.Failure(error: error.InvalidOutput(raw_output:, failure:), ..)) ->
+    reject(raw_output, error.describe_value_failure(failure))
+  _ -> todo
+}
+```
 
-`retry.assess(provider, error)` returns `MayHelp`, `WillNotHelpUnchanged`, or
-`Unknown`. It interprets known status and provider error codes without scheduling
-an attempt. `RetryEvidence` continues to describe reachability and progress.
-Applications combine both with tool effects, Retry-After hints, deadlines, and
-budgets when deciding whether to retry. A `MayHelp` result does not establish
-that repeating an operation is safe.
+Structured output is the same execution family: only the request changes.
+Output that is not valid JSON, fails the schema or fails the codec is a
+`Failure` with `error.InvalidOutput`, which keeps the raw text and the typed
+reason, and `sent: Completed`.
+
+## Streaming
+
+```gleam
+let assert Ok(stream) = llm_wire.stream(client, prepared)
+let assert Ok(event) = llm_wire.next(stream)
+case event {
+  llm_wire.Progress(message.TextDelta(text:, ..)) -> show(text)
+  llm_wire.Progress(_) -> Nil
+  llm_wire.Done(result) -> finish(result)
+}
+```
+
+`next` waits for the next event; the call's timers bound the wait.
+`next_within(stream, d)` gives up with `TimedOut` and leaves the stream
+readable. `collect` reads to the outcome. The process that started the stream
+owns it: if it exits, the call is cancelled and its HTTP stream released.
+`close` ends the call early and is safe to repeat. Tool-argument deltas arrive
+as `message.ToolArgumentsDelta`.
+
+## Failures and retries
+
+A failed call returns `llm_wire.Failure(error:, sent:, partial_output:,
+provider:, usage:)`. `sent` is `NotSent`, `MaybeSent` (the provider may have
+spent tokens) or `Completed` (the provider finished its response). `error` is
+an `error.Error`; `error.Http` carries HTTP Gun's opaque `Failure`, so
+`http_gun/error.kind` and `is_retryable` apply to it.
+
+```gleam
+case llm_wire.advise(failure) {
+  llm_wire.RetryAdvice(llm_wire.MayHelp, after:) -> schedule(after)
+  _ -> give_up(llm_wire.describe_failure(failure))
+}
+```
+
+`advise` decides from the failure alone: HTTP Gun failures by `Kind`, HTTP
+statuses, and provider error codes matched exactly per provider. `after` is
+the provider's `Retry-After`, in delay seconds or as an HTTP date.
 
 ## Own the HTTP client
 
-Prepare remains pure. Pass an explicitly started `http_gun.Client` to `run`,
-`stream`, `run_structured`, or `stream_structured`. Calls neither start a hidden
-pool nor stop the shared client. Stop it with `http_gun.stop(client)` at
-application shutdown. Client shutdown unblocks outstanding calls with typed
-failures. Use `http_gun.supervised(policy, name)` under an application supervisor
-and reach the client with `http_gun.named(name)`; the handle stays valid across
-restarts. The [compiled consumer](examples/consumer/src/llm_wire_consumer.gleam)
-shows the child specification, concurrent independent calls, and early close.
+Start one `http_gun.Client` at application startup and pass it to `run` and
+`stream`; LLM Wire never starts or stops it. Use `http_gun.supervised` under a
+supervisor and `http_gun.named` to reach it. An `http://` endpoint is narrowed
+for each call to HTTP Gun's `destination.with_plaintext(PlaintextToLoopbackOnly)`,
+so a credential never crosses a network in clear text; a plaintext call to any
+other address fails before sending with `DestinationRejected(PlaintextRefused(_))`.
 
-Each execution starts one absolute overall budget. Admission, connection,
-headers and body spend that same budget. Preparing early spends none of it.
-The call sends through an HTTP Gun view whose deadline is this budget and
-replaces the client's request timeout, so HTTP Gun's 30-second default no
-longer cuts it. The view also lifts the client's idle timeout: LLM Wire's own
-idle timer decides how long a first token or a gap between events may take.
-Consumer `ReadTimeout` leaves the stream usable. Semantic idle is independent:
-keepalive and non-progress bytes do not reset it. A provider terminal returns
-without waiting for HTTP EOF, and closes locally without draining.
-
-Copied stream handles share one cursor. Conflicting reads fail explicitly;
-close is idempotent, including concurrent closes. The creating consumer owns the
-session lifetime. Its death closes HTTP; copying a handle does not transfer
-that lifetime. Use `close` on early exit, including application error paths.
-Local close never proves provider cancellation or rollback. See the
-[ownership and error mapping](docs/http-gun-migration.md).
-
-## Add an HTTP/SSE provider
-
-An application can build `provider.adapter(provider.Spec(...))` and pass it to
-`config.from_provider(adapter)`. The spec supplies provider identity, endpoint,
-auth or extra headers, request encoding, schema projection, and a reducer
-factory. `provider.reducer(state, step, terminal, retry)` keeps application
-reducer state typed inside closures for one response. A `provider.ToolCalls`
-terminal supplies optional data as a string; the encoder reads it from each
-`AssistantTurnMessage` in subsequent requests. The adapter owns the data format
-and its semantic validation. The external consumer
-fixture in [external_provider.gleam](test/external_provider.gleam) implements a
-fourth provider using only public modules and runs against a real local
-HTTP/SSE server.
-
-`Spec.headers` is a closure, `fn() -> List(#(String, String))`, so a
-credential inside it never appears in `string.inspect` output or crash reports
-of the spec, adapter, config, prepared call or stream. Read the key with
-`types.reveal_api_key(key)` inside that closure.
-`provider.reveal_headers(adapter)` returns the headers in plain text, for
-wrapping one adapter in another; never log its result.
-
-The runtime supplies `Content-Type: application/json`,
-`Accept: text/event-stream`, and `Accept-Encoding: identity` for every adapter.
-Provider headers add authentication and other provider-specific fields;
-attempts to override those fixed protocol headers fail preparation. The
-runtime owns transport, deadlines, queue limits, retry evidence, tool catalog
-validation, and terminal admission. The runtime bounds returned provider data. Adapters must also bound reducer
-state and enforce wire-specific block limits while accumulating a response.
-
-## Choose live, scripted, playback or recording at startup
-
-All modes supply the same `http_gun.Client` to the same session calls. The
-[standalone consumer](examples/consumer/README.md) compiles against this checkout
-and executes scripted and strict offline playback flows.
-
-`llm_wire/testing` retains pure semantic reply builders and a provider-neutral
-`testing.config()`. Lower an opaque prepared call and reply to an HTTP exchange:
+## Add a provider
 
 ```gleam
+import llm_wire/provider
+
+let config =
+  provider.new(message.Custom("acme"), "https://llm.acme.test/v1", encode, fn() {
+    provider.reducer(initial_state, step, terminal)
+  })
+  |> provider.with_headers(fn() { [#("authorization", "Bearer " <> key)] })
+  |> provider.config
+```
+
+The adapter encodes the admitted request and reduces the event stream; the
+runtime keeps transport, timers, limits, tool-call admission, telemetry and
+cleanup. The [external provider fixture](test/external_provider.gleam) is a
+complete adapter written against public modules only.
+
+## Test without a network
+
+```gleam
+import http_gun/config as http_config
 import http_gun/testing as http_testing
 import llm_wire/testing
 
-let assert Ok(call) = session.prepare(testing.config(), request)
-let script = http_testing.script([testing.exchange(call, testing.text("hello"))])
-let assert Ok(client) = http_testing.playback(script, http_policy)
-let result = session.run(client, call)
-http_gun.stop(client)
+let assert Ok(prepared) = llm_wire.prepare(testing.config(), request)
+let script =
+  http_testing.script([testing.exchange(prepared, testing.text("hello"))])
+let assert Ok(client) = http_testing.playback(script, http_config.default())
 ```
 
-`text`, `tool_calls`, `refusal`, `output_limited`, and `with_usage` build semantic
-replies. For built-in providers use `testing.Events` with their SSE events or
-`testing.Interrupted` for partial failure. `testing.Status` supplies an HTTP
-status response. For structured calls use `testing.structured_exchange`.
-There is no retained request-history process. Inspect the finite expected
-exchanges your test already owns; no additional inspection queue accumulates.
+`text`, `tool_calls`, `refusal`, `output_limited` and `with_usage` describe a
+reply. To test code configured for a built-in provider, keep its configuration
+and lower the reply into that wire with `testing.events_for(message.OpenAI,
+reply)`. HTTP Gun's cassettes record and replay the same exchanges.
 
-HTTP Gun owns the binary-capable cassette schema and live recorder:
+## Observe
 
-```gleam
-import http_gun/cassette
-
-// Offline startup; load errors are explicit and there is no network fallback.
-let assert Ok(script) = cassette.load("fixtures/lookup.json", 8_388_608)
-let assert Ok(client) = http_testing.playback(script, http_policy)
-// Run your ordinary application flow(client, ...) and stop at shutdown.
-
-// Recording startup opens real HTTP when the application executes calls.
-let assert Ok(recorded) = cassette.record(
-  http_policy, "fixtures/new.json",
-  cassette.options() |> cassette.with_max_bytes(8_388_608),
-)
-// Run the same flow(recorded.client, ...), consuming or closing every stream.
-let captured = cassette.finish(recorded.recording, 5000)
-http_gun.stop(recorded.client)
-```
-
-Capture/persistence failure is separate from HTTP and semantic outcomes.
-`cassette.finish` waits for consumed/closed requests and never drains them. Add
-`cassette.replace_existing` explicitly when replacing a fixture. Capture is bounded;
-publication has atomic visibility, without a power-loss durability promise.
-
-Matching preserves method, target, query, body bytes and significant headers.
-Only `authorization`, `proxy-authorization`, `cookie`, `set-cookie`, `x-api-key`,
-`api-key`, and `x-goog-api-key` metadata are excluded (case insensitive). Bodies,
-queries and unlisted headers remain exact and may contain secrets. Use synthetic
-inputs for owned fixtures; body/query redaction is not supplied.
-Repeated requests can have distinct sequential replies; mismatches do not consume
-the expected exchange. Coordinate admission order when concurrent requests have
-different expected replies. Missing/corrupt/incompatible/exhausted fixtures fail
-explicitly. Old prerelease LLM Wire cassette files and record-if-missing behavior
-are unsupported.
-
-## Observe and integrate
-
-`llm_wire/telemetry.observation_event()` is a typed Sinal event. Subscribe
-with `sinal.observe` and detach when finished:
-
-```gleam
-import gleam/erlang/process
-import llm_wire/telemetry
-import sinal
-
-let received = process.new_subject()
-let attachment =
-  sinal.observe(telemetry.observation_event(), fn(_, metadata) {
-    process.send(received, metadata)
-  })
-// At application shutdown:
-let _ = sinal.detach(attachment)
-```
-
-The metadata is `telemetry.Metadata(stage, provider, outcome)`.
-Package observations emit only these fixed, low-cardinality fields under the
-native `[:llm_wire, :observation]` event. They carry no prompt or response
-content. The `request_sent` stage now carries outcome `http_response_started`
-when HTTP Gun returns the response head. It is evidence that the request reached
-a response, not an exact wire-submission timestamp; time the entire execution in
-the application when measuring end-to-end latency.
-
-Applications that use Relay can adapt their own `relay/tool.Definition` to an
-LLM tool declaration through its input codec. This adapter belongs in the
-application and requires Relay only there:
-
-```gleam
-import gleam/option
-import gleam/result
-import llm_wire/types
-import relay/tool
-
-fn llm_tool_from_relay(
-  definition: tool.Definition(input, output),
-) -> Result(types.ToolDefinition, types.WireError) {
-  let name = tool.definition_name(definition) |> tool.tool_name_to_string
-  let metadata = tool.definition_metadata(definition)
-  let description = option.unwrap(metadata.description, name)
-  use llm_name <- result.try(
-    types.tool_name(name)
-    |> result.replace_error(types.PreparationError("Invalid tool name: " <> name)),
-  )
-  types.tool_from_codec(
-    llm_name,
-    description,
-    tool.definition_input_codec(definition),
-  )
-}
-```
-
-The application still owns dispatch, tool execution, output encoding, and
-`types.ToolResult` construction.
-
-## Pre-release API migration
-
-The earlier root and wire APIs were never released. They have no compatibility
-shims in this cleanup.
-
-| Earlier call or type                                                       | Current public path                                                                                                       |
-| -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `llm_wire.prepare` / `run` / `stream`                                      | `session.prepare` / `run` / `stream`, with `config.Config` retaining settings                                             |
-| Root `Message`, reduced `ToolCall`, `ToolResult`, `RunResult`              | `types.Message`, full `types.ToolCall`, `types.ToolResult`, `session.RunResult`                                           |
-| `config.openai(key)` / `anthropic(key)` / `google(key)`                    | `config.openai(openai.options(key))` and analogous provider option builders                                               |
-| Fallible `config.with_openai_*` / `with_anthropic_*` / `with_google_*`     | Compose typed options in the matching `llm_wire/provider/*` module before common configuration                            |
-| `types.new_limits` / `new_deadlines`                                       | Update `types.default_limits()` / `default_deadlines()` records; `session.prepare` validates the whole config             |
-| Outgoing request checked against `event_bytes_limit`                       | Set `request_bytes_limit` independently; event and request defaults remain 1 MiB                                          |
-| Buffered execution or stream opening returns `WireError` directly          | Match `session.RunFailure(error, retry)`; preparation still returns `WireError`                                           |
-| Tool-call outcome omitted assistant text                                   | `RunToolCalls(turn, usage)` carries reusable assistant response data                                                      |
-| Tool arguments parsed with Blueprint's 10 MiB default                      | Parser byte bounds now follow `argument_bytes_per_call_limit`; depth and number policy stay bounded                       |
-| Structured output parsed with Blueprint's 10 MiB default                   | Parser byte bound follows the smaller admitted per-block and total text limits                                            |
-| `types.tool_name` returning `WireError`                                    | Match `types.ToolNameError`; names must match `^[a-zA-Z0-9_-]{1,64}$`                                                     |
-| `Continuation`, `prepare_continue`, checkpoint APIs, and `provider.Replay` | Append `AssistantTurnMessage(turn)` and results; prepare a new request explicitly                                         |
-| Direct internal provider reducer and request hooks                         | Use `provider.Adapter`/`provider.Spec`/`provider.reducer`, then `config.from_provider`; internal transport is unsupported |
-
-## HTTP Gun API migration
-
-- Add the unreleased local `http_gun = { path = "../http_gun" }` dependency.
-- Change `session.run(call)` to `session.run(client, call)` and likewise for
-  streaming and structured execution. Preparation signatures stay unchanged.
-- Replace `llm_wire/pool` and `config.with_pool` with application-owned HTTP Gun
-  startup/supervision. Move CA and connection policy to that startup.
-- Replace the old script process and `llm_wire/cassette` with HTTP Gun scripts,
-  playback and recording. Keep LLM semantic reply builders as pure values.
-- Match typed `types.HttpFailure(http_gun/error.Reason)`; HTTP opening failures
-  arrive as stream terminals because stream setup is asynchronous.
+`telemetry.event()` is the Sinal event `[llm_wire, observation]`. Its
+`Metadata(call:, correlation:, stage:, provider:, outcome:)` names the
+execution, the caller's correlation, a fixed stage and outcome, and never
+carries content or credentials. Set the correlation once, on the HTTP Gun
+view you run the call on: `llm_wire.run(http_gun.with_correlation(client, c),
+prepared)`. LLM Wire copies it into its own events, and HTTP Gun's events for
+the request carry the same value under the same key.
 
 ## Local release checks
-
-Run with the local HTTP Gun, Blueprint and Sinal siblings present:
 
 ```sh
 nix develop -c sh dev/gate fast
@@ -470,9 +235,8 @@ nix fmt
 nix flake check
 ```
 
-The fast gate checks formatting, types/build, FFI warnings, production HTTP
-boundaries and the complete unit/local H1/TLS suite. Full adds a clean build,
-external consumers, independent nghttpd TLS/H2 and simultaneous load. All calls
-use synthetic local or offline inputs. See the
-[validation report](docs/http-gun-validation.md) for exact runtime, results and
-limits. Hosted CI awaits a distributable dependency layout.
+The fast gate checks formatting, the build without warnings, public module
+docs and the unit, local H1 and TLS suite. Full adds a clean build, external
+consumers and local nghttpd H2 checks. All calls use local or offline inputs.
+The [wave 4 migration guide](docs/migration-wave-4.md) lists every changed
+public item.

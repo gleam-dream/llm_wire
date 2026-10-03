@@ -2,6 +2,77 @@
 
 ## Unreleased — initial release candidate
 
+### Changed in the wave 4 API redesign
+
+Every public module changed; [docs/migration-wave-4.md](docs/migration-wave-4.md)
+maps each removed item to its replacement.
+
+- **Breaking (LLM-R6, R2):** one root module, `llm_wire`, replaces `session`,
+  `config` and `retry`. One execution family serves plain and structured
+  output: `request` returns `Request(String)` and `with_output(name, codec)`
+  turns it into `Request(o)`; `prepare`, `run`, `stream`, `next`, `collect` and
+  `close` take any `Prepared(o)`/`Stream(o)`. The seven `_structured` twins,
+  `Structured*` results and the second `ReadError` are gone. `Outcome(o)` is
+  `Answer(output, text, usage)`, `NeedsTools(turn, issues, usage)`,
+  `OutputLimited` or `Refused`; a stream yields `Progress(p)` then `Done(result)`.
+- **Breaking (LLM-R1):** three timers with D5 defaults: whole call 600 s, first
+  token 180 s from the start to the first progress event, idle gap 60 s
+  between provider events, reset by every event including tool-argument
+  deltas and pings. `next` waits for an event instead of polling every 5 s;
+  `next_within(stream, Duration)` gives up with `TimedOut`. Every timeout is a
+  `gleam/time/duration.Duration` behind `with_call_timeout`,
+  `with_first_token_timeout` and `with_idle_timeout`, and `Infinity` lifts one
+  explicitly. Reducers emit `message.ToolArgumentsDelta`. Each call's budget
+  still replaces the HTTP Gun client's request timeout and lifts its idle
+  timeout. The SSE line limit stays 1 MiB.
+- **Breaking (LLM-R4):** typed failures. `error.Error` (`Http`, `Status`,
+  `Provider`, `Protocol`, `LimitExceeded(limit.Limit, ..)`,
+  `DeadlineExceeded(Timeout)`, `Cancelled`, `InvalidOutput(raw_output,
+ValueFailure)`, `Stopped`) replaces `WireError` at execution;
+  `error.PrepareError` (`InvalidSetting`, `InvalidRequest`, `UnsupportedSchema`,
+  `ToolResultMismatch`, `RequestTooLarge`) replaces it at preparation, with no
+  strings to parse. Invalid structured output is a failure that keeps the raw
+  text and the typed reason, with `sent: Completed`. `error.Http` carries
+  HTTP Gun's opaque `Failure` (wave 3 follow-up), so its `Kind`, `is_retryable`,
+  `status` and headers apply directly.
+- **Breaking (LLM-R3):** `advise(failure)` replaces `retry.assess(provider,
+error)`. `Failure(error, sent, partial_output, provider, usage)` carries the
+  provider, `NotSent`/`MaybeSent`/`Completed` evidence and the last usage.
+  HTTP Gun failures are classified by `Kind`, and `RetryAdvice.after` is the
+  `Retry-After` delay, from seconds or an HTTP date.
+- **Breaking (LLM-R5):** callers build only opaque values. `Config`,
+  `Request(o)`, `Prepared(o)`, `Stream(o)`, `tool.Tool` and adapters are opaque;
+  limits are set with `with_limit(config, limit.Limit, Int)`; keys, models and
+  endpoints are strings validated by `prepare`. API keys stay in closures.
+- **Breaking (LLM-R6):** messages live in `llm_wire/message`: `System`, `User`,
+  `UserParts`, `Assistant(turn)`, `AssistantParts`, `ToolResult` replace nine
+  variants; ids and tool names are strings; `AssistantTurn.provider` is
+  optional for application-written turns.
+- **LLM-R7:** `message.to_json`/`decoder`, `turn_to_json`/`turn_decoder` and
+  `turn_replay_to_json`/`turn_replay_decoder(text, calls)`. The replay format is
+  Fabric's stored `llm_wire.turn.v1` data, and earlier Fabric records decode.
+- **Breaking (LLM-R8):** `telemetry.event()` replaces `observation_event()`;
+  `Metadata(call, correlation, stage, provider, outcome)` names each execution
+  and copies the correlation of the `http_gun.Client` view the call ran on
+  (`http_gun.correlation`), so a caller sets it once, with
+  `http_gun.with_correlation`. `prepare` emits nothing; execution starts with `Started`.
+- **Breaking (LLM-R9):** `tool.new(name, description, codec)` is total and
+  panics on a definition bug; `tool.from_contract` and `tool.from_json_schema`
+  take runtime schemas; `tool.decode_arguments` decodes a call.
+- **LLM-R10:** the host-string plaintext checks are gone. A plaintext call's
+  HTTP Gun view uses `destination.with_plaintext(PlaintextToLoopbackOnly)`, so
+  plaintext to any resolved non-loopback address fails before sending, and
+  `http://[::1]:port` endpoints work.
+- **LLM-R11:** `testing.events_for(provider, reply)` lowers a scripted reply
+  into the OpenAI, Anthropic or Gemini wire. `testing.exchange` covers every
+  `Prepared(o)`; `structured_exchange` is removed and `http_reply` is private.
+- **Breaking:** `llm_wire/provider` builds adapters with `provider.new` and
+  `with_headers`, `with_tool_schema`, `with_output_schema`; reducers have no
+  retry callback and terminals are built with `provider.text`, `tool_calls`,
+  `output_limited`, `refused` and `failed`. Provider options moved to
+  `llm_wire/openai`, `anthropic` and `google`.
+- New dependency: `gleam_time >= 1.11.0 and < 2.0.0`.
+
 ### Changed for the release API review
 
 - **Breaking:** API keys no longer print. `types.ApiKey` stores the key in a

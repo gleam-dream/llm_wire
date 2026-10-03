@@ -14,18 +14,20 @@ persistence, and duplicate-effect protection. No continuation handle, checkpoint
 source digest, or state restoration API remains in LLM Wire. Prepared calls own
 only one admitted request and its semantic settings; the application supplies the shared HTTP client at execution.
 
-A completed tool response carries `types.AssistantTurn`: provider, text, calls,
-response ID, optional provider data, and reported call issues. It contains no
+A completed tool response carries `message.AssistantTurn`: provider, text, calls,
+response ID and optional provider data; the calls that failed admission are
+listed beside it in `llm_wire.NeedsTools(turn, issues, usage)`. It contains no
 configuration, source conversation, native output codec, callback, or process
-reference. `types.AssistantTurnMessage(turn)` embeds that response in a caller's
+reference. `message.Assistant(turn)` embeds that response in a caller's
 next request. Provider data belongs to that individual message; Google raw signed
 parts stay with their own assistant turn. The caller can append or retain messages
 without an implicit history accumulator.
 
-`session.RunToolCalls(turn, usage)` and `StructuredNeedsTools(turn, usage)` expose
-the same response data. The caller appends the assistant message and tool results,
-then uses ordinary `prepare` or `prepare_structured` again. Structured preparation
-requires the desired output codec on each request. Provider adapters return data
+`llm_wire.NeedsTools(turn, issues, usage)` exposes this response data for plain and
+structured requests alike. The caller appends the assistant message and tool
+results, then uses ordinary `llm_wire.prepare` again. A structured request keeps
+its output codec (`llm_wire.with_output`) on each request. `message.turn_to_json`
+and `message.turn_replay_to_json` store a turn; their decoders restore it. Provider adapters return data
 with their terminal tool response and interpret it while encoding subsequent
 caller-supplied messages; no replay closure registry remains.
 

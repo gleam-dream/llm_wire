@@ -1,5 +1,8 @@
 # HTTP Gun ownership contract
 
+> Historical: written for the pre-wave-4 API. The current names are in
+> [migration-wave-4.md](migration-wave-4.md).
+
 Accepted 2026-09-30 under the migration specification. This supplements
 [caller-owned conversations](caller-owned-conversation.md) and supersedes the
 older transport/pool/cassette implementation descriptions. The parent oversight

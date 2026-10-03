@@ -1,5 +1,8 @@
 # Fabric migration to caller-owned conversations
 
+> Historical: written for the pre-wave-4 API. The current names are in
+> [migration-wave-4.md](migration-wave-4.md).
+
 The owner assigned agent continuation and persistence to Fabric on 2026-09-29.
 This is the integration work for Fabric; its source is not changed by this wire
 library revision. The authoritative wire contract is
