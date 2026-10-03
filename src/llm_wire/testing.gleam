@@ -328,6 +328,103 @@ fn google_status(status: Int) -> String {
   }
 }
 
+/// The provider's in-band error event arrives after the reply's content: the
+/// stream starts, `reply` streams, then the wire's own error event carries
+/// `code` (OpenAI's `error.code`, Anthropic's `error.type`, Google's
+/// `error.status`) and `message`. The call fails with
+/// `error.Provider(Some(code), message)`, `sent: Completed` and the
+/// partial output. The result is already in `provider`'s wire, like
+/// `events_for`'s: pass it to `exchange` as is, not through `events_for`.
+/// Pass the reply before lowering; a `Status` or `Interrupted` reply is
+/// unchanged.
+pub fn stream_error(
+  provider: Provider,
+  reply: Reply,
+  code: String,
+  message: String,
+) -> Reply {
+  case reply {
+    Events(_) ->
+      case events_for(provider, interrupted(reply)) {
+        Interrupted(chunks) ->
+          Events(list.append(chunks, [error_event(provider, code, message)]))
+        other -> other
+      }
+    Interrupted(_) | Status(..) -> reply
+  }
+}
+
+fn error_event(provider: Provider, code: String, message: String) -> String {
+  case provider {
+    message.OpenAI ->
+      sse_event(
+        "error",
+        json.object([
+          #("type", json.string("error")),
+          #("code", json.string(code)),
+          #("message", json.string(message)),
+          #(
+            "error",
+            json.object([
+              #("code", json.string(code)),
+              #("message", json.string(message)),
+            ]),
+          ),
+        ]),
+      )
+    message.Anthropic ->
+      sse_event(
+        "error",
+        json.object([
+          #("type", json.string("error")),
+          #(
+            "error",
+            json.object([
+              #("type", json.string(code)),
+              #("message", json.string(message)),
+            ]),
+          ),
+        ]),
+      )
+    message.Google ->
+      "data: "
+      <> json.to_string(
+        json.object([
+          #(
+            "error",
+            json.object([
+              #("code", json.int(google_code(code))),
+              #("message", json.string(message)),
+              #("status", json.string(code)),
+            ]),
+          ),
+        ]),
+      )
+      <> "\n\n"
+    message.Custom(_) ->
+      sse_event(
+        "error",
+        json.object([
+          #("code", json.string(code)),
+          #("message", json.string(message)),
+        ]),
+      )
+  }
+}
+
+fn google_code(status: String) -> Int {
+  case status {
+    "INVALID_ARGUMENT" -> 400
+    "UNAUTHENTICATED" -> 401
+    "PERMISSION_DENIED" -> 403
+    "NOT_FOUND" -> 404
+    "RESOURCE_EXHAUSTED" -> 429
+    "UNAVAILABLE" -> 503
+    "DEADLINE_EXCEEDED" -> 504
+    _ -> 500
+  }
+}
+
 /// Report `usage` with the reply. A `Status` reply is unchanged.
 pub fn with_usage(reply: Reply, usage: Usage) -> Reply {
   let event =
@@ -562,6 +659,21 @@ fn step(
       use usage <- parse(event.data, usage_decoder())
       Ok(#(Turn(..turn, usage: Some(usage)), [message.UsageUpdate(usage)]))
     }
+    None, Some("error") -> {
+      use #(code, reason) <- parse(event.data, error_decoder())
+      Ok(
+        #(
+          Turn(
+            ..turn,
+            terminal: Some(adapter.Failed(
+              error.Provider(Some(code), reason),
+              turn.usage,
+            )),
+          ),
+          [],
+        ),
+      )
+    }
     None, Some("end") -> {
       use #(stop, reason) <- parse(event.data, end_decoder())
       let calls = list.reverse(turn.calls)
@@ -602,6 +714,12 @@ fn usage_decoder() -> decode.Decoder(Usage) {
   use output <- decode.field("output_tokens", decode.int)
   use total <- decode.field("total_tokens", decode.int)
   decode.success(message.Usage(input, output, total))
+}
+
+fn error_decoder() -> decode.Decoder(#(String, String)) {
+  use code <- decode.field("code", decode.string)
+  use reason <- decode.field("message", decode.string)
+  decode.success(#(code, reason))
 }
 
 fn end_decoder() -> decode.Decoder(#(String, String)) {

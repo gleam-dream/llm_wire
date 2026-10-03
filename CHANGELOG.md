@@ -19,6 +19,10 @@ its dependents.
   cuts a reply off after its content; `invalid_output` is a final text no
   schema accepts; `with_retry_after` adds `Retry-After` to an exchange.
   `events_for` passes these replies through unchanged.
+- `testing.stream_error(provider, reply, code, message)` streams `reply`, then
+  the wire's own in-band error event (OpenAI and Anthropic `event: error`,
+  Gemini's `error` payload, the scripted wire's `error` event). The call fails
+  with `error.Provider(Some(code), message)`, `sent: Completed`.
 - `testing.http_response(provider, reply)` is a `gleam/http` response for a
   fake server, so no caller unwraps `Events`, `Interrupted` and `Status`.
 - `testing.failure(provider, error)` builds a `llm_wire.Failure` for tests

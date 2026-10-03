@@ -223,7 +223,8 @@ configuration and lower the reply into that wire with
 `testing.events_for(message.OpenAI, reply)`. The failures a provider produces
 are replies too: `rate_limited`, `overloaded` and `http_status` write the
 error status and body of a built-in provider, `interrupted` cuts a reply off
-after its content, and `invalid_output` is a final text that no schema
+after its content, `stream_error` ends it with the provider's in-band error
+event, and `invalid_output` is a final text that no schema
 accepts. `with_retry_after` adds the header to an exchange:
 
 ```gleam

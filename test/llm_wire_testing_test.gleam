@@ -682,3 +682,88 @@ pub fn a_built_failure_feeds_advise_and_describe_test() {
   let partial = llm_wire.Failure(..built, partial_output: True)
   partial.partial_output |> should.be_true
 }
+
+// --- in-band provider errors ---------------------------------------------------
+
+fn error_code(provider: message.Provider) -> String {
+  case provider {
+    message.OpenAI -> "server_error"
+    message.Anthropic -> "overloaded_error"
+    message.Google -> "UNAVAILABLE"
+    message.Custom(_) -> "busy"
+  }
+}
+
+pub fn stream_error_fails_with_the_provider_error_after_the_content_test() {
+  use #(provider, config) <- list.each(wires())
+  let code = error_code(provider)
+  let assert Error(failure) =
+    run_in(
+      config,
+      testing.stream_error(provider, testing.text("partial"), code, "try again"),
+    )
+  failure.error |> should.equal(error.Provider(Some(code), "try again"))
+  failure.provider |> should.equal(provider)
+  failure.sent |> should.equal(llm_wire.Completed)
+  failure.partial_output |> should.be_true
+  llm_wire.advise(failure)
+  |> should.equal(llm_wire.RetryAdvice(llm_wire.MayHelp, llm_wire.Backoff))
+}
+
+pub fn stream_error_codes_that_will_not_help_advise_so_in_every_wire_test() {
+  use #(provider, config) <- list.each(wires())
+  let code = case provider {
+    message.OpenAI -> "insufficient_quota"
+    message.Anthropic -> "authentication_error"
+    _ -> "PERMISSION_DENIED"
+  }
+  let assert Error(failure) =
+    run_in(
+      config,
+      testing.stream_error(provider, testing.text("x"), code, "no"),
+    )
+  failure.error |> should.equal(error.Provider(Some(code), "no"))
+  llm_wire.advise(failure).prospect
+  |> should.equal(llm_wire.WillNotHelpUnchanged)
+}
+
+pub fn stream_error_streams_the_content_first_in_every_wire_test() {
+  use #(provider, config) <- list.each(wires())
+  let assert Ok(prepared) = llm_wire.prepare(config, hi())
+  use client <- http_test_helpers.with_script([
+    testing.exchange(
+      prepared,
+      testing.stream_error(provider, testing.text("seen"), "x", "y"),
+    ),
+  ])
+  let assert Ok(stream) = llm_wire.stream(client, prepared)
+  let #(progress, outcome) = read_all(stream, [])
+  list.filter_map(progress, fn(item) {
+    case item {
+      message.TextDelta(_, text) -> Ok(text)
+      _ -> Error(Nil)
+    }
+  })
+  |> string.concat
+  |> should.equal("seen")
+  let assert Error(_) = outcome
+}
+
+pub fn stream_error_works_on_the_scripted_wire_test() {
+  let provider = message.Custom("scripted")
+  let assert Error(failure) =
+    run_in(
+      testing.config(),
+      testing.stream_error(provider, testing.text("p"), "busy", "later"),
+    )
+  failure.error |> should.equal(error.Provider(Some("busy"), "later"))
+  failure.partial_output |> should.be_true
+}
+
+pub fn stream_error_leaves_status_and_interrupted_replies_alone_test() {
+  let status = testing.Status(503, "busy")
+  testing.stream_error(message.OpenAI, status, "a", "b")
+  |> should.equal(status)
+  let cut = testing.Interrupted(["x"])
+  testing.stream_error(message.OpenAI, cut, "a", "b") |> should.equal(cut)
+}
