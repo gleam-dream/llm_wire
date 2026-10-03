@@ -194,8 +194,10 @@ pub fn pending_work(outcome: llm_wire.Outcome(o)) -> List(message.ToolCall) {
 
 pub fn retry_delay(failure: llm_wire.Failure) -> Option(Duration) {
   case llm_wire.advise(failure) {
-    llm_wire.RetryAdvice(prospect: llm_wire.MayHelp, after:) ->
-      Some(option.unwrap(after, duration.seconds(1)))
+    llm_wire.RetryAdvice(prospect: llm_wire.MayHelp, delay: llm_wire.RetryAfter(wait)) ->
+      Some(wait)
+    llm_wire.RetryAdvice(prospect: llm_wire.MayHelp, delay: llm_wire.Backoff) ->
+      Some(duration.seconds(1))
     llm_wire.RetryAdvice(prospect: llm_wire.WillNotHelpUnchanged, ..)
     | llm_wire.RetryAdvice(prospect: llm_wire.Unknown, ..) -> None
   }
@@ -220,6 +222,22 @@ pub fn lowers_a_reply_into_a_builtin_wire() -> testing.Reply {
   testing.text("hello")
   |> testing.with_usage(message.Usage(1, 2, 3))
   |> testing.events_for(message.OpenAI, _)
+}
+
+pub fn scripts_a_provider_failure(
+  prepared: llm_wire.Prepared(o),
+) -> #(http_testing.Exchange, llm_wire.Failure, Result(Nil, Nil)) {
+  let limited =
+    testing.exchange(prepared, testing.rate_limited(message.OpenAI))
+    |> testing.with_retry_after(duration.seconds(2))
+  let cut = testing.interrupted(testing.text("partial"))
+  let served = testing.http_response(message.OpenAI, cut)
+  let failure =
+    testing.failure(message.OpenAI, error.Status(429, "slow", None))
+  #(limited, failure, case served.status {
+    200 -> Ok(Nil)
+    _ -> Error(Nil)
+  })
 }
 
 pub fn observe_with_sinal() -> sinal.Attachment {
