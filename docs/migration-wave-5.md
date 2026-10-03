@@ -58,6 +58,7 @@ Every item below is new. Nothing was removed or retyped: `Reply` keeps
 | `http_status(provider, status, message) -> Reply`               | Any error status with a body shaped as the provider shapes errors; a `Custom` provider gets the bare message                                                                                                                             |
 | `interrupted(reply) -> Reply`                                   | The connection drops after the reply's content, before its end: a transport failure with `sent: MaybeSent` and `partial_output: True`. Apply it before `events_for`                                                                      |
 | `stream_error(provider, reply, code, message) -> Reply`         | The content streams, then the provider's in-band error event: `error.Provider(Some(code), message)`, `sent: Completed`, `partial_output: True`. The result is already in the provider's wire: pass it to `exchange`, not to `events_for` |
+| `response_failed(reply, code, message) -> Reply`                | OpenAI's `response.failed` event after the content, with `response.error.code` and `message`; same failure as `stream_error(message.OpenAI, ..)`. Already in the OpenAI wire                                                             |
 | `invalid_output() -> Reply`                                     | A final text that is not JSON: a plain call answers, a structured call fails with `error.InvalidOutput(raw_output:, ..)`                                                                                                                 |
 | `with_retry_after(exchange, delay) -> Exchange`                 | Adds `Retry-After` (whole seconds, a fraction rounds up) to the exchange's response, so `advise` answers `RetryAfter(delay)`                                                                                                             |
 | `http_response(provider, reply) -> gleam/http Response(String)` | A fake server's response for any reply: status, `content-type` and the joined body. Replaces the `case` on `Events`, `Interrupted` and `Status`                                                                                          |
@@ -105,6 +106,14 @@ testing.failure(message.OpenAI, error.Status(429, "{}", Some(duration.seconds(1)
 Retained, to be removed after the callers below move: the `Reply` constructors
 `Events`, `Interrupted` and `Status`, and `events_for`. A later release can
 make `Reply` opaque (callers would use the builders and `http_response`).
+
+Behaviour change in the OpenAI reducer: a `response.failed` event used to be
+ignored as an unknown extension event, so the stream ended without a terminal.
+It now fails the call with `error.Provider(Some(code), message)`, and a
+`response.incomplete` event ends the stream as `OutputLimited`. The shapes
+follow the pinned fixture (`response.error`, `response.incomplete_details`
+fields) and openai-python's `ResponseError`; `incomplete_details.reason` is not
+read, so a content-filter stop is also `OutputLimited`.
 
 ## Dependents
 

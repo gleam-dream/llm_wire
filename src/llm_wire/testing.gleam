@@ -343,15 +343,56 @@ pub fn stream_error(
   code: String,
   message: String,
 ) -> Reply {
+  with_closing_event(provider, reply, error_event(provider, code, message))
+}
+
+/// OpenAI's `response.failed` event after the reply's content: the stream
+/// ends with the response object's `status: "failed"` and its `error` object
+/// carrying `code` and `message`. The call fails like
+/// `stream_error(message.OpenAI, ..)`, with `error.Provider(Some(code),
+/// message)`. Like `stream_error`, the result is already in the OpenAI wire.
+pub fn response_failed(reply: Reply, code: String, message: String) -> Reply {
+  with_closing_event(message.OpenAI, reply, failed_event(code, message))
+}
+
+fn with_closing_event(
+  provider: Provider,
+  reply: Reply,
+  closing: String,
+) -> Reply {
   case reply {
     Events(_) ->
       case events_for(provider, interrupted(reply)) {
-        Interrupted(chunks) ->
-          Events(list.append(chunks, [error_event(provider, code, message)]))
+        Interrupted(chunks) -> Events(list.append(chunks, [closing]))
         other -> other
       }
     Interrupted(_) | Status(..) -> reply
   }
+}
+
+fn failed_event(code: String, message: String) -> String {
+  sse_event(
+    "response.failed",
+    json.object([
+      #("type", json.string("response.failed")),
+      #(
+        "response",
+        json.object([
+          #("id", json.string("resp_scripted")),
+          #("object", json.string("response")),
+          #("status", json.string("failed")),
+          #(
+            "error",
+            json.object([
+              #("code", json.string(code)),
+              #("message", json.string(message)),
+            ]),
+          ),
+          #("incomplete_details", json.null()),
+        ]),
+      ),
+    ]),
+  )
 }
 
 fn error_event(provider: Provider, code: String, message: String) -> String {

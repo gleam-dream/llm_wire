@@ -120,8 +120,13 @@ pub fn step(
         | Some("response.output_item.done") ->
           handle_output_item_done(with_bytes, event.data)
 
-        Some("response.completed") ->
+        // `response.incomplete` carries the same response object with
+        // status "incomplete", which ends the stream as an output limit.
+        Some("response.completed") | Some("response.incomplete") ->
           handle_response_completed(with_bytes, event.data)
+
+        Some("response.failed") ->
+          handle_response_failed(with_bytes, event.data)
 
         Some("error") -> handle_error_event(with_bytes, event.data)
 
@@ -849,6 +854,46 @@ fn decode_response_completed() -> decode.Decoder(ResponseCompleted) {
   decode.success(ResponseCompleted(id, status, usage))
 }
 
+/// The `response.error` object of a failed response: `code` and `message`
+/// (openai-python `ResponseError`), each absent when the object is null.
+fn response_error(data: String) -> #(Option(String), String) {
+  let code =
+    decode.one_of(
+      decode.at(["response", "error", "code"], decode.map(decode.string, Some)),
+      [decode.success(None)],
+    )
+  let reason =
+    decode.one_of(decode.at(["response", "error", "message"], decode.string), [
+      decode.success("Response completed with status failed"),
+    ])
+  let decoder = {
+    use code <- decode.then(code)
+    use reason <- decode.then(reason)
+    decode.success(#(code, reason))
+  }
+  case json.parse(data, decoder) {
+    Ok(found) -> found
+    Error(_) -> #(None, "Response completed with status failed")
+  }
+}
+
+fn handle_response_failed(
+  reducer: Reducer,
+  data: String,
+) -> Result(#(Reducer, List(message.Progress)), error.Error) {
+  let #(code, reason) = response_error(data)
+  let terminal =
+    stream_types.StreamFailed(
+      error: error.Provider(code:, message: reason),
+      retry: stream_types.RetryEvidence(
+        classification: stream_types.RequestMayHaveReachedProvider,
+        response_bytes_observed: reducer.response_bytes_observed,
+        semantic_progress_observed: reducer.semantic_progress_observed,
+      ),
+    )
+  Ok(#(Reducer(..reducer, terminal_outcome: Some(terminal)), []))
+}
+
 fn handle_response_completed(
   reducer: Reducer,
   data: String,
@@ -929,11 +974,9 @@ fn handle_response_completed(
               )
             }
             "failed" -> {
+              let #(code, reason) = response_error(data)
               stream_types.StreamFailed(
-                error: error.Provider(
-                  code: None,
-                  message: "Response completed with status failed",
-                ),
+                error: error.Provider(code:, message: reason),
                 retry: retry_evidence,
               )
             }

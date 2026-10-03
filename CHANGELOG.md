@@ -23,6 +23,11 @@ its dependents.
   the wire's own in-band error event (OpenAI and Anthropic `event: error`,
   Gemini's `error` payload, the scripted wire's `error` event). The call fails
   with `error.Provider(Some(code), message)`, `sent: Completed`.
+- The OpenAI reducer reads `response.failed` (and a `response.completed` with
+  status `failed`): `error.Provider(Some(response.error.code),
+response.error.message)`, classified by `advise` like `event: error`. A
+  `response.incomplete` event ends the stream as an output limit.
+  `testing.response_failed(reply, code, message)` scripts the failed form.
 - `testing.http_response(provider, reply)` is a `gleam/http` response for a
   fake server, so no caller unwraps `Events`, `Interrupted` and `Status`.
 - `testing.failure(provider, error)` builds a `llm_wire.Failure` for tests

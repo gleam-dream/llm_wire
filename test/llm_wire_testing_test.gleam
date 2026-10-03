@@ -767,3 +767,79 @@ pub fn stream_error_leaves_status_and_interrupted_replies_alone_test() {
   let cut = testing.Interrupted(["x"])
   testing.stream_error(message.OpenAI, cut, "a", "b") |> should.equal(cut)
 }
+
+// --- OpenAI response.failed and response.incomplete -------------------------------
+
+fn openai_config() -> llm_wire.Config {
+  openai.new("k") |> openai.config
+}
+
+pub fn response_failed_carries_the_error_code_and_message_test() {
+  let assert Error(failure) =
+    run_in(
+      openai_config(),
+      testing.response_failed(testing.text("part"), "server_error", "boom"),
+    )
+  failure.error |> should.equal(error.Provider(Some("server_error"), "boom"))
+  failure.sent |> should.equal(llm_wire.Completed)
+  failure.partial_output |> should.be_true
+  llm_wire.advise(failure)
+  |> should.equal(llm_wire.RetryAdvice(llm_wire.MayHelp, llm_wire.Backoff))
+}
+
+pub fn response_failed_classifies_like_an_error_event_test() {
+  let advice = fn(reply) {
+    let assert Error(failure) = run_in(openai_config(), reply)
+    #(failure.error, llm_wire.advise(failure))
+  }
+  list.each(
+    [
+      "rate_limit_exceeded",
+      "server_is_overloaded",
+      "insufficient_quota",
+      "invalid_prompt",
+      "something_new",
+    ],
+    fn(code) {
+      let failed = advice(testing.response_failed(testing.text("x"), code, "m"))
+      let errored =
+        advice(testing.stream_error(
+          message.OpenAI,
+          testing.text("x"),
+          code,
+          "m",
+        ))
+      failed |> should.equal(errored)
+    },
+  )
+}
+
+pub fn response_failed_without_an_error_object_still_fails_test() {
+  let body =
+    "event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"id\":\"r\",\"status\":\"failed\",\"error\":null}}\n\n"
+  let assert Error(failure) = run_in(openai_config(), testing.Events([body]))
+  let assert error.Provider(None, text) = failure.error
+  string.contains(text, "failed") |> should.be_true
+}
+
+pub fn a_completed_event_with_status_failed_reads_the_error_too_test() {
+  let body =
+    "event: response.completed\ndata: {\"response\":{\"id\":\"r\",\"status\":\"failed\",\"error\":{\"code\":\"server_error\",\"message\":\"late\"}}}\n\n"
+  let assert Error(failure) = run_in(openai_config(), testing.Events([body]))
+  failure.error |> should.equal(error.Provider(Some("server_error"), "late"))
+}
+
+pub fn response_incomplete_is_an_output_limit_test() {
+  let body =
+    "event: response.output_item.added\ndata: {\"output_index\":0,\"item\":{\"id\":\"i\",\"type\":\"message\"}}\n\n"
+    <> "event: response.output_text.delta\ndata: {\"output_index\":0,\"item_id\":\"i\",\"delta\":\"cut\"}\n\n"
+    <> "event: response.output_item.done\ndata: {\"output_index\":0,\"item\":{\"id\":\"i\",\"type\":\"message\"}}\n\n"
+    <> "event: response.incomplete\ndata: {\"type\":\"response.incomplete\",\"response\":{\"id\":\"r\",\"status\":\"incomplete\",\"error\":null,\"incomplete_details\":{\"reason\":\"max_output_tokens\"}}}\n\n"
+  let assert Ok(llm_wire.OutputLimited(partial_text: "cut", ..)) =
+    run_in(openai_config(), testing.Events([body]))
+}
+
+pub fn response_failed_leaves_status_and_interrupted_replies_alone_test() {
+  let status = testing.Status(503, "busy")
+  testing.response_failed(status, "a", "b") |> should.equal(status)
+}
