@@ -288,11 +288,7 @@ pub fn with_output(
 ) -> Request(o) {
   let admitted = case codec.schema(output) {
     Error(_) -> Error("the output codec has no schema")
-    Ok(schema) ->
-      case contract.from_schema(schema) {
-        Ok(output_contract) -> Ok(#(schema, output_contract))
-        Error(problem) -> Error(codec.describe_definition_error(problem))
-      }
+    Ok(schema) -> Ok(#(schema, contract.from_schema(schema)))
   }
   call.request(
     call.view(request),

@@ -97,16 +97,7 @@ pub fn new(name: String, description: String, input: codec.Codec(a)) -> Tool {
         <> "\" has no schema"
       }
   }
-  let input_contract = case contract.from_schema(schema) {
-    Ok(admitted) -> admitted
-    Error(problem) ->
-      panic as {
-        "llm_wire/tool.new: the input schema of tool \""
-        <> name
-        <> "\" is invalid: "
-        <> codec.describe_definition_error(problem)
-      }
-  }
+  let input_contract = contract.from_schema(schema)
   tool_def.new(name, description, schema, input_contract, fn(validated) {
     contract.decode(input, validated) |> result.replace(Nil)
   })
@@ -203,7 +194,7 @@ pub fn decode_arguments(
     |> result.map_error(error.InvalidJson),
   )
   case codec.schema(input) |> result.map(contract.from_schema) {
-    Ok(Ok(input_contract)) ->
+    Ok(input_contract) ->
       case contract.validate(input_contract, parsed) {
         Error(problem) -> Error(error.SchemaRejected(problem))
         Ok(validated) ->

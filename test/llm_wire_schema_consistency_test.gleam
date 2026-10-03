@@ -13,8 +13,13 @@ import llm_wire/openai
 import llm_wire/tool
 import tool_fixtures
 
+fn schema_of(output: codec.Codec(a)) -> codec.Schema {
+  let assert Ok(schema) = codec.schema(output)
+  schema
+}
+
 fn single_field_schema() -> codec.Schema {
-  codec.ObjectSchema([codec.PropertySchema("answer", True, codec.IntSchema)])
+  schema_of(tool_fixtures.one_field("answer", codec.int()))
 }
 
 fn builtin_configs() -> List(llm_wire.Config) {
@@ -110,23 +115,22 @@ pub fn configured_structured_prepare_accepts_field_codec_for_all_providers_test(
 }
 
 pub fn optional_field_is_not_converted_to_nullable_required_test() {
-  let optional =
-    codec.ObjectSchema([codec.PropertySchema("answer", False, codec.IntSchema)])
+  let optional_codec = {
+    use item <- codec.optional_field("answer", codec.int(), get: fn(item) {
+      item
+    })
+    codec.success(item)
+  }
+  let optional = schema_of(optional_codec)
   // Projections now return a plain reason; `prepare` wraps it in
   // `error.UnsupportedSchema(error.Output, reason)`.
   let reason =
     "Strict structured output requires every object property to be required"
   schema.strict_output_schema(optional) |> should.equal(Error(reason))
   schema.google_strict_output_schema(optional) |> should.be_error
-  let output = {
-    use item <- codec.optional_field("answer", codec.int(), get: fn(item) {
-      item
-    })
-    codec.success(item)
-  }
   let request =
     llm_wire.request("model-test", [llm_wire.user("answer")])
-    |> llm_wire.with_output("optional_shape", output)
+    |> llm_wire.with_output("optional_shape", optional_codec)
   list.each(builtin_configs(), fn(config) {
     llm_wire.prepare(config, request)
     |> should.equal(Error(error.UnsupportedSchema(error.Output, reason)))
@@ -135,27 +139,40 @@ pub fn optional_field_is_not_converted_to_nullable_required_test() {
 
 pub fn unsupported_vocabulary_and_google_nullable_restriction_remain_test() {
   let unsupported =
-    codec.ObjectSchema([
-      codec.PropertySchema(
-        "answer",
-        True,
-        codec.PairSchema(codec.IntSchema, codec.IntSchema),
-      ),
-    ])
+    schema_of(tool_fixtures.one_field(
+      "answer",
+      codec.pair(codec.int(), codec.int()),
+    ))
   schema.strict_output_schema(unsupported) |> should.be_error
   schema.google_strict_output_schema(unsupported) |> should.be_error
 
   let nullable =
-    codec.ObjectSchema([
-      codec.PropertySchema(
-        "answer",
-        True,
-        codec.NullableSchema(codec.IntSchema),
-      ),
-    ])
+    schema_of(tool_fixtures.one_field("answer", codec.nullable(codec.int())))
   schema.strict_output_schema(nullable) |> should.be_ok
   schema.google_strict_output_schema(nullable)
   |> should.equal(Error(
     "Google structured output does not support nullable/anyOf schema",
   ))
+}
+
+pub fn any_schema_is_a_tool_parameter_but_not_a_strict_output_test() {
+  let any_field = schema_of(tool_fixtures.one_field("payload", codec.value()))
+  let expected =
+    json.object([
+      #("type", json.string("object")),
+      #("properties", json.object([#("payload", json.object([]))])),
+      #("required", json.array([json.string("payload")], fn(item) { item })),
+      #("additionalProperties", json.bool(False)),
+    ])
+  schema.provider_schema(any_field) |> should.equal(Ok(expected))
+  schema.google_function_parameters_schema(any_field)
+  |> should.equal(Ok(expected))
+
+  let reason = "Structured output uses an unsupported Blueprint schema variant"
+  schema.strict_output_schema(any_field) |> should.equal(Error(reason))
+  schema.google_strict_output_schema(any_field) |> should.equal(Error(reason))
+  // A bare `{}` has no object root.
+  let bare = schema_of(codec.value())
+  schema.strict_output_schema(bare)
+  |> should.equal(Error("Structured output requires an object root schema"))
 }

@@ -70,9 +70,7 @@ pub fn prepare_openai_request_uses_responses_wire_test() {
 
 pub fn schema_only_tool_validates_json_without_a_native_codec_test() {
   let assert Ok(input_contract) =
-    contract.from_schema(
-      codec.ObjectSchema([codec.PropertySchema("id", True, codec.IntSchema)]),
-    )
+    contract.from_codec(tool_fixtures.one_field("id", codec.int()))
   let assert Ok(lookup) =
     tool.from_contract("remote_lookup", "Lookup", input_contract)
   // `types.validate_tool_arguments` became the runtime's internal
@@ -98,7 +96,7 @@ pub fn schema_only_tool_validates_json_without_a_native_codec_test() {
 
 pub fn schema_only_tool_rejects_unsupported_projection_test() {
   let assert Ok(input_contract) =
-    contract.from_schema(codec.PairSchema(codec.IntSchema, codec.IntSchema))
+    contract.from_codec(codec.pair(codec.int(), codec.int()))
   let assert Ok(unsupported) =
     tool.from_contract("unsupported", "Unsupported", input_contract)
   let request =
@@ -206,27 +204,29 @@ pub fn codec_schema_json_encodes_exact_blueprint_field_schema_and_numeric_bounds
 
 pub fn codec_schema_projection_matches_blueprint_for_recursive_forms_test() {
   let schemas = [
-    codec.StringSchema,
-    codec.StringEnumSchema(["red", "blue"]),
-    codec.IntSchema,
-    codec.NumberSchema,
-    codec.BoolSchema,
-    codec.ListSchema(codec.NullableSchema(codec.StringSchema)),
-    codec.NullableSchema(
-      codec.ObjectSchema([
-        codec.PropertySchema("label", True, codec.StringSchema),
-      ]),
-    ),
-    codec.ObjectSchema([codec.PropertySchema("enabled", True, codec.BoolSchema)]),
-    codec.ObjectSchema([
-      codec.PropertySchema("name", True, codec.StringSchema),
-      codec.PropertySchema(
+    schema_of(codec.string()),
+    schema_of(codec.string_enum([#("red", "red"), #("blue", "blue")])),
+    schema_of(codec.int()),
+    schema_of(codec.number()),
+    schema_of(codec.bool()),
+    schema_of(codec.list(codec.nullable(codec.string()))),
+    schema_of(codec.nullable(tool_fixtures.one_field("label", codec.string()))),
+    schema_of(tool_fixtures.one_field("enabled", codec.bool())),
+    schema_of({
+      use name <- codec.field(
+        "name",
+        codec.string(),
+        get: fn(item: #(String, Option(String))) { item.0 },
+      )
+      use nickname <- codec.optional_field(
         "nickname",
-        False,
-        codec.NullableSchema(codec.StringSchema),
-      ),
-    ]),
-    codec.IntegerRangeSchema(-5, 12),
+        codec.nullable(codec.string()),
+        get: fn(item: #(String, Option(String))) { Some(item.1) },
+      )
+      codec.success(#(name, option.flatten(nickname)))
+    }),
+    schema_of(codec.integer_between(-5, 12)),
+    schema_of(codec.value()),
   ]
 
   list.each(schemas, fn(contract_schema) {
@@ -235,6 +235,11 @@ pub fn codec_schema_projection_matches_blueprint_for_recursive_forms_test() {
       value.parse(json.to_string(projected_json), value.default_limits())
     projected_value |> should.equal(codec.schema_value(contract_schema))
   })
+}
+
+fn schema_of(input: codec.Codec(a)) -> codec.Schema {
+  let assert Ok(schema) = codec.schema(input)
+  schema
 }
 
 fn object_field(object: value.Value, name: String) -> Option(value.Value) {
