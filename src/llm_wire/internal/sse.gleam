@@ -3,7 +3,9 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
-import llm_wire/types
+import llm_wire/error
+import llm_wire/internal/limits
+import llm_wire/limit
 
 pub type ServerSentEvent {
   ServerSentEvent(
@@ -16,7 +18,7 @@ pub type ServerSentEvent {
 
 pub opaque type Framer {
   Framer(
-    limits: types.Limits,
+    limits: limits.Limits,
     buffer: BitArray,
     event_type: Option(String),
     data_lines: List(String),
@@ -26,7 +28,7 @@ pub opaque type Framer {
   )
 }
 
-pub fn new(limits: types.Limits) -> Framer {
+pub fn new(limits: limits.Limits) -> Framer {
   Framer(
     limits: limits,
     buffer: <<>>,
@@ -41,12 +43,12 @@ pub fn new(limits: types.Limits) -> Framer {
 pub fn feed(
   framer: Framer,
   chunk: BitArray,
-) -> Result(#(Framer, List(ServerSentEvent)), types.WireError) {
+) -> Result(#(Framer, List(ServerSentEvent)), error.Error) {
   let chunk_size = bit_array.byte_size(chunk)
   case chunk_size > framer.limits.chunk_bytes_limit {
     True ->
-      Error(types.ResourceLimitExceeded(
-        "chunk_bytes_limit",
+      Error(error.LimitExceeded(
+        limit.ChunkBytes,
         framer.limits.chunk_bytes_limit,
         chunk_size,
       ))
@@ -58,8 +60,8 @@ pub fn feed(
       }
       case pending_line_len > framer.limits.line_bytes_limit {
         True ->
-          Error(types.ResourceLimitExceeded(
-            "line_bytes_limit",
+          Error(error.LimitExceeded(
+            limit.LineBytes,
             framer.limits.line_bytes_limit,
             pending_line_len,
           ))
@@ -85,11 +87,9 @@ fn find_first_terminator_offset(chunk: BitArray, offset: Int) -> Option(Int) {
   }
 }
 
-pub fn finish(
-  framer: Framer,
-) -> Result(List(ServerSentEvent), types.WireError) {
+pub fn finish(framer: Framer) -> Result(List(ServerSentEvent), error.Error) {
   case bit_array.byte_size(framer.buffer) > 0 {
-    True -> Error(types.ProtocolError("Incomplete SSE frame at EOF"))
+    True -> Error(error.Protocol("Incomplete SSE frame at EOF"))
     False ->
       case framer.data_lines {
         [] -> Ok([])
@@ -113,14 +113,14 @@ fn parse_lines(
   emitted: List(ServerSentEvent),
   emitted_count: Int,
   scan_from: Int,
-) -> Result(#(Framer, List(ServerSentEvent)), types.WireError) {
+) -> Result(#(Framer, List(ServerSentEvent)), error.Error) {
   case find_line_terminator(buffer, scan_from) {
     EndOfBuffer(remaining) -> {
       let remaining_size = bit_array.byte_size(remaining)
       case remaining_size > framer.limits.line_bytes_limit {
         True ->
-          Error(types.ResourceLimitExceeded(
-            "line_bytes_limit",
+          Error(error.LimitExceeded(
+            limit.LineBytes,
             framer.limits.line_bytes_limit,
             remaining_size,
           ))
@@ -132,15 +132,14 @@ fn parse_lines(
       let line_size = bit_array.byte_size(raw_line)
       case line_size > framer.limits.line_bytes_limit {
         True ->
-          Error(types.ResourceLimitExceeded(
-            "line_bytes_limit",
+          Error(error.LimitExceeded(
+            limit.LineBytes,
             framer.limits.line_bytes_limit,
             line_size,
           ))
         False -> {
           case bit_array.to_string(raw_line) {
-            Error(Nil) ->
-              Error(types.ProtocolError("Invalid UTF-8 in SSE stream"))
+            Error(Nil) -> Error(error.Protocol("Invalid UTF-8 in SSE stream"))
             Ok(line) -> {
               case process_line(framer, line) {
                 Error(e) -> Error(e)
@@ -155,8 +154,8 @@ fn parse_lines(
                   }
                   case next_count > framer.limits.queue_count_limit {
                     True ->
-                      Error(types.ResourceLimitExceeded(
-                        "events_per_chunk_limit",
+                      Error(error.LimitExceeded(
+                        limit.QueueCount,
                         framer.limits.queue_count_limit,
                         next_count,
                       ))
@@ -212,7 +211,7 @@ fn find_line_terminator(buffer: BitArray, offset: Int) -> LineExtract {
 fn process_line(
   framer: Framer,
   line: String,
-) -> Result(#(Framer, Option(ServerSentEvent)), types.WireError) {
+) -> Result(#(Framer, Option(ServerSentEvent)), error.Error) {
   case line {
     // Blank line indicates event boundary
     "" -> {
@@ -274,8 +273,8 @@ fn process_line(
           let new_total = framer.accumulated_event_bytes + added_bytes
           case new_total > framer.limits.event_bytes_limit {
             True ->
-              Error(types.ResourceLimitExceeded(
-                "event_bytes_limit",
+              Error(error.LimitExceeded(
+                limit.EventBytes,
                 framer.limits.event_bytes_limit,
                 new_total,
               ))

@@ -4,67 +4,68 @@ import fake_server
 import gleam/bit_array
 import gleam/erlang/process
 import gleam/int
-import gleam/option.{None}
+import gleam/list
+import gleam/option.{None, Some}
 import gleam/string
 import gleeunit/should
 import http_test_helpers
 import json/blueprint/codec
-import llm_wire/config
-import llm_wire/session
-import llm_wire/types
+import llm_wire
+import llm_wire/error
+import llm_wire/limit
+import llm_wire/message
+import llm_wire/provider
 import tool_fixtures
 
-fn settings(port: Int) -> config.Config {
-  let assert Ok(endpoint) =
-    types.endpoint("http://127.0.0.1:" <> int.to_string(port))
-  config.from_provider(external_provider.adapter(endpoint))
+fn settings(port: Int) -> llm_wire.Config {
+  provider.config(external_provider.adapter(
+    "http://127.0.0.1:" <> int.to_string(port),
+  ))
 }
 
-pub fn buffered_open_failure_preserves_pretransport_retry_evidence_test() {
+/// Was a failing reducer constructor, which no longer exists: `new_reducer`
+/// cannot fail. The closest pre-transport failure is a connection that is
+/// refused before the request leaves; it must keep `NotSent` evidence for a
+/// custom adapter, plain and structured.
+pub fn pretransport_failure_preserves_not_sent_evidence_test() {
   use owned_http <- http_test_helpers.with_client
-  let assert Ok(endpoint) = types.endpoint("http://127.0.0.1:1")
-  let settings =
-    config.from_provider(external_provider.failing_adapter(endpoint))
-  let assert Ok(prepared) = session.prepare(settings, request(False))
-  case session.run(owned_http, prepared) {
-    Error(session.RunFailure(types.ConfigurationError(_), retry)) -> {
-      retry.classification |> should.equal(types.NoRequestSent)
-      retry.response_bytes_observed |> should.be_false
-    }
-    _ -> should.fail()
-  }
+  let settings = settings(1)
+  let assert Ok(prepared) = llm_wire.prepare(settings, request(False))
+  let assert Error(failure) = llm_wire.run(owned_http, prepared)
+  let assert error.Http(_) = failure.error
+  failure.sent |> should.equal(llm_wire.NotSent)
+  failure.partial_output |> should.be_false
+  failure.provider |> should.equal(message.Custom("scripted-fourth"))
   let assert Ok(structured) =
-    session.prepare_structured(
+    llm_wire.prepare(
       settings,
-      request(False),
-      "answer",
-      tool_fixtures.one_field("answer", codec.int()),
+      request(False)
+        |> llm_wire.with_output(
+          "answer",
+          tool_fixtures.one_field("answer", codec.int()),
+        ),
     )
-  case session.run_structured(owned_http, structured) {
-    Error(session.RunFailure(types.ConfigurationError(_), retry)) ->
-      retry.classification |> should.equal(types.NoRequestSent)
-    _ -> should.fail()
-  }
+  let assert Error(failure) = llm_wire.run(owned_http, structured)
+  let assert error.Http(_) = failure.error
+  failure.sent |> should.equal(llm_wire.NotSent)
 }
 
-fn request(with_tool: Bool) -> types.Request {
-  let assert Ok(model) = types.model_id("fourth-model")
-  let base = types.new_request(model, [types.UserMessage("hello")])
+fn request(with_tool: Bool) -> llm_wire.Request(String) {
+  let base = llm_wire.request("fourth-model", [llm_wire.user("hello")])
   case with_tool {
-    True -> types.with_tools(base, [tool_fixtures.int_field_tool("calc", "x")])
+    True ->
+      llm_wire.with_tools(base, [tool_fixtures.int_field_tool("calc", "x")])
     False -> base
   }
 }
 
-fn terminal(stream: session.Stream) -> session.Terminal {
-  case session.next(stream) {
-    Ok(session.NextProgress(_)) -> terminal(stream)
-    Ok(session.StreamTerminal(value)) -> value
-    Error(session.StreamReadError(types.ReadTimeout)) -> terminal(stream)
-    Error(_) -> {
-      should.fail()
-      terminal(stream)
-    }
+fn terminal(
+  stream: llm_wire.Stream(o),
+) -> Result(llm_wire.Outcome(o), llm_wire.Failure) {
+  case llm_wire.next(stream) {
+    Ok(llm_wire.Progress(_)) -> terminal(stream)
+    Ok(llm_wire.Done(result)) -> result
+    Error(_) -> panic as "stream read failed"
   }
 }
 
@@ -90,9 +91,9 @@ pub fn external_provider_text_over_real_http_test() {
     Nil
   })
   let assert Ok(prepared) =
-    session.prepare(settings(server.port), request(False))
-  let assert Ok(session.RunText("Hello fourth!", None)) =
-    session.run(owned_http, prepared)
+    llm_wire.prepare(settings(server.port), request(False))
+  llm_wire.run(owned_http, prepared)
+  |> should.equal(Ok(llm_wire.Answer("Hello fourth!", "Hello fourth!", None)))
   fake_server.stop(server)
 }
 
@@ -133,38 +134,37 @@ pub fn external_provider_data_preserves_text_and_exact_tool_results_test() {
     Nil
   })
   let assert Ok(prepared) =
-    session.prepare(settings(server.port), request(True))
-  let assert Ok(session.RunToolCalls(turn, None)) =
-    session.run(owned_http, prepared)
+    llm_wire.prepare(settings(server.port), request(True))
+  let assert Ok(llm_wire.NeedsTools(turn:, issues: [], usage: None)) =
+    llm_wire.run(owned_http, prepared)
   turn.text |> should.equal("Before tool")
+  turn.provider |> should.equal(Some(message.Custom("scripted-fourth")))
   let assert [call] = turn.calls
   let prepare_next = fn(results) {
-    session.prepare(
+    llm_wire.prepare(
       settings(server.port),
       conversation_fixture.append_results(request(True), turn, results),
     )
   }
-  prepare_next([]) |> should.be_error
-  prepare_next([
-    types.ToolResult(call.id, "14"),
-    types.ToolResult(call.id, "14"),
-  ])
-  |> should.be_error
-  let assert Ok(next) = prepare_next([types.ToolResult(call.id, "14")])
-  let body = session.prepared_request_json(next)
+  let assert Error(error.ToolResultMismatch("call-1", error.MissingResult)) =
+    prepare_next([])
+  let assert Error(error.ToolResultMismatch("call-1", error.DuplicateResult)) =
+    prepare_next([#(call.id, "14"), #(call.id, "14")])
+  let assert Ok(next) = prepare_next([#(call.id, "14")])
+  let body = llm_wire.request_json(next)
   string.contains(body, "\"replay_text\":\"Before tool\"") |> should.be_true
   string.contains(body, "\"text\":\"Before tool\"") |> should.be_true
   string.contains(body, "\"call_id\":\"call-1\"") |> should.be_true
-  let assert Ok(session.RunText("Answer 14", None)) =
-    session.run(owned_http, next)
+  llm_wire.run(owned_http, next)
+  |> should.equal(Ok(llm_wire.Answer("Answer 14", "Answer 14", None)))
   fake_server.stop(server)
 }
 
 fn run_bounded_event(
   event_stream: String,
-  limits: types.Limits,
+  limits: List(#(limit.Limit, Int)),
   with_tool: Bool,
-) -> session.Terminal {
+) -> Result(llm_wire.Outcome(String), llm_wire.Failure) {
   use owned_http <- http_test_helpers.with_client
   let assert Ok(server) = fake_server.start()
   process.spawn_unlinked(fn() {
@@ -178,141 +178,126 @@ fn run_bounded_event(
       )
     Nil
   })
-  let configured = settings(server.port) |> config.with_limits(limits)
-  let assert Ok(prepared) = session.prepare(configured, request(with_tool))
-  let assert Ok(stream) = session.stream(owned_http, prepared)
+  let configured =
+    list.fold(limits, settings(server.port), fn(config, bound) {
+      llm_wire.with_limit(config, bound.0, bound.1)
+    })
+  let assert Ok(prepared) = llm_wire.prepare(configured, request(with_tool))
+  let assert Ok(stream) = llm_wire.stream(owned_http, prepared)
   let outcome = terminal(stream)
   fake_server.stop(server)
   outcome
 }
 
+fn limit_failure(
+  outcome: Result(llm_wire.Outcome(String), llm_wire.Failure),
+) -> #(limit.Limit, llm_wire.Failure) {
+  let assert Error(failure) = outcome
+  let assert error.LimitExceeded(exceeded, _, _) = failure.error
+  #(exceeded, failure)
+}
+
 pub fn external_provider_cannot_bypass_progress_or_terminal_limits_test() {
-  let limits =
-    types.Limits(
-      ..types.default_limits(),
-      text_bytes_per_block_limit: 5,
-      total_text_bytes_limit: 7,
-      argument_bytes_per_call_limit: 8,
-      extension_bytes_limit: 30,
-    )
-  let text_outcome =
+  let limits = [
+    #(limit.TextBytesPerBlock, 5),
+    #(limit.TotalTextBytes, 7),
+    #(limit.ArgumentBytesPerCall, 8),
+    #(limit.ExtensionBytes, 30),
+  ]
+  let #(exceeded, failure) =
     run_bounded_event(
       "event: text\ndata: first\n\nevent: text\ndata: next\n\n",
       limits,
       False,
     )
-  case text_outcome {
-    session.Failed(
-      types.ResourceLimitExceeded("text_bytes_per_block_limit", _, _),
-      retry,
-    ) -> {
-      retry.response_bytes_observed |> should.be_true
-      retry.semantic_progress_observed |> should.be_true
-    }
-    _ -> should.fail()
-  }
-  let same_event_outcome =
-    run_bounded_event(
-      "event: oversized_done\ndata: over-limit\n\n",
-      limits,
-      False,
-    )
-  case same_event_outcome {
-    session.Failed(
-      types.ResourceLimitExceeded("text_bytes_per_block_limit", _, _),
-      _,
-    ) -> should.be_true(True)
-    _ -> should.fail()
-  }
-  let batch_outcome =
+    |> limit_failure
+  exceeded |> should.equal(limit.TextBytesPerBlock)
+  // Was response bytes and semantic progress observed.
+  failure.partial_output |> should.be_true
+  failure.sent |> should.equal(llm_wire.MaybeSent)
+
+  run_bounded_event(
+    "event: oversized_done\ndata: over-limit\n\n",
+    limits,
+    False,
+  )
+  |> limit_failure
+  |> fn(pair) { pair.0 }
+  |> should.equal(limit.TextBytesPerBlock)
+
+  let #(exceeded, failure) =
     run_bounded_event(
       "event: batch_over_limit\ndata: larger\n\n",
       limits,
       False,
     )
-  case batch_outcome {
-    session.Failed(
-      types.ResourceLimitExceeded("text_bytes_per_block_limit", _, _),
-      retry,
-    ) -> retry.semantic_progress_observed |> should.be_true
-    _ -> should.fail()
-  }
-  let queue_limits =
-    types.Limits(..types.default_limits(), queue_bytes_limit: 45)
-  let queued_id_outcome =
-    run_bounded_event(
-      "event: long_id\ndata: retained-block-identifier\n\n",
-      queue_limits,
-      False,
-    )
-  case queued_id_outcome {
-    session.Failed(types.ResourceLimitExceeded("queue_bytes_limit", _, _), _) ->
-      should.be_true(True)
-    _ -> should.fail()
-  }
-  let metadata_limits =
-    types.Limits(..types.default_limits(), provider_metadata_bytes_limit: 40)
-  let metadata_outcome =
-    run_bounded_event(
-      "event: metadata_tool\ndata: provider-state-that-exceeds-the-budget\n\n",
-      metadata_limits,
-      True,
-    )
-  case metadata_outcome {
-    session.Failed(
-      types.ResourceLimitExceeded("provider_metadata_bytes_limit", _, _),
-      _,
-    ) -> should.be_true(True)
-    _ -> should.fail()
-  }
-  let catalog_outcome =
+    |> limit_failure
+  exceeded |> should.equal(limit.TextBytesPerBlock)
+  failure.partial_output |> should.be_true
+
+  run_bounded_event(
+    "event: long_id\ndata: retained-block-identifier\n\n",
+    [#(limit.QueueBytes, 45)],
+    False,
+  )
+  |> limit_failure
+  |> fn(pair) { pair.0 }
+  |> should.equal(limit.QueueBytes)
+
+  run_bounded_event(
+    "event: metadata_tool\ndata: provider-state-that-exceeds-the-budget\n\n",
+    [#(limit.ProviderMetadataBytes, 40)],
+    True,
+  )
+  |> limit_failure
+  |> fn(pair) { pair.0 }
+  |> should.equal(limit.ProviderMetadataBytes)
+
+  let assert Error(catalog) =
     run_bounded_event(
       "event: tool\ndata: call-1|ghost|{}\n\nevent: done\ndata: ok\n\n",
       limits,
       True,
     )
-  case catalog_outcome {
-    session.Failed(types.ProtocolError(_), retry) ->
-      retry.response_bytes_observed |> should.be_true
-    _ -> should.fail()
-  }
-  let partial_outcome =
-    run_bounded_event(
-      "event: tool\ndata: call-1|calc|123456789\n\nevent: limited\ndata: ok\n\n",
-      limits,
-      True,
-    )
-  case partial_outcome {
-    session.Failed(
-      types.ResourceLimitExceeded("argument_bytes_per_call_limit", _, _),
-      _,
-    ) -> should.be_true(True)
-    _ -> should.fail()
-  }
-  let refusal_outcome =
-    run_bounded_event(
-      "event: refusal\ndata: Refusal longer than seven\n\n",
-      limits,
-      False,
-    )
-  case refusal_outcome {
-    session.Failed(
-      types.ResourceLimitExceeded("total_text_bytes_limit", _, _),
-      _,
-    ) -> should.be_true(True)
-    _ -> should.fail()
-  }
-  let extension_outcome =
-    run_bounded_event(
-      "event: extension\ndata: this-is-a-long-extension-name\n\n",
-      limits,
-      False,
-    )
-  case extension_outcome {
-    session.Failed(
-      types.ResourceLimitExceeded("extension_bytes_limit", _, _),
-      _,
-    ) -> should.be_true(True)
-    _ -> should.fail()
-  }
+  let assert error.Protocol(_) = catalog.error
+  // Was response bytes observed: a finished response with invalid content
+  // is `Completed`.
+  catalog.sent |> should.equal(llm_wire.Completed)
+
+  run_bounded_event(
+    "event: tool\ndata: call-1|calc|123456789\n\nevent: limited\ndata: ok\n\n",
+    limits,
+    True,
+  )
+  |> limit_failure
+  |> fn(pair) { pair.0 }
+  |> should.equal(limit.ArgumentBytesPerCall)
+
+  run_bounded_event(
+    "event: refusal\ndata: Refusal longer than seven\n\n",
+    limits,
+    False,
+  )
+  |> limit_failure
+  |> fn(pair) { pair.0 }
+  |> should.equal(limit.TotalTextBytes)
+
+  run_bounded_event(
+    "event: extension\ndata: this-is-a-long-extension-name\n\n",
+    limits,
+    False,
+  )
+  |> limit_failure
+  |> fn(pair) { pair.0 }
+  |> should.equal(limit.ExtensionBytes)
+}
+
+/// The reducer's own failure terminal surfaces as a provider error after the
+/// response completed.
+pub fn external_provider_failure_terminal_is_a_provider_error_test() {
+  let assert Error(failure) =
+    run_bounded_event("event: failure\ndata: broken\n\n", [], False)
+  failure.error |> should.equal(error.Provider(Some("fixture"), "broken"))
+  failure.provider |> should.equal(message.Custom("scripted-fourth"))
+  llm_wire.advise(failure).prospect |> should.equal(llm_wire.Unknown)
 }

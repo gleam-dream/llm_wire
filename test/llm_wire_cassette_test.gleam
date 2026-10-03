@@ -11,28 +11,25 @@ import gleeunit/should
 import http_gun
 import http_gun/cassette
 import http_gun/config as http_config
-import http_gun/error
+import http_gun/error as http_error
 import http_gun/redaction
 import http_gun/testing as http_testing
 import http_test_helpers
-import llm_wire/config
-import llm_wire/provider/openai
-import llm_wire/session
+import llm_wire
+import llm_wire/error
+import llm_wire/openai
 import llm_wire/testing
-import llm_wire/types
 import simplifile
 
-fn settings() -> config.Config {
-  let assert Ok(key) = types.api_key("synthetic-cassette-secret")
-  config.openai(openai.options(key))
+fn settings() -> llm_wire.Config {
+  openai.new("synthetic-cassette-secret") |> openai.config
 }
 
-fn prepared(text: String) -> session.PreparedCall {
-  let assert Ok(model) = types.model_id("cassette-model")
+fn prepared(text: String) -> llm_wire.Prepared(String) {
   let assert Ok(call) =
-    session.prepare(
+    llm_wire.prepare(
       settings(),
-      types.new_request(model, [types.UserMessage(text)]),
+      llm_wire.request("cassette-model", [llm_wire.user(text)]),
     )
   call
 }
@@ -48,10 +45,23 @@ fn reply(text: String) -> testing.Reply {
   ])
 }
 
+fn answer(text: String) -> Result(llm_wire.Outcome(String), llm_wire.Failure) {
+  Ok(llm_wire.Answer(text, text, None))
+}
+
 fn encoded() -> String {
   cassette.encode(
     http_testing.script([testing.exchange(prepared("Hello"), reply("loaded"))]),
   )
+}
+
+/// The HTTP Gun reason of a transport failure; panics on any other outcome.
+fn http_reason(
+  outcome: Result(llm_wire.Outcome(o), llm_wire.Failure),
+) -> #(http_error.Reason, llm_wire.Sent) {
+  let assert Error(llm_wire.Failure(error: error.Http(failure), sent:, ..)) =
+    outcome
+  #(http_error.reason(failure), sent)
 }
 
 pub fn identical_requests_consume_distinct_replies_in_order_test() {
@@ -60,13 +70,11 @@ pub fn identical_requests_consume_distinct_replies_in_order_test() {
     testing.exchange(call, reply("first")),
     testing.exchange(call, reply("second")),
   ])
-  session.run(client, call) |> should.equal(Ok(session.RunText("first", None)))
-  session.run(client, call) |> should.equal(Ok(session.RunText("second", None)))
-  let assert Error(session.RunFailure(
-    types.HttpFailure(error.PlaybackExhausted),
-    evidence,
-  )) = session.run(client, call)
-  evidence |> should.equal(types.initial_retry_evidence())
+  llm_wire.run(client, call) |> should.equal(answer("first"))
+  llm_wire.run(client, call) |> should.equal(answer("second"))
+  // Was `initial_retry_evidence()`: nothing reached a provider.
+  http_reason(llm_wire.run(client, call))
+  |> should.equal(#(http_error.PlaybackExhausted, llm_wire.NotSent))
 }
 
 pub fn mismatches_do_not_consume_the_expected_exchange_test() {
@@ -74,20 +82,15 @@ pub fn mismatches_do_not_consume_the_expected_exchange_test() {
   use client <- http_test_helpers.with_script([
     testing.exchange(call, reply("correct")),
   ])
-  let assert Error(session.RunFailure(
-    types.HttpFailure(error.PlaybackMismatch(0)),
-    evidence,
-  )) = session.run(client, prepared("Wrong"))
-  evidence |> should.equal(types.initial_retry_evidence())
-  session.run(client, call)
-  |> should.equal(Ok(session.RunText("correct", None)))
+  http_reason(llm_wire.run(client, prepared("Wrong")))
+  |> should.equal(#(http_error.PlaybackMismatch(0), llm_wire.NotSent))
+  llm_wire.run(client, call) |> should.equal(answer("correct"))
 }
 
 pub fn cassette_json_round_trip_drives_the_same_public_flow_test() {
   let assert Ok(tape) = cassette.parse(encoded(), 100_000)
   let assert Ok(client) = http_testing.playback(tape, http_config.default())
-  session.run(client, prepared("Hello"))
-  |> should.equal(Ok(session.RunText("loaded", None)))
+  llm_wire.run(client, prepared("Hello")) |> should.equal(answer("loaded"))
   http_gun.stop(client)
   string.contains(encoded(), "synthetic-cassette-secret") |> should.be_false
   string.contains(encoded(), "content-type") |> should.be_true
@@ -97,8 +100,7 @@ pub fn disk_fixtures_replace_only_the_transport_test() {
   let assert Ok(tape) =
     cassette.load("test/fixtures/http-gun-text.json", 100_000)
   let assert Ok(client) = http_testing.playback(tape, http_config.default())
-  session.run(client, prepared("Hello"))
-  |> should.equal(Ok(session.RunText("loaded", None)))
+  llm_wire.run(client, prepared("Hello")) |> should.equal(answer("loaded"))
   http_gun.stop(client)
 }
 
@@ -127,8 +129,7 @@ pub fn binary_chunks_preserve_split_utf8_and_crlf_test() {
   let original = testing.exchange(call, reply("héllo"))
   let assert http_testing.Respond(response, ending) =
     http_testing.reply(original)
-  let bytes = bit_array.concat(response.body)
-  let chunks = byte_chunks(bytes)
+  let chunks = byte_chunks(bit_array.concat(response.body))
   let exchange =
     http_testing.exchange(
       http_testing.request(original),
@@ -137,7 +138,7 @@ pub fn binary_chunks_preserve_split_utf8_and_crlf_test() {
   let assert Ok(parsed) =
     cassette.parse(cassette.encode(http_testing.script([exchange])), 100_000)
   let assert Ok(client) = http_testing.playback(parsed, http_config.default())
-  session.run(client, call) |> should.equal(Ok(session.RunText("héllo", None)))
+  llm_wire.run(client, call) |> should.equal(answer("héllo"))
   http_gun.stop(client)
 }
 
@@ -158,7 +159,10 @@ pub fn cassette_construction_rejects_invalid_status_and_bit_arrays_test() {
   http_testing.script([
     http_testing.exchange(
       http_request.set_body(request, <<1:1>>),
-      http_testing.Reject(error.new(error.ClientClosed, error.NotSent)),
+      http_testing.Reject(http_error.new(
+        http_error.ClientClosed,
+        http_error.NotSent,
+      )),
     ),
   ])
   |> http_testing.playback(http_config.default())
@@ -171,17 +175,18 @@ pub fn recorded_status_and_interruption_keep_normal_error_evidence_test() {
     testing.exchange(call, testing.Status(429, "busy")),
     testing.exchange(call, testing.Interrupted([])),
   ])
-  let assert Error(session.RunFailure(
-    types.HttpStatusError(429, "busy", None),
-    retry,
-  )) = session.run(client, call)
-  retry.response_bytes_observed |> should.be_true
-  let assert Error(session.RunFailure(
-    types.HttpFailure(error.RequestFailed(error.PeerClosed)),
-    retry,
-  )) = session.run(client, call)
-  retry.response_bytes_observed |> should.be_false
-  retry.classification |> should.equal(types.RequestMayHaveReachedProvider)
+  let assert Error(status) = llm_wire.run(client, call)
+  status.error |> should.equal(error.Status(429, "busy", None))
+  // A finished error response is `Completed` (was response bytes observed).
+  status.sent |> should.equal(llm_wire.Completed)
+  let assert Error(interrupted) = llm_wire.run(client, call)
+  let assert error.Http(failure) = interrupted.error
+  http_error.reason(failure)
+  |> should.equal(http_error.RequestFailed(http_error.PeerClosed))
+  // Was RequestMayHaveReachedProvider without response bytes; byte
+  // observation is no longer public, only whether progress streamed.
+  interrupted.sent |> should.equal(llm_wire.MaybeSent)
+  interrupted.partial_output |> should.be_false
 }
 
 pub fn required_schema_fields_and_tags_are_checked_test() {
@@ -226,10 +231,8 @@ pub fn significant_headers_must_match_and_credentials_are_excluded_test() {
       http_testing.reply(expected),
     )
   use client <- http_test_helpers.with_script([wrong])
-  let assert Error(session.RunFailure(
-    types.HttpFailure(error.PlaybackMismatch(_)),
-    _,
-  )) = session.run(client, call)
+  let assert #(http_error.PlaybackMismatch(_), _) =
+    http_reason(llm_wire.run(client, call))
   // Matching is exact for significant headers; excluded credentials don't alter it.
   let key = http_testing.match_key(redaction.default(), _)
   key(expected_request)
@@ -252,9 +255,10 @@ pub fn replayed_partial_stream_preserves_interruption_evidence_test() {
   use client <- http_test_helpers.with_script([
     testing.exchange(call, testing.Interrupted(list.take(chunks, 2))),
   ])
-  let assert Error(session.RunFailure(_, retry)) = session.run(client, call)
-  retry.response_bytes_observed |> should.be_true
-  retry.semantic_progress_observed |> should.be_true
+  let assert Error(failure) = llm_wire.run(client, call)
+  // Was response bytes and semantic progress observed.
+  failure.sent |> should.equal(llm_wire.MaybeSent)
+  failure.partial_output |> should.be_true
 }
 
 pub fn unexpected_success_statuses_match_the_http_transport_test() {
@@ -262,10 +266,8 @@ pub fn unexpected_success_statuses_match_the_http_transport_test() {
   use client <- http_test_helpers.with_script([
     testing.exchange(call, testing.Status(201, "created")),
   ])
-  let assert Error(session.RunFailure(
-    types.HttpStatusError(201, "created", _),
-    _,
-  )) = session.run(client, call)
+  let assert Error(llm_wire.Failure(error: error.Status(201, "created", _), ..)) =
+    llm_wire.run(client, call)
 }
 
 // Explicit fixture regeneration; never record-if-missing during tests.

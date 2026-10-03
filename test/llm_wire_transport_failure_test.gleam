@@ -1,22 +1,27 @@
 import gleeunit/should
-import http_gun/error
+import http_gun/error as http_error
+import llm_wire/error
 import llm_wire/internal/http_client
-import llm_wire/types
 
 pub fn http_deadline_keeps_deadline_classification_test() {
-  http_client.wire_error(error.new(error.DeadlineExceeded, error.MaybeSent))
-  |> should.equal(types.DeadlineExceeded(types.OverallDeadline))
+  http_client.wire_error(http_error.new(
+    http_error.DeadlineExceeded,
+    http_error.MaybeSent,
+  ))
+  |> should.equal(error.DeadlineExceeded(error.WholeCall))
 }
 
 pub fn diagnostic_text_does_not_determine_failure_category_test() {
-  // Another timeout is not the call's overall deadline.
-  http_client.wire_error(error.new(error.IdleTimeout, error.NotSent))
-  |> should.equal(types.HttpFailure(error.IdleTimeout))
-  http_client.wire_error(error.new(
-    error.ConnectionFailed(error.ConnectionRefused),
-    error.NotSent,
-  ))
-  |> should.equal(
-    types.HttpFailure(error.ConnectionFailed(error.ConnectionRefused)),
-  )
+  // Another timeout is not the call's whole-call deadline. The error now
+  // carries HTTP Gun's opaque failure itself, not only its reason.
+  let idle = http_error.new(http_error.IdleTimeout, http_error.NotSent)
+  http_client.wire_error(idle) |> should.equal(error.Http(idle))
+  let refused =
+    http_error.new(
+      http_error.ConnectionFailed(http_error.ConnectionRefused),
+      http_error.NotSent,
+    )
+  let assert error.Http(failure) = http_client.wire_error(refused)
+  http_error.reason(failure)
+  |> should.equal(http_error.ConnectionFailed(http_error.ConnectionRefused))
 }

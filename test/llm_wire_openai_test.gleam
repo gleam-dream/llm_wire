@@ -1,17 +1,18 @@
 import gleam/option.{None, Some}
 import gleeunit/should
+import llm_wire/error
+import llm_wire/internal/limits
 import llm_wire/internal/openai
 import llm_wire/internal/sse
 import llm_wire/internal/stream_types
-import llm_wire/types
-import tool_fixtures
+import llm_wire/message
 
 fn event(name: String, data: String) -> sse.ServerSentEvent {
   sse.ServerSentEvent(event: Some(name), data: data, id: None, retry: None)
 }
 
 pub fn openai_refusal_delta_is_reduced_and_terminally_refused_test() {
-  let reducer = openai.new(types.default_limits())
+  let reducer = openai.new(limits.default())
   let assert Ok(#(reducer, [])) =
     openai.step(
       reducer,
@@ -30,7 +31,7 @@ pub fn openai_refusal_delta_is_reduced_and_terminally_refused_test() {
     )
   refusal_progress
   |> should.equal([
-    types.RefusalDelta(block_id: "msg_1", text: "I cannot help with that."),
+    message.RefusalDelta(block_id: "msg_1", text: "I cannot help with that."),
   ])
   let assert Ok(#(reducer, [])) =
     openai.step(
@@ -58,7 +59,7 @@ pub fn openai_refusal_delta_is_reduced_and_terminally_refused_test() {
 }
 
 pub fn openai_reasoning_summary_delta_is_routed_and_completed_test() {
-  let reducer = openai.new(types.default_limits())
+  let reducer = openai.new(limits.default())
   let assert Ok(#(reducer, [])) =
     openai.step(
       reducer,
@@ -77,7 +78,7 @@ pub fn openai_reasoning_summary_delta_is_routed_and_completed_test() {
     )
   progress
   |> should.equal([
-    types.ReasoningDelta(block_id: "reason_1", text: "Checking the result."),
+    message.ReasoningDelta(block_id: "reason_1", text: "Checking the result."),
   ])
   let assert Ok(#(reducer, [])) =
     openai.step(
@@ -105,7 +106,7 @@ pub fn openai_reasoning_summary_delta_is_routed_and_completed_test() {
 }
 
 pub fn openai_incomplete_reasoning_item_cannot_complete_response_test() {
-  let reducer = openai.new(types.default_limits())
+  let reducer = openai.new(limits.default())
   let assert Ok(#(reducer, [])) =
     openai.step(
       reducer,
@@ -126,7 +127,7 @@ pub fn openai_incomplete_reasoning_item_cannot_complete_response_test() {
 }
 
 pub fn openai_refusal_cannot_arrive_after_message_completion_test() {
-  let reducer = openai.new(types.default_limits())
+  let reducer = openai.new(limits.default())
   let assert Ok(#(reducer, [])) =
     openai.step(
       reducer,
@@ -154,7 +155,7 @@ pub fn openai_refusal_cannot_arrive_after_message_completion_test() {
 }
 
 pub fn openai_text_cannot_arrive_after_message_completion_test() {
-  let reducer = openai.new(types.default_limits())
+  let reducer = openai.new(limits.default())
   let assert Ok(#(reducer, [])) =
     openai.step(
       reducer,
@@ -182,7 +183,7 @@ pub fn openai_text_cannot_arrive_after_message_completion_test() {
 }
 
 pub fn openai_text_stream_test() {
-  let reducer = openai.new(types.default_limits())
+  let reducer = openai.new(limits.default())
 
   // response.created
   let ev1 =
@@ -216,7 +217,7 @@ pub fn openai_text_stream_test() {
     )
   let assert Ok(#(reducer, progress3)) = openai.step(reducer, ev3)
   progress3
-  |> should.equal([types.TextDelta(block_id: "item_1", text: "Hello ")])
+  |> should.equal([message.TextDelta(block_id: "item_1", text: "Hello ")])
 
   // second text delta
   let ev4 =
@@ -228,7 +229,7 @@ pub fn openai_text_stream_test() {
     )
   let assert Ok(#(reducer, progress4)) = openai.step(reducer, ev4)
   progress4
-  |> should.equal([types.TextDelta(block_id: "item_1", text: "world!")])
+  |> should.equal([message.TextDelta(block_id: "item_1", text: "world!")])
 
   // output_item.done
   let ev_done =
@@ -252,7 +253,7 @@ pub fn openai_text_stream_test() {
   let assert Ok(#(reducer, progress5)) = openai.step(reducer, ev5)
   progress5
   |> should.equal([
-    types.UsageUpdate(types.Usage(
+    message.UsageUpdate(message.Usage(
       input_tokens: 10,
       output_tokens: 5,
       total_tokens: 15,
@@ -263,7 +264,7 @@ pub fn openai_text_stream_test() {
   |> should.equal(
     Some(stream_types.StreamFinished(
       outcome: stream_types.CompletedText("Hello world!"),
-      usage: Some(types.Usage(
+      usage: Some(message.Usage(
         input_tokens: 10,
         output_tokens: 5,
         total_tokens: 15,
@@ -273,8 +274,9 @@ pub fn openai_text_stream_test() {
 }
 
 pub fn openai_interleaved_tool_calls_test() {
-  let tool = tool_fixtures.string_field_tool("get_weather", "city")
-  let assert Ok(reducer) = openai.new_with_tools(types.default_limits(), [tool])
+  // The reducer no longer takes the tool list (`new_with_tools` is gone):
+  // the runtime admits calls against tools at the terminal.
+  let reducer = openai.new(limits.default())
 
   // Add tool call 1: item_1, index 0, call_id "call_weather_1"
   let ev1 =
@@ -304,7 +306,12 @@ pub fn openai_interleaved_tool_calls_test() {
       id: None,
       retry: None,
     )
-  let assert Ok(#(reducer, _)) = openai.step(reducer, ev3)
+  let assert Ok(#(reducer, p3)) = openai.step(reducer, ev3)
+  // Wave 4 reports argument text as progress, attributed to its own call.
+  p3
+  |> should.equal([
+    message.ToolArgumentsDelta("call_weather_2", "{\"city\": \"Paris\"}"),
+  ])
 
   // Then chunk for call 1
   let ev4 =
@@ -314,7 +321,11 @@ pub fn openai_interleaved_tool_calls_test() {
       id: None,
       retry: None,
     )
-  let assert Ok(#(reducer, _)) = openai.step(reducer, ev4)
+  let assert Ok(#(reducer, p4)) = openai.step(reducer, ev4)
+  p4
+  |> should.equal([
+    message.ToolArgumentsDelta("call_weather_1", "{\"city\": \"Tokyo\"}"),
+  ])
 
   // Done for call 1
   let ev5 =
@@ -325,8 +336,9 @@ pub fn openai_interleaved_tool_calls_test() {
       retry: None,
     )
   let assert Ok(#(reducer, p5)) = openai.step(reducer, ev5)
-  let assert Ok(expected_call_id1) = types.call_id("call_weather_1")
-  let assert Ok(expected_tool_name) = types.tool_name("get_weather")
+  // Call ids and tool names are plain strings now.
+  let expected_call_id1 = "call_weather_1"
+  let expected_tool_name = "get_weather"
   p5 |> should.equal([])
 
   // Done for call 2
@@ -338,7 +350,7 @@ pub fn openai_interleaved_tool_calls_test() {
       retry: None,
     )
   let assert Ok(#(reducer, p6)) = openai.step(reducer, ev6)
-  let assert Ok(expected_call_id2) = types.call_id("call_weather_2")
+  let expected_call_id2 = "call_weather_2"
   p6 |> should.equal([])
 
   // Response completed
@@ -358,14 +370,14 @@ pub fn openai_interleaved_tool_calls_test() {
       response_id |> should.equal(Some("resp_1"))
       calls
       |> should.equal([
-        types.ToolCall(
+        message.ToolCall(
           id: expected_call_id1,
           name: expected_tool_name,
           arguments_json: "{\"city\": \"Tokyo\"}",
           provider_id: Some("call_weather_1"),
           provider_state: None,
         ),
-        types.ToolCall(
+        message.ToolCall(
           id: expected_call_id2,
           name: expected_tool_name,
           arguments_json: "{\"city\": \"Paris\"}",
@@ -379,7 +391,7 @@ pub fn openai_interleaved_tool_calls_test() {
 }
 
 pub fn openai_provider_cancellation_is_not_attributed_to_local_owner_test() {
-  let reducer = openai.new(types.default_limits())
+  let reducer = openai.new(limits.default())
   let completed =
     sse.ServerSentEvent(
       event: Some("response.completed"),
@@ -389,14 +401,14 @@ pub fn openai_provider_cancellation_is_not_attributed_to_local_owner_test() {
     )
   let assert Ok(#(reducer, _)) = openai.step(reducer, completed)
   case openai.terminal(reducer) {
-    Some(stream_types.StreamFailed(types.ProviderError(Some("cancelled"), _), _)) ->
+    Some(stream_types.StreamFailed(error.Provider(Some("cancelled"), _), _)) ->
       should.be_true(True)
     _ -> should.fail()
   }
 }
 
 pub fn openai_provider_error_test() {
-  let reducer = openai.new(types.default_limits())
+  let reducer = openai.new(limits.default())
   let ev =
     sse.ServerSentEvent(
       event: Some("error"),
@@ -408,12 +420,12 @@ pub fn openai_provider_error_test() {
   openai.terminal(reducer)
   |> should.equal(
     Some(stream_types.StreamFailed(
-      error: types.ProviderError(
+      error: error.Provider(
         code: Some("rate_limit"),
         message: "Too many requests",
       ),
-      retry: types.RetryEvidence(
-        classification: types.RequestMayHaveReachedProvider,
+      retry: stream_types.RetryEvidence(
+        classification: stream_types.RequestMayHaveReachedProvider,
         response_bytes_observed: True,
         semantic_progress_observed: False,
       ),
@@ -422,7 +434,7 @@ pub fn openai_provider_error_test() {
 }
 
 pub fn openai_future_extension_test() {
-  let reducer = openai.new(types.default_limits())
+  let reducer = openai.new(limits.default())
   let ev =
     sse.ServerSentEvent(
       event: Some("response.some_new_feature"),
@@ -433,7 +445,7 @@ pub fn openai_future_extension_test() {
   let assert Ok(#(_reducer, progress)) = openai.step(reducer, ev)
   progress
   |> should.equal([
-    types.ProviderExtension(
+    message.ProviderExtension(
       provider: "openai",
       event_name: "response.some_new_feature",
     ),

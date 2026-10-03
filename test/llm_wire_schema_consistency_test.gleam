@@ -4,17 +4,25 @@ import gleam/string
 import gleeunit/should
 import json/blueprint/codec
 import json/blueprint/contract
-import llm_wire/config
+import llm_wire
+import llm_wire/anthropic
+import llm_wire/error
+import llm_wire/google
 import llm_wire/internal/schema
-import llm_wire/provider/anthropic as anthropic_provider
-import llm_wire/provider/google as google_provider
-import llm_wire/provider/openai as openai_provider
-import llm_wire/session
-import llm_wire/types
+import llm_wire/openai
+import llm_wire/tool
 import tool_fixtures
 
 fn single_field_schema() -> codec.Schema {
   codec.ObjectSchema([codec.PropertySchema("answer", True, codec.IntSchema)])
+}
+
+fn builtin_configs() -> List(llm_wire.Config) {
+  [
+    openai.new("test-key") |> openai.config,
+    anthropic.new("test-key") |> anthropic.config,
+    google.new("test-key") |> google.config,
+  ]
 }
 
 pub fn described_tool_schema_survives_contract_and_provider_projection_test() {
@@ -24,10 +32,10 @@ pub fn described_tool_schema_survives_contract_and_provider_projection_test() {
       codec.describe(codec.string(), "City to look up"),
     )
     |> codec.describe("Weather request")
-  let assert Ok(contract) = contract.from_codec(input)
-  let assert Ok(name) = types.tool_name("lookup_weather")
-  let tool = types.tool_from_contract(name, "Look up weather", contract)
-  let assert Ok(projected) = schema.provider_schema(types.tool_schema(tool))
+  let assert Ok(input_contract) = contract.from_codec(input)
+  let assert Ok(weather) =
+    tool.from_contract("lookup_weather", "Look up weather", input_contract)
+  let assert Ok(projected) = schema.provider_schema(tool.schema(weather))
   projected
   |> should.equal(
     json.object([
@@ -49,23 +57,16 @@ pub fn described_tool_schema_survives_contract_and_provider_projection_test() {
       #("additionalProperties", json.bool(False)),
     ]),
   )
-  schema.strict_output_schema(types.tool_schema(tool)) |> should.be_ok
-  schema.google_strict_output_schema(types.tool_schema(tool)) |> should.be_ok
+  schema.strict_output_schema(tool.schema(weather)) |> should.be_ok
+  schema.google_strict_output_schema(tool.schema(weather)) |> should.be_ok
 
-  let assert Ok(key) = types.api_key("test-key")
-  let assert Ok(model) = types.model_id("model-test")
   let request =
-    types.new_request(model, [types.UserMessage("weather")])
-    |> types.with_tools([tool])
-  let assert Ok(openai) =
-    session.prepare(config.openai(openai_provider.options(key)), request)
-  let assert Ok(anthropic) =
-    session.prepare(config.anthropic(anthropic_provider.options(key)), request)
-  let assert Ok(google) =
-    session.prepare(config.google(google_provider.options(key)), request)
-  [openai, anthropic, google]
-  |> list.all(fn(prepared) {
-    let wire = session.prepared_request_json(prepared)
+    llm_wire.request("model-test", [llm_wire.user("weather")])
+    |> llm_wire.with_tools([weather])
+  builtin_configs()
+  |> list.all(fn(config) {
+    let assert Ok(prepared) = llm_wire.prepare(config, request)
+    let wire = llm_wire.request_json(prepared)
     string.contains(wire, "\"description\":\"Weather request\"")
     && string.contains(wire, "\"description\":\"City to look up\"")
   })
@@ -94,55 +95,42 @@ pub fn strict_admission_projects_single_field_object_schema_test() {
 }
 
 pub fn configured_structured_prepare_accepts_field_codec_for_all_providers_test() {
-  let assert Ok(key) = types.api_key("test-key")
-  let assert Ok(model) = types.model_id("model-test")
-  let request = types.new_request(model, [types.UserMessage("answer")])
-  let output_codec = tool_fixtures.one_field("answer", codec.int())
-
-  let assert Ok(openai) =
-    session.prepare_structured(
-      config.openai(openai_provider.options(key)),
-      request,
+  let request =
+    llm_wire.request("model-test", [llm_wire.user("answer")])
+    |> llm_wire.with_output(
       "answer_shape",
-      output_codec,
+      tool_fixtures.one_field("answer", codec.int()),
     )
-  let assert Ok(anthropic) =
-    session.prepare_structured(
-      config.anthropic(anthropic_provider.options(key)),
-      request,
-      "answer_shape",
-      output_codec,
-    )
-  let assert Ok(google) =
-    session.prepare_structured(
-      config.google(google_provider.options(key)),
-      request,
-      "answer_shape",
-      output_codec,
-    )
-  session.structured_request_json(openai)
-  |> string.contains("\"additionalProperties\":false")
-  |> should.be_true
-  session.structured_request_json(anthropic)
-  |> string.contains("\"additionalProperties\":false")
-  |> should.be_true
-  session.structured_request_json(google)
-  |> string.contains("\"additionalProperties\":false")
-  |> should.be_true
+  list.each(builtin_configs(), fn(config) {
+    let assert Ok(prepared) = llm_wire.prepare(config, request)
+    llm_wire.request_json(prepared)
+    |> string.contains("\"additionalProperties\":false")
+    |> should.be_true
+  })
 }
 
 pub fn optional_field_is_not_converted_to_nullable_required_test() {
   let optional =
     codec.ObjectSchema([codec.PropertySchema("answer", False, codec.IntSchema)])
-  case schema.strict_output_schema(optional) {
-    Error(types.PreparationError(message)) ->
-      message
-      |> should.equal(
-        "Strict structured output requires every object property to be required",
-      )
-    _ -> should.fail()
-  }
+  // Projections now return a plain reason; `prepare` wraps it in
+  // `error.UnsupportedSchema(error.Output, reason)`.
+  let reason =
+    "Strict structured output requires every object property to be required"
+  schema.strict_output_schema(optional) |> should.equal(Error(reason))
   schema.google_strict_output_schema(optional) |> should.be_error
+  let output = {
+    use item <- codec.optional_field("answer", codec.int(), get: fn(item) {
+      item
+    })
+    codec.success(item)
+  }
+  let request =
+    llm_wire.request("model-test", [llm_wire.user("answer")])
+    |> llm_wire.with_output("optional_shape", output)
+  list.each(builtin_configs(), fn(config) {
+    llm_wire.prepare(config, request)
+    |> should.equal(Error(error.UnsupportedSchema(error.Output, reason)))
+  })
 }
 
 pub fn unsupported_vocabulary_and_google_nullable_restriction_remain_test() {
@@ -166,12 +154,8 @@ pub fn unsupported_vocabulary_and_google_nullable_restriction_remain_test() {
       ),
     ])
   schema.strict_output_schema(nullable) |> should.be_ok
-  case schema.google_strict_output_schema(nullable) {
-    Error(types.PreparationError(message)) ->
-      message
-      |> should.equal(
-        "Google structured output does not support nullable/anyOf schema",
-      )
-    _ -> should.fail()
-  }
+  schema.google_strict_output_schema(nullable)
+  |> should.equal(Error(
+    "Google structured output does not support nullable/anyOf schema",
+  ))
 }

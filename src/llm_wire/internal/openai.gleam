@@ -6,13 +6,17 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import llm_wire/error
+import llm_wire/internal/ids
+import llm_wire/internal/limits
 import llm_wire/internal/sse
 import llm_wire/internal/stream_types
-import llm_wire/types
+import llm_wire/limit
+import llm_wire/message
 
 pub opaque type Reducer {
   Reducer(
-    limits: types.Limits,
+    limits: limits.Limits,
     text_buffers: Dict(String, String),
     text_order: List(String),
     text_done: Dict(String, Bool),
@@ -35,15 +39,10 @@ pub opaque type Reducer {
 }
 
 type ToolBuffer {
-  ToolBuffer(
-    call_id: types.CallId,
-    name: types.ToolName,
-    arguments: String,
-    is_done: Bool,
-  )
+  ToolBuffer(call_id: String, name: String, arguments: String, is_done: Bool)
 }
 
-pub fn new(limits: types.Limits) -> Reducer {
+pub fn new(limits: limits.Limits) -> Reducer {
   Reducer(
     limits: limits,
     text_buffers: dict.new(),
@@ -67,36 +66,23 @@ pub fn new(limits: types.Limits) -> Reducer {
   )
 }
 
-/// Admits the catalog so duplicate names fail before transport. Whether a
-/// returned call names a declared tool with valid arguments is decided by the
-/// runtime's terminal admission, not by this reducer.
-pub fn new_with_tools(
-  limits: types.Limits,
-  tools: List(types.ToolDefinition),
-) -> Result(Reducer, types.WireError) {
-  case types.admit_tool_catalog(tools) {
-    Error(error) -> Error(error)
-    Ok(_) -> Ok(new(limits))
-  }
-}
-
 pub fn terminal(reducer: Reducer) -> Option(stream_types.TerminalOutcome) {
   reducer.terminal_outcome
 }
 
 pub fn retry_evidence(
   reducer: Reducer,
-  fallback_classification: types.RetryClassification,
-) -> types.RetryEvidence {
+  fallback_classification: stream_types.RetryClassification,
+) -> stream_types.RetryEvidence {
   let classification = case reducer.semantic_progress_observed {
     True ->
       case list.is_empty(reducer.tool_order) {
-        False -> types.EffectUnknown
+        False -> stream_types.EffectUnknown
         True -> fallback_classification
       }
     False -> fallback_classification
   }
-  types.RetryEvidence(
+  stream_types.RetryEvidence(
     classification: classification,
     response_bytes_observed: reducer.response_bytes_observed,
     semantic_progress_observed: reducer.semantic_progress_observed,
@@ -106,11 +92,10 @@ pub fn retry_evidence(
 pub fn step(
   reducer: Reducer,
   event: sse.ServerSentEvent,
-) -> Result(#(Reducer, List(types.StreamProgress)), types.WireError) {
+) -> Result(#(Reducer, List(message.Progress)), error.Error) {
   // If already terminal, reject further events
   case reducer.terminal_outcome {
-    Some(_) ->
-      Error(types.ProtocolError("Event received after stream terminal"))
+    Some(_) -> Error(error.Protocol("Event received after stream terminal"))
     None -> {
       let with_bytes = Reducer(..reducer, response_bytes_observed: True)
       case event.event {
@@ -144,15 +129,15 @@ pub fn step(
           let event_bytes = string.byte_size(other_event)
           case event_bytes > with_bytes.limits.extension_bytes_limit {
             True ->
-              Error(types.ResourceLimitExceeded(
-                "extension_bytes_limit",
+              Error(error.LimitExceeded(
+                limit.ExtensionBytes,
                 with_bytes.limits.extension_bytes_limit,
                 event_bytes,
               ))
             False ->
               Ok(
                 #(with_bytes, [
-                  types.ProviderExtension(
+                  message.ProviderExtension(
                     provider: "openai",
                     event_name: other_event,
                   ),
@@ -168,7 +153,7 @@ pub fn step(
             _ ->
               Ok(
                 #(with_bytes, [
-                  types.ProviderExtension(
+                  message.ProviderExtension(
                     provider: "openai",
                     event_name: "data_only",
                   ),
@@ -224,22 +209,22 @@ fn decode_output_item_added() -> decode.Decoder(OutputItemAdded) {
 fn handle_output_item_added(
   reducer: Reducer,
   data: String,
-) -> Result(#(Reducer, List(types.StreamProgress)), types.WireError) {
+) -> Result(#(Reducer, List(message.Progress)), error.Error) {
   case json.parse(data, decode_output_item_added()) {
     Error(_) ->
-      Error(types.ProtocolError("Malformed response.output_item.added payload"))
+      Error(error.Protocol("Malformed response.output_item.added payload"))
     Ok(added) -> {
       case reducer.active_blocks_count >= reducer.limits.active_blocks_limit {
         True ->
-          Error(types.ResourceLimitExceeded(
-            "active_blocks_limit",
+          Error(error.LimitExceeded(
+            limit.ActiveBlocks,
             reducer.limits.active_blocks_limit,
             reducer.active_blocks_count + 1,
           ))
         False -> {
           case dict.has_key(reducer.index_to_item_id, added.output_index) {
             True ->
-              Error(types.ProtocolError(
+              Error(error.Protocol(
                 "Duplicate output_index in output_item.added: "
                 <> int.to_string(added.output_index),
               ))
@@ -250,7 +235,7 @@ fn handle_output_item_added(
                 || dict.has_key(reducer.tool_buffers, added.item_id)
               {
                 True ->
-                  Error(types.ProtocolError(
+                  Error(error.Protocol(
                     "Duplicate output item id: " <> added.item_id,
                   ))
                 False -> {
@@ -316,13 +301,13 @@ fn handle_output_item_added(
                         Some(cid), Some(nm) -> {
                           case list.contains(reducer.seen_call_ids, cid) {
                             True ->
-                              Error(types.ProtocolError(
+                              Error(error.Protocol(
                                 "Duplicate tool call id: " <> cid,
                               ))
                             False -> {
                               case
-                                types.call_id(cid),
-                                types.provider_tool_name(nm)
+                                ids.call_id(cid),
+                                ids.provider_tool_name(nm)
                               {
                                 Ok(call_id), Ok(tool_name) -> {
                                   let buffer =
@@ -368,7 +353,7 @@ fn handle_output_item_added(
                           }
                         }
                         _, _ ->
-                          Error(types.ProtocolError(
+                          Error(error.Protocol(
                             "function_call missing call_id or name",
                           ))
                       }
@@ -411,17 +396,17 @@ fn decode_text_delta() -> decode.Decoder(TextDeltaPayload) {
 fn handle_output_text_delta(
   reducer: Reducer,
   data: String,
-) -> Result(#(Reducer, List(types.StreamProgress)), types.WireError) {
+) -> Result(#(Reducer, List(message.Progress)), error.Error) {
   case json.parse(data, decode_text_delta()) {
     Error(_) ->
-      Error(types.ProtocolError("Malformed response.output_text.delta payload"))
+      Error(error.Protocol("Malformed response.output_text.delta payload"))
     Ok(payload) -> {
       case resolve_item_id(reducer, payload.item_id, payload.output_index) {
         Error(err) -> Error(err)
         Ok(item_id) ->
           case dict.get(reducer.text_done, item_id) {
             Ok(True) ->
-              Error(types.ProtocolError(
+              Error(error.Protocol(
                 "Text delta received after message completion",
               ))
             _ -> handle_text_delta(reducer, item_id, payload.delta)
@@ -435,10 +420,9 @@ fn handle_text_delta(
   reducer: Reducer,
   item_id: String,
   delta: String,
-) -> Result(#(Reducer, List(types.StreamProgress)), types.WireError) {
+) -> Result(#(Reducer, List(message.Progress)), error.Error) {
   case dict.get(reducer.text_buffers, item_id) {
-    Error(Nil) ->
-      Error(types.ProtocolError("Unknown text block id: " <> item_id))
+    Error(Nil) -> Error(error.Protocol("Unknown text block id: " <> item_id))
     Ok(existing) -> {
       let delta_bytes = string.byte_size(delta)
       let block_bytes = string.byte_size(existing) + delta_bytes
@@ -446,16 +430,16 @@ fn handle_text_delta(
 
       case block_bytes > reducer.limits.text_bytes_per_block_limit {
         True ->
-          Error(types.ResourceLimitExceeded(
-            "text_bytes_per_block_limit",
+          Error(error.LimitExceeded(
+            limit.TextBytesPerBlock,
             reducer.limits.text_bytes_per_block_limit,
             block_bytes,
           ))
         False ->
           case total_bytes > reducer.limits.total_text_bytes_limit {
             True ->
-              Error(types.ResourceLimitExceeded(
-                "total_text_bytes_limit",
+              Error(error.LimitExceeded(
+                limit.TotalTextBytes,
                 reducer.limits.total_text_bytes_limit,
                 total_bytes,
               ))
@@ -470,7 +454,7 @@ fn handle_text_delta(
                     total_text_bytes: total_bytes,
                     semantic_progress_observed: True,
                   ),
-                  [types.TextDelta(block_id: item_id, text: delta)],
+                  [message.TextDelta(block_id: item_id, text: delta)],
                 ),
               )
             }
@@ -483,21 +467,21 @@ fn handle_text_delta(
 fn handle_refusal_delta(
   reducer: Reducer,
   data: String,
-) -> Result(#(Reducer, List(types.StreamProgress)), types.WireError) {
+) -> Result(#(Reducer, List(message.Progress)), error.Error) {
   case json.parse(data, decode_text_delta()) {
     Error(_) ->
-      Error(types.ProtocolError("Malformed response.refusal.delta payload"))
+      Error(error.Protocol("Malformed response.refusal.delta payload"))
     Ok(payload) -> {
       case resolve_item_id(reducer, payload.item_id, payload.output_index) {
         Error(err) -> Error(err)
         Ok(item_id) ->
           case dict.get(reducer.text_buffers, item_id) {
             Error(Nil) ->
-              Error(types.ProtocolError("Unknown refusal block id: " <> item_id))
+              Error(error.Protocol("Unknown refusal block id: " <> item_id))
             Ok(text_so_far) ->
               case dict.get(reducer.text_done, item_id) {
                 Ok(True) ->
-                  Error(types.ProtocolError(
+                  Error(error.Protocol(
                     "Refusal delta received after message completion",
                   ))
                 _ -> {
@@ -515,16 +499,16 @@ fn handle_refusal_delta(
                   let total_bytes = reducer.total_text_bytes + delta_bytes
                   case block_bytes > reducer.limits.text_bytes_per_block_limit {
                     True ->
-                      Error(types.ResourceLimitExceeded(
-                        "text_bytes_per_block_limit",
+                      Error(error.LimitExceeded(
+                        limit.TextBytesPerBlock,
                         reducer.limits.text_bytes_per_block_limit,
                         block_bytes,
                       ))
                     False ->
                       case total_bytes > reducer.limits.total_text_bytes_limit {
                         True ->
-                          Error(types.ResourceLimitExceeded(
-                            "total_text_bytes_limit",
+                          Error(error.LimitExceeded(
+                            limit.TotalTextBytes,
                             reducer.limits.total_text_bytes_limit,
                             total_bytes,
                           ))
@@ -552,7 +536,7 @@ fn handle_refusal_delta(
                                 semantic_progress_observed: True,
                               ),
                               [
-                                types.RefusalDelta(
+                                message.RefusalDelta(
                                   block_id: item_id,
                                   text: payload.delta,
                                 ),
@@ -573,10 +557,10 @@ fn handle_refusal_delta(
 fn handle_reasoning_delta(
   reducer: Reducer,
   data: String,
-) -> Result(#(Reducer, List(types.StreamProgress)), types.WireError) {
+) -> Result(#(Reducer, List(message.Progress)), error.Error) {
   case json.parse(data, decode_text_delta()) {
     Error(_) ->
-      Error(types.ProtocolError(
+      Error(error.Protocol(
         "Malformed response.reasoning_summary_text.delta payload",
       ))
     Ok(payload) -> {
@@ -585,13 +569,11 @@ fn handle_reasoning_delta(
         Ok(item_id) ->
           case dict.get(reducer.reasoning_buffers, item_id) {
             Error(Nil) ->
-              Error(types.ProtocolError(
-                "Unknown reasoning block id: " <> item_id,
-              ))
+              Error(error.Protocol("Unknown reasoning block id: " <> item_id))
             Ok(existing) ->
               case dict.get(reducer.reasoning_done, item_id) {
                 Ok(True) ->
-                  Error(types.ProtocolError(
+                  Error(error.Protocol(
                     "Reasoning delta received after block completion",
                   ))
                 _ -> {
@@ -600,16 +582,16 @@ fn handle_reasoning_delta(
                   let total_bytes = reducer.total_text_bytes + delta_bytes
                   case block_bytes > reducer.limits.text_bytes_per_block_limit {
                     True ->
-                      Error(types.ResourceLimitExceeded(
-                        "text_bytes_per_block_limit",
+                      Error(error.LimitExceeded(
+                        limit.TextBytesPerBlock,
                         reducer.limits.text_bytes_per_block_limit,
                         block_bytes,
                       ))
                     False ->
                       case total_bytes > reducer.limits.total_text_bytes_limit {
                         True ->
-                          Error(types.ResourceLimitExceeded(
-                            "total_text_bytes_limit",
+                          Error(error.LimitExceeded(
+                            limit.TotalTextBytes,
                             reducer.limits.total_text_bytes_limit,
                             total_bytes,
                           ))
@@ -629,7 +611,7 @@ fn handle_reasoning_delta(
                                 semantic_progress_observed: True,
                               ),
                               [
-                                types.ReasoningDelta(
+                                message.ReasoningDelta(
                                   block_id: item_id,
                                   text: payload.delta,
                                 ),
@@ -673,25 +655,21 @@ fn decode_function_delta() -> decode.Decoder(FunctionDeltaPayload) {
 fn handle_function_arguments_delta(
   reducer: Reducer,
   data: String,
-) -> Result(#(Reducer, List(types.StreamProgress)), types.WireError) {
+) -> Result(#(Reducer, List(message.Progress)), error.Error) {
   case json.parse(data, decode_function_delta()) {
     Error(_) ->
-      Error(types.ProtocolError(
-        "Malformed function_call_arguments.delta payload",
-      ))
+      Error(error.Protocol("Malformed function_call_arguments.delta payload"))
     Ok(payload) -> {
       case resolve_item_id(reducer, payload.item_id, payload.output_index) {
         Error(err) -> Error(err)
         Ok(item_id) -> {
           case dict.get(reducer.tool_buffers, item_id) {
             Error(Nil) ->
-              Error(types.ProtocolError(
-                "Unknown tool call block id: " <> item_id,
-              ))
+              Error(error.Protocol("Unknown tool call block id: " <> item_id))
             Ok(tool) -> {
               case tool.is_done {
                 True ->
-                  Error(types.ProtocolError(
+                  Error(error.Protocol(
                     "Delta received after tool call block completion",
                   ))
                 False -> {
@@ -704,8 +682,8 @@ fn handle_function_arguments_delta(
                     tool_bytes > reducer.limits.argument_bytes_per_call_limit
                   {
                     True ->
-                      Error(types.ResourceLimitExceeded(
-                        "argument_bytes_per_call_limit",
+                      Error(error.LimitExceeded(
+                        limit.ArgumentBytesPerCall,
                         reducer.limits.argument_bytes_per_call_limit,
                         tool_bytes,
                       ))
@@ -714,8 +692,8 @@ fn handle_function_arguments_delta(
                         total_bytes > reducer.limits.total_argument_bytes_limit
                       {
                         True ->
-                          Error(types.ResourceLimitExceeded(
-                            "total_argument_bytes_limit",
+                          Error(error.LimitExceeded(
+                            limit.TotalArgumentBytes,
                             reducer.limits.total_argument_bytes_limit,
                             total_bytes,
                           ))
@@ -739,7 +717,15 @@ fn handle_function_arguments_delta(
                                 total_argument_bytes: total_bytes,
                                 semantic_progress_observed: True,
                               ),
-                              [],
+                              case payload.delta {
+                                "" -> []
+                                delta -> [
+                                  message.ToolArgumentsDelta(
+                                    tool.call_id,
+                                    delta,
+                                  ),
+                                ]
+                              },
                             ),
                           )
                         }
@@ -778,9 +764,9 @@ fn decode_output_item_done() -> decode.Decoder(OutputItemDone) {
 fn handle_output_item_done(
   reducer: Reducer,
   data: String,
-) -> Result(#(Reducer, List(types.StreamProgress)), types.WireError) {
+) -> Result(#(Reducer, List(message.Progress)), error.Error) {
   case json.parse(data, decode_output_item_done()) {
-    Error(_) -> Error(types.ProtocolError("Malformed output_item.done payload"))
+    Error(_) -> Error(error.Protocol("Malformed output_item.done payload"))
     Ok(payload) -> {
       case resolve_item_id(reducer, payload.item_id, payload.output_index) {
         Error(err) -> Error(err)
@@ -788,8 +774,7 @@ fn handle_output_item_done(
           case dict.get(reducer.tool_buffers, item_id) {
             Ok(tool) -> {
               case tool.is_done {
-                True ->
-                  Error(types.ProtocolError("Duplicate tool block completion"))
+                True -> Error(error.Protocol("Duplicate tool block completion"))
                 False -> {
                   // Catalog and schema admission belong to the runtime's
                   // terminal check, which may report rather than reject.
@@ -826,7 +811,7 @@ fn handle_output_item_done(
                       )
                     }
                     Error(Nil) ->
-                      Error(types.ProtocolError(
+                      Error(error.Protocol(
                         "Unknown output item completed: " <> item_id,
                       ))
                   }
@@ -840,7 +825,7 @@ fn handle_output_item_done(
 }
 
 type ResponseCompleted {
-  ResponseCompleted(id: String, status: String, usage: Option(types.Usage))
+  ResponseCompleted(id: String, status: String, usage: Option(message.Usage))
 }
 
 fn decode_response_completed() -> decode.Decoder(ResponseCompleted) {
@@ -856,7 +841,7 @@ fn decode_response_completed() -> decode.Decoder(ResponseCompleted) {
         use in_tok <- decode.field("input_tokens", decode.int)
         use out_tok <- decode.field("output_tokens", decode.int)
         use tot_tok <- decode.field("total_tokens", decode.int)
-        decode.success(types.Usage(in_tok, out_tok, tot_tok))
+        decode.success(message.Usage(in_tok, out_tok, tot_tok))
       }),
       fn(u) { decode.success(u) },
     ),
@@ -867,10 +852,9 @@ fn decode_response_completed() -> decode.Decoder(ResponseCompleted) {
 fn handle_response_completed(
   reducer: Reducer,
   data: String,
-) -> Result(#(Reducer, List(types.StreamProgress)), types.WireError) {
+) -> Result(#(Reducer, List(message.Progress)), error.Error) {
   case json.parse(data, decode_response_completed()) {
-    Error(_) ->
-      Error(types.ProtocolError("Malformed response.completed payload"))
+    Error(_) -> Error(error.Protocol("Malformed response.completed payload"))
     Ok(completed) -> {
       // Check that all started text blocks are finished
       use Nil <- result.try(check_all_text_completed(
@@ -901,11 +885,11 @@ fn handle_response_completed(
             list.filter_map(reducer.tool_order, fn(id) {
               case dict.get(reducer.tool_buffers, id) {
                 Ok(tb) ->
-                  Ok(types.ToolCall(
+                  Ok(message.ToolCall(
                     id: tb.call_id,
                     name: tb.name,
                     arguments_json: tb.arguments,
-                    provider_id: Some(types.call_id_to_string(tb.call_id)),
+                    provider_id: Some(tb.call_id),
                     provider_state: None,
                   ))
                 Error(Nil) -> Error(Nil)
@@ -913,8 +897,8 @@ fn handle_response_completed(
             })
 
           let retry_evidence =
-            types.RetryEvidence(
-              classification: types.RequestMayHaveReachedProvider,
+            stream_types.RetryEvidence(
+              classification: stream_types.RequestMayHaveReachedProvider,
               response_bytes_observed: reducer.response_bytes_observed,
               semantic_progress_observed: reducer.semantic_progress_observed,
             )
@@ -946,7 +930,7 @@ fn handle_response_completed(
             }
             "failed" -> {
               stream_types.StreamFailed(
-                error: types.ProviderError(
+                error: error.Provider(
                   code: None,
                   message: "Response completed with status failed",
                 ),
@@ -955,7 +939,7 @@ fn handle_response_completed(
             }
             "cancelled" ->
               stream_types.StreamFailed(
-                error: types.ProviderError(
+                error: error.Provider(
                   code: Some("cancelled"),
                   message: "Provider cancelled the response",
                 ),
@@ -963,7 +947,7 @@ fn handle_response_completed(
               )
             other -> {
               stream_types.StreamFailed(
-                error: types.ProviderError(
+                error: error.Provider(
                   code: None,
                   message: "Unknown response status: " <> other,
                 ),
@@ -973,7 +957,7 @@ fn handle_response_completed(
           }
 
           let progress = case completed.usage {
-            Some(u) -> [types.UsageUpdate(u)]
+            Some(u) -> [message.UsageUpdate(u)]
             None -> []
           }
 
@@ -1010,19 +994,19 @@ fn decode_error_payload() -> decode.Decoder(ErrorPayload) {
 fn handle_error_event(
   reducer: Reducer,
   data: String,
-) -> Result(#(Reducer, List(types.StreamProgress)), types.WireError) {
+) -> Result(#(Reducer, List(message.Progress)), error.Error) {
   case json.parse(data, decode_error_payload()) {
-    Error(_) -> Error(types.ProtocolError("Malformed error event payload"))
+    Error(_) -> Error(error.Protocol("Malformed error event payload"))
     Ok(err) -> {
       let retry_evidence =
-        types.RetryEvidence(
-          classification: types.RequestMayHaveReachedProvider,
+        stream_types.RetryEvidence(
+          classification: stream_types.RequestMayHaveReachedProvider,
           response_bytes_observed: reducer.response_bytes_observed,
           semantic_progress_observed: reducer.semantic_progress_observed,
         )
       let terminal =
         stream_types.StreamFailed(
-          error: types.ProviderError(code: err.code, message: err.message),
+          error: error.Provider(code: err.code, message: err.message),
           retry: retry_evidence,
         )
       Ok(#(Reducer(..reducer, terminal_outcome: Some(terminal)), []))
@@ -1034,20 +1018,20 @@ fn resolve_item_id(
   reducer: Reducer,
   maybe_item_id: Option(String),
   maybe_output_index: Option(Int),
-) -> Result(String, types.WireError) {
+) -> Result(String, error.Error) {
   case maybe_item_id, maybe_output_index {
     Some(id), Some(idx) ->
       case dict.get(reducer.index_to_item_id, idx) {
         Ok(mapped_id) if mapped_id == id -> Ok(id)
         Ok(_) ->
-          Error(types.ProtocolError(
+          Error(error.Protocol(
             "Contradictory item_id and output_index: item_id="
             <> id
             <> ", index="
             <> int.to_string(idx),
           ))
         Error(Nil) ->
-          Error(types.ProtocolError(
+          Error(error.Protocol(
             "Unmapped output_index in delta: " <> int.to_string(idx),
           ))
       }
@@ -1056,19 +1040,19 @@ fn resolve_item_id(
       case dict.get(reducer.index_to_item_id, idx) {
         Ok(id) -> Ok(id)
         Error(Nil) ->
-          Error(types.ProtocolError(
+          Error(error.Protocol(
             "Unmapped output_index in delta: " <> int.to_string(idx),
           ))
       }
     None, None ->
-      Error(types.ProtocolError("Event missing item_id and output_index"))
+      Error(error.Protocol("Event missing item_id and output_index"))
   }
 }
 
 fn check_all_text_completed(
   text_done: Dict(String, Bool),
   text_order: List(String),
-) -> Result(Nil, types.WireError) {
+) -> Result(Nil, error.Error) {
   list.fold(text_order, Ok(Nil), fn(acc, id) {
     case acc {
       Error(e) -> Error(e)
@@ -1076,7 +1060,7 @@ fn check_all_text_completed(
         case dict.get(text_done, id) {
           Ok(True) -> Ok(Nil)
           _ ->
-            Error(types.ProtocolError(
+            Error(error.Protocol(
               "Text block still incomplete at completion: " <> id,
             ))
         }
@@ -1086,7 +1070,7 @@ fn check_all_text_completed(
 
 fn check_all_tools_completed(
   tools: Dict(String, ToolBuffer),
-) -> Result(Nil, types.WireError) {
+) -> Result(Nil, error.Error) {
   dict.fold(tools, Ok(Nil), fn(acc, id, tool) {
     case acc {
       Error(e) -> Error(e)
@@ -1094,7 +1078,7 @@ fn check_all_tools_completed(
         case tool.is_done {
           True -> Ok(Nil)
           False ->
-            Error(types.ProtocolError(
+            Error(error.Protocol(
               "Tool call still incomplete at completion: " <> id,
             ))
         }
@@ -1105,7 +1089,7 @@ fn check_all_tools_completed(
 fn check_all_reasoning_completed(
   reasoning_done: Dict(String, Bool),
   reasoning_order: List(String),
-) -> Result(Nil, types.WireError) {
+) -> Result(Nil, error.Error) {
   list.fold(reasoning_order, Ok(Nil), fn(acc, id) {
     case acc {
       Error(e) -> Error(e)
@@ -1113,7 +1097,7 @@ fn check_all_reasoning_completed(
         case dict.get(reasoning_done, id) {
           Ok(True) -> Ok(Nil)
           _ ->
-            Error(types.ProtocolError(
+            Error(error.Protocol(
               "Reasoning block still incomplete at completion: " <> id,
             ))
         }

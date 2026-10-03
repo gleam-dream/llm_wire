@@ -13,12 +13,14 @@ import gleam/string
 import gleeunit/should
 import http_gun/testing as http_testing
 import http_test_helpers
-import llm_wire/config
-import llm_wire/provider/google as google_options
-import llm_wire/provider/openai as openai_options
-import llm_wire/session
+import llm_wire
+import llm_wire/error
+import llm_wire/google as google_options
+import llm_wire/limit
+import llm_wire/message
+import llm_wire/openai as openai_options
 import llm_wire/testing
-import llm_wire/types
+import llm_wire/tool
 import simplifile
 import tool_fixtures
 
@@ -26,15 +28,13 @@ const openai_fixture = "test/fixtures/openai-responses-long-text.sse"
 
 const openai_text = "test/fixtures/openai-responses-long-text.txt"
 
-fn key() -> types.ApiKey {
-  let assert Ok(key) = types.api_key("synthetic-long-line-key")
-  key
+fn key() -> String {
+  "synthetic-long-line-key"
 }
 
-fn request(tools: List(types.ToolDefinition)) -> types.Request {
-  let assert Ok(model) = types.model_id("fixture")
-  types.new_request(model, [types.UserMessage("Write a long answer")])
-  |> types.with_tools(tools)
+fn request(tools: List(tool.Tool)) -> llm_wire.Request(String) {
+  llm_wire.request("fixture", [message.User("Write a long answer")])
+  |> llm_wire.with_tools(tools)
 }
 
 // Splits the stream into TCP-segment-sized HTTP chunks, so each long line
@@ -60,11 +60,11 @@ fn chunk_loop(
 }
 
 fn run_raw(
-  settings: config.Config,
-  tools: List(types.ToolDefinition),
+  settings: llm_wire.Config,
+  tools: List(tool.Tool),
   raw: String,
-) -> Result(session.RunResult, session.RunFailure) {
-  let assert Ok(call) = session.prepare(settings, request(tools))
+) -> Result(llm_wire.Outcome(String), llm_wire.Failure) {
+  let assert Ok(call) = llm_wire.prepare(settings, request(tools))
   let exchange = testing.exchange(call, testing.text("unused"))
   let reply =
     http_testing.Respond(
@@ -78,46 +78,51 @@ fn run_raw(
   use client <- http_test_helpers.with_script([
     http_testing.exchange(http_testing.request(exchange), reply),
   ])
-  session.run(client, call)
+  llm_wire.run(client, call)
 }
 
 pub fn default_line_limit_equals_event_limit_test() {
-  let limits = types.default_limits()
-  limits.line_bytes_limit |> should.equal(limits.event_bytes_limit)
-  limits.line_bytes_limit |> should.equal(1_048_576)
+  limit.default(limit.LineBytes)
+  |> should.equal(limit.default(limit.EventBytes))
+  limit.default(limit.LineBytes) |> should.equal(1_048_576)
 }
 
 pub fn openai_reply_over_20_kb_succeeds_with_default_limits_test() {
   let assert Ok(raw) = simplifile.read(openai_fixture)
   let assert Ok(expected) = simplifile.read(openai_text)
   { string.byte_size(expected) > 20_480 } |> should.be_true
-  run_raw(config.openai(openai_options.options(key())), [], raw)
+  run_raw(openai_options.new(key()) |> openai_options.config, [], raw)
   |> should.equal(
-    Ok(session.RunText(expected, Some(types.Usage(37, 5012, 5049)))),
+    Ok(llm_wire.Answer(
+      output: expected,
+      text: expected,
+      usage: Some(message.Usage(37, 5012, 5049)),
+    )),
   )
 }
 
 pub fn configured_line_limit_still_rejects_long_lines_test() {
   let assert Ok(raw) = simplifile.read(openai_fixture)
-  let limits = types.Limits(..types.default_limits(), line_bytes_limit: 16_384)
   let settings =
-    config.openai(openai_options.options(key())) |> config.with_limits(limits)
-  let assert Error(session.RunFailure(error, _)) = run_raw(settings, [], raw)
-  let assert types.ResourceLimitExceeded("line_bytes_limit", 16_384, observed) =
-    error
+    openai_options.new(key())
+    |> openai_options.config
+    |> llm_wire.with_limit(limit.LineBytes, 16_384)
+  let assert Error(failure) = run_raw(settings, [], raw)
+  let assert error.LimitExceeded(limit.LineBytes, 16_384, observed) =
+    failure.error
   { observed > 16_384 } |> should.be_true
 }
 
 pub fn google_function_call_over_20_kb_on_one_line_succeeds_test() {
-  let tool = tool_fixtures.string_field_tool("lookup", "query")
+  let lookup = tool_fixtures.string_field_tool("lookup", "query")
   let query = string.repeat("gleam ", 4000)
   let raw =
     "data: {\"responseId\":\"resp_long\",\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"name\":\"lookup\",\"id\":\"call_1\",\"args\":{\"query\":\""
     <> query
     <> "\"}}}]}}]}\n\n"
     <> "data: {\"candidates\":[{\"finishReason\":\"STOP\",\"content\":{\"role\":\"model\",\"parts\":[]}}]}\n\n"
-  let assert Ok(session.RunToolCalls(turn, _)) =
-    run_raw(config.google(google_options.options(key())), [tool], raw)
+  let assert Ok(llm_wire.NeedsTools(turn:, ..)) =
+    run_raw(google_options.new(key()) |> google_options.config, [lookup], raw)
   let assert [call] = turn.calls
   call.arguments_json |> should.equal("{\"query\":\"" <> query <> "\"}")
 }

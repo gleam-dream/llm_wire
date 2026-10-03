@@ -5,15 +5,15 @@ import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/option.{None}
+import gleam/time/duration
 import gleeunit/should
 import http_gun
 import http_gun/config as http_config
-import http_gun/error
+import http_gun/error as http_error
 import http_test_helpers
-import llm_wire/config
-import llm_wire/provider/openai
-import llm_wire/session
-import llm_wire/types
+import llm_wire
+import llm_wire/error
+import llm_wire/openai
 import llm_wire_http_gun_test
 
 fn settings(active: Int, waiting: Int, connections: Int) -> http_config.Config {
@@ -24,21 +24,30 @@ fn settings(active: Int, waiting: Int, connections: Int) -> http_config.Config {
   |> http_config.with_max_connections_per_origin(connections)
 }
 
-fn request(port: Int, timeout: Int) -> session.PreparedCall {
-  let assert Ok(key) = types.api_key("synthetic-pool-key")
-  let assert Ok(endpoint) =
-    types.endpoint("http://127.0.0.1:" <> int.to_string(port))
-  let assert Ok(model) = types.model_id("fixture")
-  let provider =
-    config.openai(openai.options(key))
-    |> config.with_endpoint(endpoint)
-    |> config.with_deadlines(types.Deadlines(timeout, 4000, 50))
+fn ms(value: Int) -> llm_wire.Bound {
+  llm_wire.After(duration.milliseconds(value))
+}
+
+fn request(port: Int, timeout: Int) -> llm_wire.Prepared(String) {
+  // The old 4 s idle deadline ran from the start: it is now the first-token
+  // timer, with the same bound on the gap between events.
+  let config =
+    openai.new("synthetic-pool-key")
+    |> openai.config
+    |> llm_wire.with_endpoint("http://127.0.0.1:" <> int.to_string(port))
+    |> llm_wire.with_call_timeout(ms(timeout))
+    |> llm_wire.with_first_token_timeout(ms(4000))
+    |> llm_wire.with_idle_timeout(ms(4000))
   let assert Ok(call) =
-    session.prepare(
-      provider,
-      types.new_request(model, [types.UserMessage("hello")]),
+    llm_wire.prepare(
+      config,
+      llm_wire.request("fixture", [llm_wire.user("hello")]),
     )
   call
+}
+
+fn hello() -> Result(llm_wire.Outcome(String), llm_wire.Failure) {
+  Ok(llm_wire.Answer("hello", "hello", None))
 }
 
 fn holding(
@@ -121,8 +130,8 @@ pub fn sequential_llm_requests_reuse_one_connection_test() {
   let assert Ok(client) = http_gun.start(settings(2, 2, 1))
   let call = request(server.port, 2000)
   list.each([1, 2], fn(_) {
-    session.run(client, call)
-    |> should.equal(Ok(session.RunText("hello", None)))
+    llm_wire.run(client, call)
+    |> should.equal(hello())
   })
   let assert Ok(Nil) = process.receive(completed, 1000)
   let assert Ok(stats) = http_gun.stats(client)
@@ -135,10 +144,10 @@ pub fn peer_close_reclaims_connection_for_fresh_call_test() {
   let #(server, accepted) = holding(2)
   let assert Ok(client) = http_gun.start(settings(1, 1, 1))
   list.each([1, 2], fn(_) {
-    let assert Ok(stream) = session.stream(client, request(server.port, 2000))
+    let assert Ok(stream) = llm_wire.stream(client, request(server.port, 2000))
     let assert Ok(release) = process.receive(accepted, 1000)
     process.send(release, Nil)
-    session.collect(stream) |> should.equal(Ok(session.RunText("hello", None)))
+    llm_wire.collect(stream) |> should.equal(hello())
   })
   http_gun.stop(client)
   fake_server.stop(server)
@@ -147,15 +156,13 @@ pub fn peer_close_reclaims_connection_for_fresh_call_test() {
 pub fn queue_deadline_releases_only_its_waiter_test() {
   let #(server, accepted) = holding(1)
   let assert Ok(client) = http_gun.start(settings(1, 2, 1))
-  let assert Ok(first) = session.stream(client, request(server.port, 2000))
+  let assert Ok(first) = llm_wire.stream(client, request(server.port, 2000))
   let assert Ok(release) = process.receive(accepted, 1000)
-  let assert Error(session.RunFailure(
-    types.DeadlineExceeded(types.OverallDeadline),
-    _,
-  )) = session.run(client, request(server.port, 50))
+  let assert Error(failure) = llm_wire.run(client, request(server.port, 50))
+  failure.error |> should.equal(error.DeadlineExceeded(error.WholeCall))
   wait_counts(client, 1, 0, 200) |> should.be_true
   process.send(release, Nil)
-  session.collect(first) |> should.equal(Ok(session.RunText("hello", None)))
+  llm_wire.collect(first) |> should.equal(hello())
   http_gun.stop(client)
   fake_server.stop(server)
 }
@@ -164,15 +171,15 @@ pub fn queued_call_runs_after_first_finishes_test() {
   let #(server, accepted) = holding(2)
   let assert Ok(client) = http_gun.start(settings(1, 2, 1))
   let call = request(server.port, 3000)
-  let assert Ok(first) = session.stream(client, call)
+  let assert Ok(first) = llm_wire.stream(client, call)
   let assert Ok(release) = process.receive(accepted, 1000)
-  let assert Ok(second) = session.stream(client, call)
+  let assert Ok(second) = llm_wire.stream(client, call)
   wait_counts(client, 1, 1, 200) |> should.be_true
   process.send(release, Nil)
-  session.collect(first) |> should.equal(Ok(session.RunText("hello", None)))
+  llm_wire.collect(first) |> should.equal(hello())
   let assert Ok(release) = process.receive(accepted, 1000)
   process.send(release, Nil)
-  session.collect(second) |> should.equal(Ok(session.RunText("hello", None)))
+  llm_wire.collect(second) |> should.equal(hello())
   http_gun.stop(client)
   fake_server.stop(server)
 }
@@ -181,14 +188,14 @@ pub fn queued_cancellation_does_not_consume_connection_or_disturb_owner_test() {
   let #(server, accepted) = holding(1)
   let assert Ok(client) = http_gun.start(settings(1, 1, 1))
   let call = request(server.port, 3000)
-  let assert Ok(first) = session.stream(client, call)
+  let assert Ok(first) = llm_wire.stream(client, call)
   let assert Ok(release) = process.receive(accepted, 1000)
-  let assert Ok(second) = session.stream(client, call)
+  let assert Ok(second) = llm_wire.stream(client, call)
   wait_counts(client, 1, 1, 200) |> should.be_true
-  session.close(second) |> should.equal(Ok(types.ConsumerClosed))
+  llm_wire.close(second) |> should.equal(llm_wire.Closed)
   wait_counts(client, 1, 0, 200) |> should.be_true
   process.send(release, Nil)
-  session.collect(first) |> should.equal(Ok(session.RunText("hello", None)))
+  llm_wire.collect(first) |> should.equal(hello())
   http_gun.stop(client)
   fake_server.stop(server)
 }
@@ -197,17 +204,18 @@ pub fn admission_overflow_is_not_submitted_test() {
   let #(server, accepted) = holding(1)
   let assert Ok(client) = http_gun.start(settings(1, 1, 1))
   let call = request(server.port, 3000)
-  let assert Ok(first) = session.stream(client, call)
+  let assert Ok(first) = llm_wire.stream(client, call)
   let assert Ok(release) = process.receive(accepted, 1000)
-  let assert Ok(second) = session.stream(client, call)
+  let assert Ok(second) = llm_wire.stream(client, call)
   wait_counts(client, 1, 1, 200) |> should.be_true
-  let assert Error(session.RunFailure(
-    types.HttpFailure(error.AdmissionFull),
-    evidence,
-  )) = session.run(client, call)
-  evidence |> should.equal(types.initial_retry_evidence())
-  let _ = session.close(second)
-  let _ = session.close(first)
+  let assert Error(failure) = llm_wire.run(client, call)
+  let assert error.Http(http_failure) = failure.error
+  http_error.reason(http_failure) |> should.equal(http_error.AdmissionFull)
+  // `failure.sent` replaced the retry evidence: nothing reached the network.
+  failure.sent |> should.equal(llm_wire.NotSent)
+  failure.partial_output |> should.be_false
+  let _ = llm_wire.close(second)
+  let _ = llm_wire.close(first)
   process.send(release, Nil)
   http_gun.stop(client)
   fake_server.stop(server)
@@ -217,13 +225,13 @@ pub fn shared_client_shutdown_unblocks_active_and_waiting_calls_test() {
   let #(server, accepted) = holding(1)
   let assert Ok(client) = http_gun.start(settings(1, 1, 1))
   let call = request(server.port, 3000)
-  let assert Ok(first) = session.stream(client, call)
+  let assert Ok(first) = llm_wire.stream(client, call)
   let assert Ok(release) = process.receive(accepted, 1000)
-  let assert Ok(second) = session.stream(client, call)
+  let assert Ok(second) = llm_wire.stream(client, call)
   wait_counts(client, 1, 1, 200) |> should.be_true
   http_gun.stop(client)
-  session.collect(first) |> should.be_error
-  session.collect(second) |> should.be_error
+  llm_wire.collect(first) |> should.be_error
+  llm_wire.collect(second) |> should.be_error
   process.send(release, Nil)
   fake_server.stop(server)
 }

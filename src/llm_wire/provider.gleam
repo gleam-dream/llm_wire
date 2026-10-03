@@ -1,198 +1,208 @@
-//// Defines HTTP/SSE provider adapters: the request encoding, headers,
-//// schema projection and stream reducer one provider needs.
+//// Adds a provider that the built-in OpenAI, Anthropic and Google adapters
+//// do not cover.
 ////
-//// Use this module to add a provider that the built-in OpenAI, Anthropic and
-//// Google adapters do not cover. Build a `Spec`, wrap it with `adapter`, and
-//// pass the result to `config.from_provider`. The runtime behind
-//// `llm_wire/session` then applies the same transport, deadlines, byte limits,
-//// tool-call admission and retry evidence as for the built-in providers. A
-//// reducer, built with `reducer`, turns each `Event` into
-//// `types.StreamProgress` and finally a `Terminal`. Credentials belong in the
-//// `Spec.headers` closure, read with `types.reveal_api_key`, so they never
-//// print with the spec.
+//// An adapter supplies only what differs between providers: how a request
+//// is encoded and how the event stream is reduced. The runtime keeps the
+//// rest for every adapter: transport through the caller's HTTP Gun client,
+//// the three timers, byte limits, tool-call admission, telemetry and
+//// cleanup.
+////
+//// ```gleam
+//// import llm_wire
+//// import llm_wire/provider
+////
+//// let config =
+////   provider.new(message.Custom("acme"), "https://llm.acme.test/v1", encode, fn() {
+////     provider.reducer(initial_state, step, terminal)
+////   })
+////   |> provider.with_headers(fn() { [#("authorization", "Bearer " <> key())] })
+////   |> provider.config
+//// ```
+////
+//// `encode` receives the admitted `Request` (read its fields by label:
+//// `model`, `messages`, `max_tokens`, `temperature`, `top_p`,
+//// `stop_sequences`, `prompt_cache`), the tools after schema projection
+//// (`name`, `description`, `schema`) and the structured-output format
+//// (`name`, `schema`), and returns `encoded(path, body)`, where `path` is
+//// appended to the endpoint. A reducer turns each server-sent `Event`
+//// (`event`, `data`, `id`, `retry`) into `message.Progress` values, and
+//// ends with a `Terminal` built by `text`, `tool_calls`, `output_limited`,
+//// `refused` or `failed`.
+////
+//// Credentials belong in the `with_headers` closure, so they never print
+//// with the adapter or a configuration. `step` and `terminal` drive a
+//// reducer directly, for testing it without a server.
 
 import gleam/json
-import gleam/option.{type Option}
-import gleam/result
+import gleam/option.{type Option, None}
 import json/blueprint/codec
-import llm_wire/internal/schema as schema_bridge
-import llm_wire/types
+import llm_wire
+import llm_wire/error.{type Error, type PrepareError}
+import llm_wire/internal/adapter
+import llm_wire/internal/config
+import llm_wire/internal/schema
+import llm_wire/internal/sse
+import llm_wire/message.{type Progress, type Provider, type ToolCall, type Usage}
 
-/// One admitted HTTP/SSE provider. The runtime, rather than the adapter,
-/// owns transport, deadlines, byte limits, and stream delivery.
-pub opaque type Adapter {
-  Adapter(spec: Spec)
-}
+/// An HTTP/SSE provider adapter.
+pub type Adapter =
+  adapter.Adapter
 
-/// Provider-owned wire policy. Every callback is pure; construction allocates
-/// no transport resources. `encode` receives only locally admitted requests.
-///
-/// `headers` is a closure because it usually carries a credential: a closure
-/// prints as a function reference, so neither the spec nor any config,
-/// adapter or prepared call holding it shows the key in `string.inspect` or
-/// crash reports. Build the credential inside the closure, for example
-/// `headers: fn() { [#("authorization", "Bearer " <> types.reveal_api_key(key))] }`.
-pub type Spec {
-  Spec(
-    identity: types.Provider,
-    endpoint: types.Endpoint,
-    headers: fn() -> List(#(String, String)),
-    encode: fn(types.Request, List(ProjectedTool), Option(OutputFormat)) ->
-      Result(EncodedRequest, types.WireError),
-    project_tool_schema: fn(codec.Schema) -> Result(json.Json, types.WireError),
-    project_output_schema: fn(codec.Schema) ->
-      Result(json.Json, types.WireError),
-    new_reducer: fn(types.Limits, List(types.ToolDefinition)) ->
-      Result(Reducer, types.WireError),
+/// A reducer over the provider's event stream; its state stays inside it.
+pub type Reducer =
+  adapter.Reducer
+
+/// The admitted request an adapter encodes.
+pub type Request =
+  adapter.Request
+
+/// A provider prompt cache reference, read from `Request.prompt_cache`.
+pub type PromptCache =
+  adapter.PromptCache
+
+/// A tool after this adapter's schema projection.
+pub type ProjectedTool =
+  adapter.ProjectedTool
+
+/// The structured-output format after projection.
+pub type OutputFormat =
+  adapter.OutputFormat
+
+/// An encoded request: a path below the endpoint and a JSON body.
+pub type Encoded =
+  adapter.Encoded
+
+/// One server-sent event.
+pub type Event =
+  adapter.Event
+
+/// How a reducer's response ended.
+pub type Terminal =
+  adapter.Terminal
+
+/// An adapter for `provider` at `endpoint`. Tool and output schemas are
+/// projected with `blueprint_schema` until `with_tool_schema` or
+/// `with_output_schema` replace it; no headers are sent until
+/// `with_headers`.
+pub fn new(
+  provider: Provider,
+  endpoint: String,
+  encode: fn(Request, List(ProjectedTool), Option(OutputFormat)) ->
+    Result(Encoded, PrepareError),
+  reducer: fn() -> Reducer,
+) -> Adapter {
+  adapter.new(
+    provider:,
+    endpoint:,
+    headers: fn() { [] },
+    validate: fn() { Ok(Nil) },
+    encode:,
+    project_tool_schema: blueprint_schema,
+    project_output_schema: blueprint_schema,
+    new_reducer: fn(_) { reducer() },
   )
 }
 
-pub type EncodedRequest {
-  EncodedRequest(path: String, body: String)
+/// Send these headers with every request. The closure runs when a request
+/// is prepared, so a credential read inside it never prints.
+pub fn with_headers(
+  provider_adapter: Adapter,
+  headers: fn() -> List(#(String, String)),
+) -> Adapter {
+  adapter.with_headers(provider_adapter, headers)
 }
 
-pub type OutputFormat {
-  OutputFormat(name: String, schema: json.Json)
+/// Project tool input schemas with `project`; an `Error` reason makes
+/// `prepare` fail with `error.UnsupportedSchema`.
+pub fn with_tool_schema(
+  provider_adapter: Adapter,
+  project: fn(codec.Schema) -> Result(json.Json, String),
+) -> Adapter {
+  adapter.with_tool_schema(provider_adapter, project)
 }
 
-/// Tool schemas after this provider's projection has admitted them.
-pub type ProjectedTool {
-  ProjectedTool(name: types.ToolName, description: String, schema: json.Json)
+/// Project structured-output schemas with `project`.
+pub fn with_output_schema(
+  provider_adapter: Adapter,
+  project: fn(codec.Schema) -> Result(json.Json, String),
+) -> Adapter {
+  adapter.with_output_schema(provider_adapter, project)
 }
 
-pub type Event {
-  Event(
-    event: Option(String),
-    data: String,
-    id: Option(String),
-    retry: Option(Int),
-  )
+/// The configuration of a call through this adapter, with the default
+/// limits, timeouts and tool-call checks.
+pub fn config(provider_adapter: Adapter) -> llm_wire.Config {
+  config.new(provider_adapter)
 }
 
-pub type Terminal {
-  Text(text: String, usage: Option(types.Usage))
-  ToolCalls(
-    text: String,
-    calls: List(types.ToolCall),
-    response_id: Option(String),
-    provider_data: Option(String),
-    usage: Option(types.Usage),
-  )
-  OutputLimited(
-    partial_text: String,
-    partial_calls: List(types.ToolCall),
-    usage: Option(types.Usage),
-  )
-  Refusal(reason: String, usage: Option(types.Usage))
-  Failure(error: types.WireError, retry: types.RetryEvidence)
-  Cancellation(retry: types.RetryEvidence)
+/// Blueprint's canonical JSON Schema for `schema`. Adapters may apply
+/// stricter provider rules after it.
+pub fn blueprint_schema(schema: codec.Schema) -> Result(json.Json, String) {
+  schema.codec_schema_to_json(schema)
 }
 
-/// The generic reducer state stays inside these closures. Neither Config nor
-/// Stream acquires a provider-specific type parameter.
-pub opaque type Reducer {
-  Reducer(
-    step: fn(Event) ->
-      Result(#(Reducer, List(types.StreamProgress)), types.WireError),
-    terminal: fn() -> Option(Terminal),
-    retry: fn(types.RetryClassification) -> types.RetryEvidence,
-  )
-}
-
+/// A reducer from an initial state, a step function and a terminal check.
 pub fn reducer(
   state: state,
-  step: fn(state, Event) ->
-    Result(#(state, List(types.StreamProgress)), types.WireError),
+  step: fn(state, Event) -> Result(#(state, List(Progress)), Error),
   terminal: fn(state) -> Option(Terminal),
-  retry: fn(state, types.RetryClassification) -> types.RetryEvidence,
 ) -> Reducer {
-  Reducer(
-    step: fn(event) {
-      use #(next_state, progress) <- result.try(step(state, event))
-      Ok(#(reducer(next_state, step, terminal, retry), progress))
-    },
-    terminal: fn() { terminal(state) },
-    retry: fn(fallback) { retry(state, fallback) },
-  )
+  adapter.reducer(state, step, terminal)
 }
 
-pub fn adapter(spec: Spec) -> Adapter {
-  Adapter(spec)
+pub fn encoded(path: String, body: String) -> Encoded {
+  adapter.Encoded(path:, body:)
 }
 
-/// Projects Blueprint's canonical finite schema subset to provider JSON.
-/// Adapters may apply stricter provider-specific rules after this bridge.
-pub fn blueprint_schema(
-  schema: codec.Schema,
-) -> Result(json.Json, types.WireError) {
-  schema_bridge.codec_schema_to_json(schema)
+/// A server-sent event with this event name and data, for tests.
+pub fn event(name: Option(String), data: String) -> Event {
+  sse.ServerSentEvent(event: name, data:, id: None, retry: None)
 }
 
-pub fn identity(adapter: Adapter) -> types.Provider {
-  adapter.spec.identity
-}
-
-pub fn endpoint(adapter: Adapter) -> types.Endpoint {
-  adapter.spec.endpoint
-}
-
-/// Returns the adapter's request headers, including any credential in plain
-/// text. Call it only to build a request or to wrap one adapter in another
-/// (`headers: fn() { provider.reveal_headers(base) }`), and never log the
-/// result.
-pub fn reveal_headers(adapter: Adapter) -> List(#(String, String)) {
-  adapter.spec.headers()
-}
-
-pub fn with_endpoint(adapter: Adapter, endpoint: types.Endpoint) -> Adapter {
-  Adapter(spec: Spec(..adapter.spec, endpoint: endpoint))
-}
-
-pub fn encode(
-  adapter: Adapter,
-  request: types.Request,
-  tools: List(ProjectedTool),
-  format: Option(OutputFormat),
-) -> Result(EncodedRequest, types.WireError) {
-  adapter.spec.encode(request, tools, format)
-}
-
-pub fn project_tool_schema(
-  adapter: Adapter,
-  schema: codec.Schema,
-) -> Result(json.Json, types.WireError) {
-  adapter.spec.project_tool_schema(schema)
-}
-
-pub fn project_output_schema(
-  adapter: Adapter,
-  schema: codec.Schema,
-) -> Result(json.Json, types.WireError) {
-  adapter.spec.project_output_schema(schema)
-}
-
-pub fn new_reducer(
-  adapter: Adapter,
-  limits: types.Limits,
-  tools: List(types.ToolDefinition),
-) -> Result(Reducer, types.WireError) {
-  adapter.spec.new_reducer(limits, tools)
-}
-
+/// Step a reducer with one event.
 pub fn step(
   reducer: Reducer,
   event: Event,
-) -> Result(#(Reducer, List(types.StreamProgress)), types.WireError) {
+) -> Result(#(Reducer, List(Progress)), Error) {
   reducer.step(event)
 }
 
+/// The reducer's terminal, once its response ended.
 pub fn terminal(reducer: Reducer) -> Option(Terminal) {
   reducer.terminal()
 }
 
-pub fn retry_evidence(
-  reducer: Reducer,
-  fallback: types.RetryClassification,
-) -> types.RetryEvidence {
-  reducer.retry(fallback)
+/// A final text answer.
+pub fn text(text: String, usage: Option(Usage)) -> Terminal {
+  adapter.Text(text, usage)
+}
+
+/// Tool calls awaiting results. `provider_data` is opaque replay data the
+/// adapter's `encode` receives back in the assistant turn.
+pub fn tool_calls(
+  text: String,
+  calls: List(ToolCall),
+  response_id: Option(String),
+  provider_data: Option(String),
+  usage: Option(Usage),
+) -> Terminal {
+  adapter.ToolCalls(text, calls, response_id, provider_data, usage)
+}
+
+/// Output cut off by the provider's token limit.
+pub fn output_limited(
+  partial_text: String,
+  partial_calls: List(ToolCall),
+  usage: Option(Usage),
+) -> Terminal {
+  adapter.OutputLimited(partial_text, partial_calls, usage)
+}
+
+pub fn refused(reason: String, usage: Option(Usage)) -> Terminal {
+  adapter.Refusal(reason, usage)
+}
+
+/// The provider ended its response with an error.
+pub fn failed(error: Error, usage: Option(Usage)) -> Terminal {
+  adapter.Failed(error, usage)
 }

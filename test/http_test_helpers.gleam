@@ -2,7 +2,7 @@ import http_gun
 import http_gun/config
 import http_gun/destination
 import http_gun/testing as http_testing
-import llm_wire/session
+import llm_wire
 import llm_wire/testing
 
 /// HTTP Gun's default policy admits public destinations only. Local fake
@@ -41,17 +41,9 @@ pub fn with_script(
 }
 
 pub fn run_reply(
-  prepared: session.PreparedCall,
+  prepared: llm_wire.Prepared(o),
   reply: testing.Reply,
-) -> Result(session.RunResult, session.RunFailure) {
+) -> Result(llm_wire.Outcome(o), llm_wire.Failure) {
   use client <- with_script([testing.exchange(prepared, reply)])
-  session.run(client, prepared)
-}
-
-pub fn run_structured_reply(
-  prepared: session.PreparedStructuredCall(output),
-  reply: testing.Reply,
-) -> Result(session.StructuredRunResult(output), session.RunFailure) {
-  use client <- with_script([testing.structured_exchange(prepared, reply)])
-  session.run_structured(client, prepared)
+  llm_wire.run(client, prepared)
 }

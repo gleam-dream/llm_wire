@@ -1,132 +1,75 @@
-import gleam/int
-import gleam/option.{type Option, None, Some}
-import gleam/result
-import gleam/string
-import http_gun
-import llm_wire/internal/api
-import llm_wire/internal/http_client
-import llm_wire/internal/owner
-import llm_wire/internal/tls
-import llm_wire/types
+//// Opens public streams against a local fake server.
 
-pub fn open_openai_stream(
-  owned_http: http_gun.Client,
+import gleam/int
+import http_gun
+import llm_wire
+import llm_wire/anthropic
+import llm_wire/message
+import llm_wire/openai
+import llm_wire/tool
+
+/// A plain request to `scheme://host:port<base>` for `provider`, configured
+/// by `configure`.
+pub fn open_stream(
+  client: http_gun.Client,
+  provider: message.Provider,
+  scheme: String,
   host: String,
   port: Int,
-  path: String,
-  api_key: types.ApiKey,
-  limits: types.Limits,
-  deadlines: types.Deadlines,
-  tools: List(types.ToolDefinition),
-  _body: String,
-) -> Result(owner.Stream, types.WireError) {
+  base: String,
+  configure: fn(llm_wire.Config) -> llm_wire.Config,
+  tools: List(tool.Tool),
+) -> Result(llm_wire.Stream(String), llm_wire.Failure) {
+  let config = case provider {
+    message.OpenAI -> openai.new("test-key") |> openai.config
+    message.Anthropic -> anthropic.new("test-key") |> anthropic.config
+    _ -> panic as "unsupported test provider"
+  }
+  let config =
+    config
+    |> llm_wire.with_endpoint(
+      scheme <> "://" <> host <> ":" <> int.to_string(port) <> base,
+    )
+    |> configure
+  let request =
+    llm_wire.request("test-model", [llm_wire.user("test request")])
+    |> llm_wire.with_tools(tools)
+  let assert Ok(prepared) = llm_wire.prepare(config, request)
+  llm_wire.stream(client, prepared)
+}
+
+pub fn open_openai_stream(
+  client: http_gun.Client,
+  port: Int,
+  configure: fn(llm_wire.Config) -> llm_wire.Config,
+  tools: List(tool.Tool),
+) -> Result(llm_wire.Stream(String), llm_wire.Failure) {
   open_stream(
-    owned_http,
-    types.OpenAI,
-    host,
+    client,
+    message.OpenAI,
+    "http",
+    "127.0.0.1",
     port,
-    path,
-    api_key,
-    limits,
-    deadlines,
+    "/v1",
+    configure,
     tools,
-    None,
   )
 }
 
 pub fn open_anthropic_stream(
-  owned_http: http_gun.Client,
-  host: String,
+  client: http_gun.Client,
   port: Int,
-  path: String,
-  api_key: types.ApiKey,
-  limits: types.Limits,
-  deadlines: types.Deadlines,
-  tools: List(types.ToolDefinition),
-  _body: String,
-) -> Result(owner.Stream, types.WireError) {
+  configure: fn(llm_wire.Config) -> llm_wire.Config,
+  tools: List(tool.Tool),
+) -> Result(llm_wire.Stream(String), llm_wire.Failure) {
   open_stream(
-    owned_http,
-    types.Anthropic,
-    host,
+    client,
+    message.Anthropic,
+    "http",
+    "127.0.0.1",
     port,
-    path,
-    api_key,
-    limits,
-    deadlines,
+    "/v1",
+    configure,
     tools,
-    None,
-  )
-}
-
-pub fn open_openai_stream_with_tls_mode(
-  owned_http: http_gun.Client,
-  host: String,
-  port: Int,
-  path: String,
-  api_key: types.ApiKey,
-  limits: types.Limits,
-  deadlines: types.Deadlines,
-  tools: List(types.ToolDefinition),
-  _body: String,
-  tls_mode: tls.TlsMode,
-) -> Result(owner.Stream, types.WireError) {
-  open_stream(
-    owned_http,
-    types.OpenAI,
-    host,
-    port,
-    path,
-    api_key,
-    limits,
-    deadlines,
-    tools,
-    Some(tls_mode),
-  )
-}
-
-fn open_stream(
-  owned_http: http_gun.Client,
-  provider: types.Provider,
-  host: String,
-  port: Int,
-  path: String,
-  api_key: types.ApiKey,
-  limits: types.Limits,
-  deadlines: types.Deadlines,
-  tools: List(types.ToolDefinition),
-  tls_override: Option(tls.TlsMode),
-) -> Result(owner.Stream, types.WireError) {
-  let suffix = case provider {
-    types.OpenAI -> "/responses"
-    types.Anthropic -> "/messages"
-    types.Google -> ""
-    types.Custom(_) -> panic as "Custom test client is unsupported"
-  }
-  let base_path = string.drop_end(path, string.byte_size(suffix))
-  let scheme = case tls_override {
-    Some(tls.VerifySystem) -> "https"
-    Some(tls.Plaintext) | None -> "http"
-  }
-  let endpoint_text =
-    scheme <> "://" <> host <> ":" <> int.to_string(port) <> base_path
-  use endpoint <- result.try(types.endpoint(endpoint_text))
-  let config = case provider {
-    types.OpenAI -> api.openai_adapter(api_key, endpoint, None, None)
-    types.Anthropic -> api.anthropic_adapter(api_key, endpoint, None)
-    types.Google -> panic as "Google test client is unsupported"
-    types.Custom(_) -> panic as "Custom test client is unsupported"
-  }
-  use model <- result.try(types.model_id("test-model"))
-  let request =
-    types.new_request(model, [types.UserMessage("test request")])
-    |> types.with_tools(tools)
-  use prepared <- result.try(api.prepare(config, request, limits))
-  http_client.open(
-    owned_http,
-    prepared,
-    limits,
-    deadlines,
-    types.RejectInvalidToolCalls,
   )
 }

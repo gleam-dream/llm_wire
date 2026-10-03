@@ -1,21 +1,21 @@
 //// Independent nghttpd consumer; only public LLM Wire and HTTP Gun imports.
 
-import external_provider
 import gleam/erlang/process
 import gleam/int
 import gleam/io
 import gleam/json
 import gleam/list
-import gleam/option.{None}
+import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
+import gleam/time/duration
 import http_gun
 import http_gun/config as http_config
 import http_test_helpers
-import llm_wire/config
+import llm_wire
+import llm_wire/limit
+import llm_wire/message
 import llm_wire/provider
-import llm_wire/session
-import llm_wire/types
 import simplifile
 
 @external(erlang, "llm_wire_measure_ffi", "now")
@@ -50,56 +50,73 @@ fn sampling(control: process.Subject(Sampling), maximum: Sample) -> Nil {
   }
 }
 
-fn prepared(endpoint: types.Endpoint, path: String) -> session.PreparedCall {
-  let base = external_provider.adapter(endpoint)
-  let adapter =
-    provider.adapter(
-      provider.Spec(
-        identity: provider.identity(base),
-        endpoint: endpoint,
-        headers: fn() { provider.reveal_headers(base) },
-        encode: fn(request, tools, format) {
-          provider.encode(base, request, tools, format)
-          |> result.map(fn(encoded) {
-            provider.EncodedRequest(path, encoded.body)
-          })
+type Reply {
+  Reply(text: String, done: Bool)
+}
+
+/// A minimal custom adapter for the local files: `text` events carry the
+/// answer and `done` ends it.
+fn adapter(endpoint: String, path: String) -> provider.Adapter {
+  provider.new(
+    message.Custom("local-gate"),
+    endpoint,
+    fn(request, _tools, _format) {
+      Ok(provider.encoded(
+        path,
+        json.to_string(json.object([#("model", json.string(request.model))])),
+      ))
+    },
+    fn() {
+      provider.reducer(
+        Reply("", False),
+        fn(state, event) {
+          case event.event {
+            Some("text") ->
+              Ok(
+                #(Reply(..state, text: state.text <> event.data), [
+                  message.TextDelta("0", event.data),
+                ]),
+              )
+            Some("done") -> Ok(#(Reply(..state, done: True), []))
+            _ -> Ok(#(state, []))
+          }
         },
-        project_tool_schema: fn(schema) {
-          provider.project_tool_schema(base, schema)
+        fn(state) {
+          case state.done {
+            True -> Some(provider.text(state.text, None))
+            False -> None
+          }
         },
-        project_output_schema: fn(schema) {
-          provider.project_output_schema(base, schema)
-        },
-        new_reducer: fn(limits, tools) {
-          provider.new_reducer(base, limits, tools)
-        },
-      ),
-    )
+      )
+    },
+  )
+}
+
+fn prepared(endpoint: String, path: String) -> llm_wire.Prepared(String) {
   let settings =
-    config.from_provider(adapter)
-    |> config.with_limits(
-      types.Limits(
-        ..types.default_limits(),
-        text_bytes_per_block_limit: 4_194_304,
-      ),
-    )
-    |> config.with_deadlines(
-      types.Deadlines(
-        ..types.default_deadlines(),
-        overall_timeout_ms: 120_000,
-        idle_timeout_ms: 60_000,
-      ),
-    )
-  let assert Ok(model) = types.model_id("synthetic-model")
+    adapter(endpoint, path)
+    |> provider.config
+    |> llm_wire.with_limit(limit.TextBytesPerBlock, 4_194_304)
+    |> llm_wire.with_call_timeout(llm_wire.After(duration.seconds(120)))
+    |> llm_wire.with_first_token_timeout(llm_wire.After(duration.seconds(60)))
+    |> llm_wire.with_idle_timeout(llm_wire.After(duration.seconds(60)))
   let assert Ok(call) =
-    session.prepare(
+    llm_wire.prepare(
       settings,
-      types.new_request(model, [types.UserMessage("hello")]),
+      llm_wire.request("synthetic-model", [llm_wire.user("hello")]),
     )
   call
 }
 
-fn batch(client: http_gun.Client, call: session.PreparedCall, n: Int) -> Nil {
+fn hello() -> Result(llm_wire.Outcome(String), llm_wire.Failure) {
+  Ok(llm_wire.Answer("hello", "hello", None))
+}
+
+fn batch(
+  client: http_gun.Client,
+  call: llm_wire.Prepared(String),
+  n: Int,
+) -> Nil {
   let ready = process.new_subject()
   let done = process.new_subject()
   // Every caller is alive and blocked on a barrier before releasing any request.
@@ -110,7 +127,7 @@ fn batch(client: http_gun.Client, call: session.PreparedCall, n: Int) -> Nil {
         process.send(ready, go)
         let assert Ok(Nil) = process.receive(go, 120_000)
         let start = now()
-        let outcome = session.run(client, call)
+        let outcome = llm_wire.run(client, call)
         process.send(done, #(now() - start, outcome))
       })
     Nil
@@ -139,10 +156,7 @@ fn batch(client: http_gun.Client, call: session.PreparedCall, n: Int) -> Nil {
   let finish = process.new_subject()
   process.send(control, Finish(finish))
   let assert Ok(peak) = process.receive(finish, 1000)
-  let failures =
-    list.filter(outcomes, fn(pair) {
-      pair.1 != Ok(session.RunText("hello", None))
-    })
+  let failures = list.filter(outcomes, fn(pair) { pair.1 != hello() })
   let sorted = list.map(outcomes, fn(pair) { pair.0 }) |> list.sort(int.compare)
   let percentile = fn(p) {
     sorted
@@ -177,8 +191,7 @@ fn batch(client: http_gun.Client, call: session.PreparedCall, n: Int) -> Nil {
 
 pub fn main() -> Nil {
   let assert Ok(port) = simplifile.read("build/http-gun-local-port")
-  let assert Ok(endpoint) =
-    types.endpoint("https://127.0.0.1:" <> string.trim(port))
+  let endpoint = "https://127.0.0.1:" <> string.trim(port)
   let policy =
     http_test_helpers.loopback_config()
     |> http_config.with_protocol(http_config.RequireHttp2)
@@ -192,22 +205,25 @@ pub fn main() -> Nil {
   let assert Ok(client) = http_gun.start(policy)
   let small = prepared(endpoint, "/small.sse")
   let long = prepared(endpoint, "/long.sse")
-  let assert Ok(session.RunText("hello", _)) = session.run(client, small)
-  let assert Ok(slow) = session.stream(client, long)
-  let assert Ok(session.NextProgress(_)) = session.next(slow)
-  let assert Ok(sibling) = session.stream(client, long)
-  let assert Ok(session.NextProgress(_)) = session.next(sibling)
-  let assert Ok(types.ConsumerClosed) = session.close(slow)
-  let assert Ok(session.RunText(text, _)) = session.collect(sibling)
+  let assert Ok(llm_wire.Answer(text: "hello", ..)) =
+    llm_wire.run(client, small)
+  let assert Ok(slow) = llm_wire.stream(client, long)
+  let assert Ok(llm_wire.Progress(_)) = llm_wire.next(slow)
+  let assert Ok(sibling) = llm_wire.stream(client, long)
+  let assert Ok(llm_wire.Progress(_)) = llm_wire.next(sibling)
+  // `close` answers `Closed` directly; it no longer returns a `Result`.
+  let assert llm_wire.Closed = llm_wire.close(slow)
+  let assert Ok(llm_wire.Answer(text:, ..)) = llm_wire.collect(sibling)
   let assert 2_097_152 = string.byte_size(text)
   io.println(
     "{\"scenario\":\"h2_cancel_sibling\",\"healthy_text_bytes\":2097152,\"cancelled\":true}",
   )
-  let assert Ok(slow) = session.stream(client, long)
-  let assert Ok(session.NextProgress(_)) = session.next(slow)
+  let assert Ok(slow) = llm_wire.stream(client, long)
+  let assert Ok(llm_wire.Progress(_)) = llm_wire.next(slow)
   list.each([1, 10, 100, 1000], fn(n) { batch(client, small, n) })
-  let assert Ok(types.ConsumerClosed) = session.close(slow)
-  let assert Ok(session.RunText("hello", _)) = session.run(client, small)
+  let assert llm_wire.Closed = llm_wire.close(slow)
+  let assert Ok(llm_wire.Answer(text: "hello", ..)) =
+    llm_wire.run(client, small)
   http_gun.stop(client)
   Nil
 }

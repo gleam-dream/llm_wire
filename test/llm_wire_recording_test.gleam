@@ -5,6 +5,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{None}
 import gleam/string
+import gleam/time/duration
 import gleeunit/should
 import http_gun
 import http_gun/cassette
@@ -12,10 +13,10 @@ import http_gun/config as http_config
 import http_gun/testing as http_testing
 import http_test_helpers
 import json/blueprint/codec
-import llm_wire/config
-import llm_wire/session
+import llm_wire
+import llm_wire/error
+import llm_wire/message
 import llm_wire/testing
-import llm_wire/types
 import llm_wire_test_tcp as tcp
 import simplifile
 import tool_fixtures
@@ -47,6 +48,13 @@ fn replies() -> List(testing.Reply) {
   ]
 }
 
+/// The body chunks of a successful scripted reply (`testing.http_reply` is
+/// private now; an `Events` reply is its chunks).
+fn reply_chunks(reply: testing.Reply) -> List(#(Int, BitArray)) {
+  let assert testing.Events(chunks) = reply
+  list.map(chunks, fn(chunk) { #(0, bit_array.from_string(chunk)) })
+}
+
 fn serve(
   server: fake_server.FakeServer,
   replies: List(testing.Reply),
@@ -56,52 +64,49 @@ fn serve(
     let assert Ok(socket) = fake_server.accept_connection(server, 5000)
     let assert Ok(_) = fake_server.read_request_headers(socket, 5000)
     process.send(seen, Nil)
-    let assert http_testing.Respond(response, _) = testing.http_reply(reply)
-    let _ =
-      fake_server.send_sse_stream(
-        socket,
-        list.map(response.body, fn(bytes) { #(0, bytes) }),
-        True,
-      )
+    let _ = fake_server.send_sse_stream(socket, reply_chunks(reply), True)
   })
 }
 
-fn local_settings(server: fake_server.FakeServer) -> config.Config {
-  let assert Ok(endpoint) =
-    types.endpoint("http://127.0.0.1:" <> int.to_string(server.port))
-  testing.config() |> config.with_endpoint(endpoint)
+fn local_settings(server: fake_server.FakeServer) -> llm_wire.Config {
+  testing.config()
+  |> llm_wire.with_endpoint("http://127.0.0.1:" <> int.to_string(server.port))
+}
+
+fn answer(text: String) -> Result(llm_wire.Outcome(String), llm_wire.Failure) {
+  Ok(llm_wire.Answer(text, text, None))
 }
 
 // Exactly this application-owned flow runs live, recorded and strictly offline.
-fn workflow(client: http_gun.Client, settings: config.Config) -> Nil {
-  let assert Ok(model) = types.model_id("synthetic-model")
-  let request = types.new_request(model, [types.UserMessage("hello")])
-  let assert Ok(call) = session.prepare(settings, request)
-  session.run(client, call) |> should.equal(Ok(session.RunText("hello", None)))
+fn workflow(client: http_gun.Client, settings: llm_wire.Config) -> Nil {
+  let request = llm_wire.request("synthetic-model", [llm_wire.user("hello")])
+  let assert Ok(call) = llm_wire.prepare(settings, request)
+  llm_wire.run(client, call) |> should.equal(answer("hello"))
   let request =
-    types.with_tools(request, [tool_fixtures.string_field_tool("echo", "text")])
-  let assert Ok(call) = session.prepare(settings, request)
-  let assert Ok(session.RunToolCalls(turn, _)) = session.run(client, call)
-  let assert [call] = turn.calls
+    llm_wire.with_tools(request, [
+      tool_fixtures.string_field_tool("echo", "text"),
+    ])
+  let assert Ok(call) = llm_wire.prepare(settings, request)
+  let assert Ok(llm_wire.NeedsTools(turn:, ..)) = llm_wire.run(client, call)
+  let assert [tool_call] = turn.calls
   let next =
-    types.Request(
-      ..request,
-      messages: list.append(request.messages, [
-        types.AssistantTurnMessage(turn),
-        types.ToolResultMessage(call.id, "hello"),
-      ]),
-    )
-  let assert Ok(call) = session.prepare(settings, next)
-  session.run(client, call) |> should.equal(Ok(session.RunText("echoed", None)))
+    llm_wire.append(request, [
+      message.Assistant(turn),
+      llm_wire.tool_result(tool_call, "hello"),
+    ])
+  let assert Ok(call) = llm_wire.prepare(settings, next)
+  llm_wire.run(client, call) |> should.equal(answer("echoed"))
   let assert Ok(call) =
-    session.prepare_structured(
+    llm_wire.prepare(
       settings,
-      request,
-      "answer",
-      tool_fixtures.one_field("answer", codec.int()),
+      request
+        |> llm_wire.with_output(
+          "answer",
+          tool_fixtures.one_field("answer", codec.int()),
+        ),
     )
-  let assert Ok(session.StructuredValue(42, "{\"answer\":42}", _)) =
-    session.run_structured(client, call)
+  let assert Ok(llm_wire.Answer(42, "{\"answer\":42}", _)) =
+    llm_wire.run(client, call)
   Nil
 }
 
@@ -121,7 +126,7 @@ pub fn live_recording_and_offline_replay_preserve_text_tools_and_structured_test
   list.each(replies(), fn(_) {
     let assert Ok(Nil) = process.receive(seen, 1000)
   })
-  cassette.finish(recorded.recording, 5000)
+  cassette.finish(recorded.recording, duration.seconds(5))
   |> should.equal(Ok(destination))
   http_gun.stop(recorded.client)
   fake_server.stop(server)
@@ -157,45 +162,37 @@ pub fn concurrent_recording_keeps_admission_order_when_second_finishes_first_tes
       destination,
       cassette.options(),
     )
-  let assert Ok(model) = types.model_id("fixture")
   let assert Ok(call) =
-    session.prepare(
+    llm_wire.prepare(
       local_settings(server),
-      types.new_request(model, [types.UserMessage("identical")]),
+      llm_wire.request("fixture", [llm_wire.user("identical")]),
     )
-  let assert Ok(first) = session.stream(recorded.client, call)
+  let assert Ok(first) = llm_wire.stream(recorded.client, call)
   // Observed submission establishes admission order before opening the second.
   let assert Ok(Nil) = process.receive(admitted, 1000)
-  session.run(recorded.client, call)
-  |> should.equal(Ok(session.RunText("second", None)))
+  llm_wire.run(recorded.client, call) |> should.equal(answer("second"))
   process.send(release_first, Nil)
-  session.collect(first) |> should.equal(Ok(session.RunText("first", None)))
-  cassette.finish(recorded.recording, 5000)
+  llm_wire.collect(first) |> should.equal(answer("first"))
+  cassette.finish(recorded.recording, duration.seconds(5))
   |> should.equal(Ok(destination))
   http_gun.stop(recorded.client)
   fake_server.stop(server)
   let assert Ok(tape) = cassette.load(destination, 1_000_000)
   let assert Ok(client) = http_testing.playback(tape, http_config.default())
-  let assert Ok(first) = session.stream(client, call)
-  // First progress proves offline admission before the second semantic session.
-  let assert Ok(session.NextProgress(types.TextDelta(_, "first"))) =
-    session.next(first)
-  session.run(client, call) |> should.equal(Ok(session.RunText("second", None)))
-  session.collect(first) |> should.equal(Ok(session.RunText("first", None)))
+  let assert Ok(first) = llm_wire.stream(client, call)
+  // First progress proves offline admission before the second call.
+  let assert Ok(llm_wire.Progress(message.TextDelta(_, "first"))) =
+    llm_wire.next(first)
+  llm_wire.run(client, call) |> should.equal(answer("second"))
+  llm_wire.collect(first) |> should.equal(answer("first"))
   http_gun.stop(client)
   let assert Ok(Nil) = simplifile.delete(destination)
   Nil
 }
 
 fn send_text(socket: tcp.Socket, text: String) -> Nil {
-  let assert http_testing.Respond(response, _) =
-    testing.http_reply(testing.text(text))
   let _ =
-    fake_server.send_sse_stream(
-      socket,
-      list.map(response.body, fn(bytes) { #(0, bytes) }),
-      True,
-    )
+    fake_server.send_sse_stream(socket, reply_chunks(testing.text(text)), True)
   Nil
 }
 
@@ -211,7 +208,7 @@ pub fn capture_budget_failure_does_not_change_live_semantic_outcomes_test() {
       cassette.options() |> cassette.with_max_bytes(128),
     )
   workflow(recorded.client, local_settings(server))
-  cassette.finish(recorded.recording, 5000)
+  cassette.finish(recorded.recording, duration.seconds(5))
   |> should.equal(Error(cassette.CaptureFailed(cassette.CaptureLimit)))
   http_gun.stop(recorded.client)
   simplifile.is_file(destination) |> should.equal(Ok(False))
@@ -227,7 +224,7 @@ pub fn destination_replacement_is_explicit_and_persistence_failure_is_separate_t
       destination,
       cassette.options(),
     )
-  cassette.finish(recorded.recording, 5000)
+  cassette.finish(recorded.recording, duration.seconds(5))
   |> should.equal(Error(cassette.CaptureFailed(cassette.DestinationExists)))
   simplifile.read(destination) |> should.equal(Ok("existing"))
   http_gun.stop(recorded.client)
@@ -239,7 +236,7 @@ pub fn destination_replacement_is_explicit_and_persistence_failure_is_separate_t
         |> cassette.with_max_bytes(1000)
         |> cassette.replace_existing,
     )
-  cassette.finish(replacement.recording, 5000)
+  cassette.finish(replacement.recording, duration.seconds(5))
   |> should.equal(Ok(destination))
   http_gun.stop(replacement.client)
   cassette.load(destination, 1000) |> should.be_ok
@@ -264,7 +261,7 @@ pub fn publish_io_failure_keeps_successful_live_result_test() {
   let assert Error(cassette.CaptureFailed(cassette.IoFailure(
     cassette.PublishFile,
     _,
-  ))) = cassette.finish(recorded.recording, 5000)
+  ))) = cassette.finish(recorded.recording, duration.seconds(5))
   http_gun.stop(recorded.client)
   let assert Ok(Nil) = simplifile.delete(destination)
   fake_server.stop(server)
@@ -295,29 +292,29 @@ pub fn finish_wait_never_drains_and_early_cancel_replays_partial_evidence_test()
       destination,
       cassette.options(),
     )
-  let assert Ok(model) = types.model_id("synthetic-model")
   let assert Ok(call) =
-    session.prepare(
+    llm_wire.prepare(
       local_settings(server),
-      types.new_request(model, [types.UserMessage("wait")]),
+      llm_wire.request("synthetic-model", [llm_wire.user("wait")]),
     )
-  let assert Ok(stream) = session.stream(recorded.client, call)
-  let assert Ok(session.NextProgress(types.TextDelta(_, "partial"))) =
-    session.next(stream)
-  cassette.finish(recorded.recording, 10)
+  let assert Ok(stream) = llm_wire.stream(recorded.client, call)
+  let assert Ok(llm_wire.Progress(message.TextDelta(_, "partial"))) =
+    llm_wire.next(stream)
+  cassette.finish(recorded.recording, duration.milliseconds(10))
   |> should.equal(Error(cassette.WaitTimeout))
-  session.close(stream) |> should.equal(Ok(types.ConsumerClosed))
-  cassette.finish(recorded.recording, 5000)
+  llm_wire.close(stream) |> should.equal(llm_wire.Closed)
+  cassette.finish(recorded.recording, duration.seconds(5))
   |> should.equal(Ok(destination))
   let assert Ok(Error(_)) = process.receive(closed, 2000)
   http_gun.stop(recorded.client)
   fake_server.stop(server)
   let assert Ok(tape) = cassette.load(destination, 1_000_000)
   let assert Ok(client) = http_testing.playback(tape, http_config.default())
-  let assert Error(session.RunFailure(types.CancelledLocally, evidence)) =
-    session.run(client, call)
-  evidence.response_bytes_observed |> should.be_true
-  evidence.semantic_progress_observed |> should.be_true
+  let assert Error(failure) = llm_wire.run(client, call)
+  failure.error |> should.equal(error.Cancelled)
+  // Was response bytes and semantic progress observed.
+  failure.partial_output |> should.be_true
+  failure.sent |> should.equal(llm_wire.MaybeSent)
   http_gun.stop(client)
   let assert Ok(Nil) = simplifile.delete(destination)
 }

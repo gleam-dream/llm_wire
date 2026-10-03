@@ -1,37 +1,53 @@
 import gleam/erlang/process
 import gleam/list
+import gleam/option.{None, Some}
+import gleam/string
 import gleeunit/should
 import http_gun/error as http_error
+import llm_wire/error
+import llm_wire/internal/config
+import llm_wire/internal/limits
 import llm_wire/internal/owner
 import llm_wire/internal/stream_types
-import llm_wire/types
+import llm_wire/limit
+import llm_wire/message
 import owner_provider_helper
 import tool_fixtures
 
-pub fn owner_sequential_read_test() {
-  let limits = types.default_limits()
-  let deadlines = types.default_deadlines()
+fn idle_port() -> owner.TransportPort {
+  owner.TransportPort(request_more: fn() { Nil }, close: fn() { Nil })
+}
 
-  let port =
-    owner.TransportPort(request_more: fn() { Nil }, close: fn() { Nil })
-
-  let assert Ok(stream) =
-    owner_provider_helper.start_openai_stream(limits, deadlines, port)
-
-  // Feed chunk with output item and text delta
-  owner.feed_chunk(stream, <<
+fn item_added() -> BitArray {
+  <<
     "event: response.output_item.added\ndata: {\"output_index\": 0, \"item\": {\"id\": \"item_1\", \"type\": \"message\"}}\n\n":utf8,
-  >>)
-  owner.feed_chunk(stream, <<
-    "event: response.output_text.delta\ndata: {\"output_index\": 0, \"item_id\": \"item_1\", \"delta\": \"Hi!\"}\n\n":utf8,
-  >>)
+  >>
+}
 
-  let assert Ok(stream_types.NextProgress(types.TextDelta(block_id, text))) =
-    owner.next(stream, 1000)
+fn text_delta(text: String) -> BitArray {
+  <<
+    "event: response.output_text.delta\ndata: {\"output_index\": 0, \"item_id\": \"item_1\", \"delta\": \"":utf8,
+    text:utf8,
+    "\"}\n\n":utf8,
+  >>
+}
+
+pub fn owner_sequential_read_test() {
+  let assert Ok(stream) =
+    owner_provider_helper.start_openai_stream(
+      limits.default(),
+      config.default_timeouts(),
+      idle_port(),
+    )
+
+  owner.feed_chunk(stream, item_added())
+  owner.feed_chunk(stream, text_delta("Hi!"))
+
+  let assert Ok(stream_types.NextProgress(message.TextDelta(block_id, text))) =
+    owner.next(stream, Some(1000))
   block_id |> should.equal("item_1")
   text |> should.equal("Hi!")
 
-  // Feed done and completed
   owner.feed_chunk(stream, <<
     "event: response.output_item.done\ndata: {\"output_index\": 0, \"item\": {\"id\": \"item_1\", \"type\": \"message\"}}\n\n":utf8,
   >>)
@@ -39,47 +55,38 @@ pub fn owner_sequential_read_test() {
     "event: response.completed\ndata: {\"response\": {\"id\": \"r1\", \"status\": \"completed\"}}\n\n":utf8,
   >>)
 
-  let assert Ok(stream_types.StreamTerminal(stream_types.StreamFinished(
-    outcome,
+  let assert Ok(stream_types.StreamTerminal(
+    stream_types.StreamFinished(outcome, _),
     _,
-  ))) = owner.next(stream, 1000)
+  )) = owner.next(stream, Some(1000))
   outcome |> should.equal(stream_types.CompletedText("Hi!"))
 
-  // Subsequent read returns StreamClosed
-  owner.next(stream, 1000)
-  |> should.equal(Error(types.StreamClosed))
+  owner.next(stream, Some(1000))
+  |> should.equal(Error(stream_types.StreamClosed))
 }
 
 pub fn owner_copied_handles_and_close_test() {
-  let limits = types.default_limits()
-  let deadlines = types.default_deadlines()
-  let port =
-    owner.TransportPort(request_more: fn() { Nil }, close: fn() { Nil })
-
   let assert Ok(stream1) =
-    owner_provider_helper.start_openai_stream(limits, deadlines, port)
+    owner_provider_helper.start_openai_stream(
+      limits.default(),
+      config.default_timeouts(),
+      idle_port(),
+    )
   let stream2 = stream1
 
-  // Close via stream1
-  owner.close(stream1)
-  |> should.equal(Ok(types.ConsumerClosed))
-
-  // Close via stream2 returns AlreadyTerminal
-  owner.close(stream2)
-  |> should.equal(Ok(types.AlreadyTerminal))
-
-  // Next on stream2 returns StreamClosed
-  owner.next(stream2, 1000)
-  |> should.equal(Error(types.StreamClosed))
+  // `close` no longer returns a `Result`: it is always answered.
+  owner.close(stream1) |> should.equal(stream_types.ConsumerClosed)
+  owner.close(stream2) |> should.equal(stream_types.AlreadyTerminal)
+  owner.next(stream2, Some(1000))
+  |> should.equal(Error(stream_types.StreamClosed))
 }
 
 pub fn copied_handles_close_concurrently_and_idempotently_test() {
-  let port = owner.TransportPort(fn() { Nil }, fn() { Nil })
   let assert Ok(stream) =
     owner_provider_helper.start_openai_stream(
-      types.default_limits(),
-      types.default_deadlines(),
-      port,
+      limits.default(),
+      config.default_timeouts(),
+      idle_port(),
     )
   let ready = process.new_subject()
   let done = process.new_subject()
@@ -99,121 +106,133 @@ pub fn copied_handles_close_concurrently_and_idempotently_test() {
       go
     })
   list.each(gates, fn(go) { process.send(go, Nil) })
-  list.each(gates, fn(_) {
-    let assert Ok(Ok(_)) = process.receive(done, 6000)
-    Nil
-  })
+  let outcomes =
+    list.map(gates, fn(_) {
+      let assert Ok(outcome) = process.receive(done, 6000)
+      outcome
+    })
+  // Exactly one close wins; every other copy sees the call already ended.
+  list.count(outcomes, fn(o) { o == stream_types.ConsumerClosed })
+  |> should.equal(1)
 }
 
 pub fn owner_concurrent_read_conflict_test() {
-  let limits = types.default_limits()
-  let deadlines = types.default_deadlines()
-  let port =
-    owner.TransportPort(request_more: fn() { Nil }, close: fn() { Nil })
-
   let assert Ok(stream) =
-    owner_provider_helper.start_openai_stream(limits, deadlines, port)
+    owner_provider_helper.start_openai_stream(
+      limits.default(),
+      config.default_timeouts(),
+      idle_port(),
+    )
 
-  // Start a background process that calls next (which will block waiting for data)
   let test_subject = process.new_subject()
+  let registered = process.new_subject()
   process.spawn_unlinked(fn() {
-    let res = owner.next(stream, 2000)
-    process.send(test_subject, res)
+    process.send(registered, Nil)
+    process.send(test_subject, read_past_conflicts(stream))
   })
+  let assert Ok(Nil) = process.receive(registered, 1000)
+  // Poll until the background read waits with the owner; a concurrent read
+  // from this process then fails at once.
+  wait_for_conflict(stream, 200) |> should.be_true
 
-  // Give the background process a moment to register its read
-  process.sleep(30)
-
-  // Now a concurrent read from the test process should fail immediately with ConcurrentReadConflict!
-  owner.next(stream, 500)
-  |> should.equal(Error(types.ConcurrentReadConflict))
-
-  // Close stream to unblock background process
-  owner.close(stream)
-  |> should.equal(Ok(types.ConsumerClosed))
+  owner.close(stream) |> should.equal(stream_types.ConsumerClosed)
+  // The waiting reader is released with the cancellation terminal.
+  let assert Ok(Ok(stream_types.StreamTerminal(
+    stream_types.StreamCancelledLocally(_),
+    _,
+  ))) = process.receive(test_subject, 2000)
 }
 
-pub fn owner_idle_deadline_test() {
-  let limits = types.default_limits()
-  // Set very short idle deadline: 50ms
-  let deadlines =
-    types.Deadlines(
-      overall_timeout_ms: 10_000,
-      idle_timeout_ms: 50,
-      read_timeout_ms: 1000,
-    )
-  let port =
-    owner.TransportPort(request_more: fn() { Nil }, close: fn() { Nil })
-
-  let assert Ok(stream) =
-    owner_provider_helper.start_openai_stream(limits, deadlines, port)
-
-  // Wait 100ms for idle timeout to trigger
-  process.sleep(100)
-
-  let res = owner.next(stream, 1000)
-  case res {
-    Ok(stream_types.StreamTerminal(stream_types.StreamFailed(
-      types.DeadlineExceeded(types.IdleDeadline),
-      _,
-    ))) -> Nil
-    _ -> panic as "expected IdleDeadline failure"
+/// A waiting read; a conflict with one of the test's polls is retried.
+fn read_past_conflicts(
+  stream: owner.Stream,
+) -> Result(stream_types.ReadResult, stream_types.ReadError) {
+  case owner.next(stream, None) {
+    Error(stream_types.ConcurrentReadConflict) -> read_past_conflicts(stream)
+    other -> other
   }
+}
+
+fn wait_for_conflict(stream: owner.Stream, attempts: Int) -> Bool {
+  case owner.next(stream, Some(10)) {
+    Error(stream_types.ConcurrentReadConflict) -> True
+    _ if attempts > 0 -> {
+      process.sleep(5)
+      wait_for_conflict(stream, attempts - 1)
+    }
+    _ -> False
+  }
+}
+
+/// The old idle deadline ran from the start; that span is now the
+/// first-token timer, which fires when no progress arrives at all.
+pub fn owner_first_token_deadline_test() {
+  let timeouts = owner_provider_helper.timeouts(Some(10_000), Some(50), None)
+  let assert Ok(stream) =
+    owner_provider_helper.start_openai_stream(
+      limits.default(),
+      timeouts,
+      idle_port(),
+    )
+  // `next` waits; the owner's timer ends the wait.
+  let assert Ok(stream_types.StreamTerminal(
+    stream_types.StreamFailed(error.DeadlineExceeded(error.FirstToken), _),
+    _,
+  )) = owner.next(stream, None)
+}
+
+/// The idle gap starts at the first progress event, so it fires only after
+/// a delta was delivered.
+pub fn owner_idle_gap_deadline_test() {
+  let timeouts = owner_provider_helper.timeouts(Some(10_000), None, Some(50))
+  let assert Ok(stream) =
+    owner_provider_helper.start_openai_stream(
+      limits.default(),
+      timeouts,
+      idle_port(),
+    )
+  owner.feed_chunk(stream, item_added())
+  owner.feed_chunk(stream, text_delta("partial"))
+  let assert Ok(stream_types.NextProgress(message.TextDelta(_, "partial"))) =
+    owner.next(stream, None)
+  let assert Ok(stream_types.StreamTerminal(
+    stream_types.StreamFailed(error.DeadlineExceeded(error.IdleGap), evidence),
+    _,
+  )) = owner.next(stream, None)
+  evidence.semantic_progress_observed |> should.be_true
 }
 
 pub fn owner_overall_deadline_test() {
-  let limits = types.default_limits()
-  // Set overall deadline to 50ms
-  let deadlines =
-    types.Deadlines(
-      overall_timeout_ms: 50,
-      idle_timeout_ms: 10_000,
-      read_timeout_ms: 1000,
-    )
-  let port =
-    owner.TransportPort(request_more: fn() { Nil }, close: fn() { Nil })
-
+  let timeouts = owner_provider_helper.timeouts(Some(50), None, None)
   let assert Ok(stream) =
-    owner_provider_helper.start_openai_stream(limits, deadlines, port)
-
-  // Wait 100ms for overall timeout to trigger
-  process.sleep(100)
-
-  let res = owner.next(stream, 1000)
-  case res {
-    Ok(stream_types.StreamTerminal(stream_types.StreamFailed(
-      types.DeadlineExceeded(types.OverallDeadline),
-      _,
-    ))) -> Nil
-    _ -> panic as "expected OverallDeadline failure"
-  }
+    owner_provider_helper.start_openai_stream(
+      limits.default(),
+      timeouts,
+      idle_port(),
+    )
+  let assert Ok(stream_types.StreamTerminal(
+    stream_types.StreamFailed(error.DeadlineExceeded(error.WholeCall), _),
+    _,
+  )) = owner.next(stream, None)
 }
 
 pub fn owner_cleanup_called_once_test() {
-  let limits = types.default_limits()
-  let deadlines = types.default_deadlines()
-
   let close_counter = process.new_subject()
-
   let port =
     owner.TransportPort(request_more: fn() { Nil }, close: fn() {
       process.send(close_counter, 1)
     })
-
   let assert Ok(stream) =
-    owner_provider_helper.start_openai_stream(limits, deadlines, port)
+    owner_provider_helper.start_openai_stream(
+      limits.default(),
+      config.default_timeouts(),
+      port,
+    )
 
-  // First close
-  owner.close(stream)
-  |> should.equal(Ok(types.ConsumerClosed))
+  owner.close(stream) |> should.equal(stream_types.ConsumerClosed)
+  owner.close(stream) |> should.equal(stream_types.AlreadyTerminal)
 
-  // Second close
-  owner.close(stream)
-  |> should.equal(Ok(types.AlreadyTerminal))
-
-  // Check how many close calls were sent
-  let assert Ok(1) = process.receive(close_counter, 100)
-  // No second close message should be in mailbox
+  let assert Ok(1) = process.receive(close_counter, 1000)
   process.receive(close_counter, 50)
   |> should.be_error
 }
@@ -228,8 +247,8 @@ pub fn owner_monitors_consumer_between_reads_test() {
       })
     let assert Ok(stream) =
       owner_provider_helper.start_openai_stream(
-        types.default_limits(),
-        types.default_deadlines(),
+        limits.default(),
+        config.default_timeouts(),
         transport,
       )
     let assert Ok(pid) = owner.owner_pid(stream)
@@ -239,7 +258,7 @@ pub fn owner_monitors_consumer_between_reads_test() {
 
   let assert Ok(#(_stream, owner_pid)) = process.receive(stream_subject, 1000)
   let assert Ok(Nil) = process.receive(close_counter, 1000)
-  wait_for_process_exit(owner_pid, 100)
+  wait_for_process_exit(owner_pid, 200)
   |> should.equal(True)
 }
 
@@ -266,45 +285,39 @@ pub fn owner_keeps_one_outstanding_transport_credit_test() {
     )
   let assert Ok(stream) =
     owner_provider_helper.start_openai_stream(
-      types.default_limits(),
-      types.default_deadlines(),
+      limits.default(),
+      config.default_timeouts(),
       transport,
     )
 
-  owner.next(stream, 10) |> should.equal(Error(types.ReadTimeout))
-  owner.next(stream, 10) |> should.equal(Error(types.ReadTimeout))
-  let assert Ok(Nil) = process.receive(credit_counter, 100)
-  process.sleep(10)
-  process.receive(credit_counter, 10) |> should.be_error
+  // A bounded read (`next_within` at the facade) gives up with `ReadTimeout`.
+  owner.next(stream, Some(10)) |> should.equal(Error(stream_types.ReadTimeout))
+  owner.next(stream, Some(10)) |> should.equal(Error(stream_types.ReadTimeout))
+  let assert Ok(Nil) = process.receive(credit_counter, 1000)
+  process.receive(credit_counter, 50) |> should.be_error
   let _ = owner.close(stream)
   Nil
 }
 
 pub fn owner_read_timeout_delivery_race_never_loses_accepted_progress_test() {
-  let transport =
-    owner.TransportPort(request_more: fn() { Nil }, close: fn() { Nil })
   let assert Ok(stream) =
     owner_provider_helper.start_openai_stream(
-      types.default_limits(),
-      types.default_deadlines(),
-      transport,
+      limits.default(),
+      config.default_timeouts(),
+      idle_port(),
     )
-  owner.feed_chunk(stream, <<
-    "event: response.output_item.added\ndata: {\"output_index\":0,\"item\":{\"id\":\"item_1\",\"type\":\"message\"}}\n\n":utf8,
-  >>)
+  owner.feed_chunk(stream, item_added())
   process.spawn_unlinked(fn() {
     process.sleep(10)
-    owner.feed_chunk(stream, <<
-      "event: response.output_text.delta\ndata: {\"output_index\":0,\"item_id\":\"item_1\",\"delta\":\"kept\"}\n\n":utf8,
-    >>)
+    owner.feed_chunk(stream, text_delta("kept"))
   })
 
-  case owner.next(stream, 10) {
-    Ok(stream_types.NextProgress(types.TextDelta(_, text))) ->
+  case owner.next(stream, Some(10)) {
+    Ok(stream_types.NextProgress(message.TextDelta(_, text))) ->
       text |> should.equal("kept")
-    Error(types.ReadTimeout) -> {
-      let assert Ok(stream_types.NextProgress(types.TextDelta(_, text))) =
-        owner.next(stream, 1000)
+    Error(stream_types.ReadTimeout) -> {
+      let assert Ok(stream_types.NextProgress(message.TextDelta(_, text))) =
+        owner.next(stream, Some(5000))
       text |> should.equal("kept")
     }
     _ -> should.fail()
@@ -314,94 +327,56 @@ pub fn owner_read_timeout_delivery_race_never_loses_accepted_progress_test() {
 }
 
 pub fn owner_queue_limit_test() {
-  let limits =
-    types.Limits(
-      chunk_bytes_limit: 10_000,
-      line_bytes_limit: 10_000,
-      event_bytes_limit: 10_000,
-      request_bytes_limit: 10_000,
-      provider_metadata_bytes_limit: 10_000,
-      queue_count_limit: 2,
-      queue_bytes_limit: 10_000,
-      active_blocks_limit: 10,
-      text_bytes_per_block_limit: 10_000,
-      total_text_bytes_limit: 10_000,
-      argument_bytes_per_call_limit: 10_000,
-      total_argument_bytes_limit: 10_000,
-      extension_bytes_limit: 10_000,
-      response_body_bytes_limit: 10_000,
-    )
-  let deadlines = types.default_deadlines()
-  let port =
-    owner.TransportPort(request_more: fn() { Nil }, close: fn() { Nil })
-
+  let bounds = limits.Limits(..limits.default(), queue_count_limit: 2)
   let assert Ok(stream) =
-    owner_provider_helper.start_openai_stream(limits, deadlines, port)
+    owner_provider_helper.start_openai_stream(
+      bounds,
+      config.default_timeouts(),
+      idle_port(),
+    )
 
-  // Add block
-  owner.feed_chunk(stream, <<
-    "event: response.output_item.added\ndata: {\"output_index\": 0, \"item\": {\"id\": \"item_1\", \"type\": \"message\"}}\n\n":utf8,
-  >>)
-  // Feed delta 1 (enqueued)
-  owner.feed_chunk(stream, <<
-    "event: response.output_text.delta\ndata: {\"output_index\": 0, \"item_id\": \"item_1\", \"delta\": \"1\"}\n\n":utf8,
-  >>)
-  // Feed delta 2 (enqueued)
-  owner.feed_chunk(stream, <<
-    "event: response.output_text.delta\ndata: {\"output_index\": 0, \"item_id\": \"item_1\", \"delta\": \"2\"}\n\n":utf8,
-  >>)
-  // Feed delta 3 (should breach queue_count_limit of 2!)
-  owner.feed_chunk(stream, <<
-    "event: response.output_text.delta\ndata: {\"output_index\": 0, \"item_id\": \"item_1\", \"delta\": \"3\"}\n\n":utf8,
-  >>)
+  owner.feed_chunk(stream, item_added())
+  owner.feed_chunk(stream, text_delta("1"))
+  owner.feed_chunk(stream, text_delta("2"))
+  // The third queued delta breaches the queue count bound of 2.
+  owner.feed_chunk(stream, text_delta("3"))
 
-  let assert Ok(stream_types.NextProgress(types.TextDelta(_, "1"))) =
-    owner.next(stream, 1000)
-  let assert Ok(stream_types.NextProgress(types.TextDelta(_, "2"))) =
-    owner.next(stream, 1000)
-
-  // Next item must be the limit failure!
-  let res = owner.next(stream, 1000)
-  case res {
-    Ok(stream_types.StreamTerminal(stream_types.StreamFailed(
-      types.ResourceLimitExceeded("queue_count_limit", 2, 3),
-      _,
-    ))) -> Nil
-    _other -> panic as "expected queue_count_limit ResourceLimitExceeded"
-  }
+  let assert Ok(stream_types.NextProgress(message.TextDelta(_, "1"))) =
+    owner.next(stream, Some(1000))
+  let assert Ok(stream_types.NextProgress(message.TextDelta(_, "2"))) =
+    owner.next(stream, Some(1000))
+  let assert Ok(stream_types.StreamTerminal(
+    stream_types.StreamFailed(error.LimitExceeded(limit.QueueCount, 2, 3), _),
+    _,
+  )) = owner.next(stream, Some(1000))
 }
 
 pub fn owner_response_body_limit_is_enforced_test() {
-  let limits =
-    types.Limits(..types.default_limits(), response_body_bytes_limit: 12)
-  let transport =
-    owner.TransportPort(request_more: fn() { Nil }, close: fn() { Nil })
+  let bounds = limits.Limits(..limits.default(), response_body_bytes_limit: 12)
   let assert Ok(stream) =
     owner_provider_helper.start_openai_stream(
-      limits,
-      types.default_deadlines(),
-      transport,
+      bounds,
+      config.default_timeouts(),
+      idle_port(),
     )
   owner.feed_chunk(stream, <<"1234567890123":utf8>>)
-  case owner.next(stream, 1000) {
-    Ok(stream_types.StreamTerminal(stream_types.StreamFailed(
-      types.ResourceLimitExceeded("response_body_bytes_limit", 12, 13),
+  let assert Ok(stream_types.StreamTerminal(
+    stream_types.StreamFailed(
+      error.LimitExceeded(limit.ResponseBodyBytes, 12, 13),
       _,
-    ))) -> should.be_true(True)
-    _ -> should.fail()
-  }
+    ),
+    _,
+  )) = owner.next(stream, Some(1000))
 }
 
 pub fn owner_argument_disconnect_never_emits_partial_tool_call_test() {
-  let tool = tool_fixtures.int_field_tool("calc", "x")
-  let transport =
-    owner.TransportPort(request_more: fn() { Nil }, close: fn() { Nil })
+  let calc = tool_fixtures.int_field_tool("calc", "x")
   let assert Ok(stream) =
     owner_provider_helper.start_anthropic_stream_with_tools(
-      types.default_limits(),
-      types.default_deadlines(),
-      transport,
-      [tool],
+      limits.default(),
+      config.default_timeouts(),
+      idle_port(),
+      [calc],
     )
   owner.feed_chunk(stream, <<
     "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n":utf8,
@@ -412,13 +387,38 @@ pub fn owner_argument_disconnect_never_emits_partial_tool_call_test() {
   owner.feed_chunk(stream, <<
     "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"x\\\":\"}}\n\n":utf8,
   >>)
+  let reset =
+    http_error.new(
+      http_error.RequestFailed(http_error.ConnectionReset),
+      http_error.MaybeSent,
+    )
   owner.feed_failure(
     stream,
-    types.HttpFailure(http_error.RequestFailed(http_error.ConnectionReset)),
-    types.RetryEvidence(types.RequestMayHaveReachedProvider, False, False),
+    error.Http(reset),
+    stream_types.RetryEvidence(
+      stream_types.RequestMayHaveReachedProvider,
+      False,
+      False,
+    ),
   )
-  let assert Ok(stream_types.StreamTerminal(stream_types.StreamFailed(
-    types.HttpFailure(http_error.RequestFailed(http_error.ConnectionReset)),
-    _,
-  ))) = owner.next(stream, 1000)
+  // Progress may precede the failure (usage and, new in wave 4, the
+  // tool-argument delta), but never a completed partial tool call.
+  let assert Ok(failed) = read_to_terminal(stream)
+  let assert stream_types.StreamFailed(error.Http(failure), _) = failed
+  http_error.reason(failure)
+  |> should.equal(http_error.RequestFailed(http_error.ConnectionReset))
+}
+
+fn read_to_terminal(
+  stream: owner.Stream,
+) -> Result(stream_types.TerminalOutcome, stream_types.ReadError) {
+  case owner.next(stream, Some(1000)) {
+    Ok(stream_types.NextProgress(message.ToolArgumentsDelta(..)))
+    | Ok(stream_types.NextProgress(message.UsageUpdate(_))) ->
+      read_to_terminal(stream)
+    Ok(stream_types.NextProgress(other)) ->
+      panic as { "unexpected progress " <> string.inspect(other) }
+    Ok(stream_types.StreamTerminal(terminal, _)) -> Ok(terminal)
+    Error(problem) -> Error(problem)
+  }
 }

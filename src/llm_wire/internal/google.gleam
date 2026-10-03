@@ -7,13 +7,17 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import llm_wire/error
+import llm_wire/internal/ids
+import llm_wire/internal/limits
 import llm_wire/internal/sse
 import llm_wire/internal/stream_types
-import llm_wire/types
+import llm_wire/limit
+import llm_wire/message
 
 pub opaque type Reducer {
   Reducer(
-    limits: types.Limits,
+    limits: limits.Limits,
     text_buffer: String,
     tool_buffers: Dict(String, ToolBuffer),
     tool_order: List(String),
@@ -24,22 +28,22 @@ pub opaque type Reducer {
     semantic_progress_observed: Bool,
     terminal_outcome: Option(stream_types.TerminalOutcome),
     response_id: Option(String),
-    usage: Option(types.Usage),
+    usage: Option(message.Usage),
     provider_parts: List(String),
   )
 }
 
 pub type ToolBuffer {
   ToolBuffer(
-    call_id: types.CallId,
+    call_id: String,
     provider_id: Option(String),
-    name: types.ToolName,
+    name: String,
     arguments: String,
     provider_state: Option(String),
   )
 }
 
-pub fn new(limits: types.Limits) -> Reducer {
+pub fn new(limits: limits.Limits) -> Reducer {
   Reducer(
     limits: limits,
     text_buffer: "",
@@ -57,36 +61,23 @@ pub fn new(limits: types.Limits) -> Reducer {
   )
 }
 
-/// Admits the catalog so duplicate names fail before transport. Whether a
-/// returned call names a declared tool with valid arguments is decided by the
-/// runtime's terminal admission, not by this reducer.
-pub fn new_with_tools(
-  limits: types.Limits,
-  tools: List(types.ToolDefinition),
-) -> Result(Reducer, types.WireError) {
-  case types.admit_tool_catalog(tools) {
-    Error(error) -> Error(error)
-    Ok(_) -> Ok(new(limits))
-  }
-}
-
 pub fn terminal(reducer: Reducer) -> Option(stream_types.TerminalOutcome) {
   reducer.terminal_outcome
 }
 
 pub fn retry_evidence(
   reducer: Reducer,
-  fallback_classification: types.RetryClassification,
-) -> types.RetryEvidence {
+  fallback_classification: stream_types.RetryClassification,
+) -> stream_types.RetryEvidence {
   let classification = case reducer.semantic_progress_observed {
     True ->
       case list.is_empty(reducer.tool_order) {
-        False -> types.EffectUnknown
+        False -> stream_types.EffectUnknown
         True -> fallback_classification
       }
     False -> fallback_classification
   }
-  types.RetryEvidence(
+  stream_types.RetryEvidence(
     classification: classification,
     response_bytes_observed: reducer.response_bytes_observed,
     semantic_progress_observed: reducer.semantic_progress_observed,
@@ -96,10 +87,9 @@ pub fn retry_evidence(
 pub fn step(
   reducer: Reducer,
   event: sse.ServerSentEvent,
-) -> Result(#(Reducer, List(types.StreamProgress)), types.WireError) {
+) -> Result(#(Reducer, List(message.Progress)), error.Error) {
   case reducer.terminal_outcome {
-    Some(_) ->
-      Error(types.ProtocolError("Event received after stream terminal"))
+    Some(_) -> Error(error.Protocol("Event received after stream terminal"))
     None -> {
       let with_bytes = Reducer(..reducer, response_bytes_observed: True)
       let data = string.trim(event.data)
@@ -114,9 +104,9 @@ pub fn step(
 fn handle_json_chunk(
   reducer: Reducer,
   data: String,
-) -> Result(#(Reducer, List(types.StreamProgress)), types.WireError) {
+) -> Result(#(Reducer, List(message.Progress)), error.Error) {
   case json.parse(data, decode.dynamic) {
-    Error(_) -> Error(types.ProtocolError("Malformed Google response JSON"))
+    Error(_) -> Error(error.Protocol("Malformed Google response JSON"))
     Ok(json_val) -> process_google_payload(reducer, json_val)
   }
 }
@@ -124,7 +114,7 @@ fn handle_json_chunk(
 fn process_google_payload(
   reducer: Reducer,
   payload: Dynamic,
-) -> Result(#(Reducer, List(types.StreamProgress)), types.WireError) {
+) -> Result(#(Reducer, List(message.Progress)), error.Error) {
   // 1. Check for top-level error object: {"error": {"code": 400, "message": "...", "status": "..."}}
   case get_field(payload, "error") {
     Ok(error_obj) -> {
@@ -137,12 +127,9 @@ fn process_google_payload(
         |> result.try(get_string)
         |> option.from_result
       let evidence =
-        retry_evidence(reducer, types.RequestMayHaveReachedProvider)
+        retry_evidence(reducer, stream_types.RequestMayHaveReachedProvider)
       let outcome =
-        stream_types.StreamFailed(
-          types.ProviderError(status, message),
-          evidence,
-        )
+        stream_types.StreamFailed(error.Provider(status, message), evidence)
       Ok(#(Reducer(..reducer, terminal_outcome: Some(outcome)), []))
     }
     Error(Nil) -> {
@@ -171,7 +158,7 @@ fn process_google_payload(
 fn process_candidates(
   reducer: Reducer,
   payload: Dynamic,
-) -> Result(#(Reducer, List(types.StreamProgress)), types.WireError) {
+) -> Result(#(Reducer, List(message.Progress)), error.Error) {
   let response_id =
     get_field(payload, "responseId")
     |> result.try(get_string)
@@ -196,8 +183,7 @@ fn process_candidates(
     Ok(candidates_val) -> {
       use candidates <- result.try(case get_list(candidates_val) {
         Ok(items) -> Ok(items)
-        Error(Nil) ->
-          Error(types.ProtocolError("candidates field must be an array"))
+        Error(Nil) -> Error(error.Protocol("candidates field must be an array"))
       })
 
       case candidates {
@@ -244,7 +230,7 @@ fn process_candidates(
 fn extract_usage(
   reducer: Reducer,
   payload: Dynamic,
-) -> #(Reducer, List(types.StreamProgress)) {
+) -> #(Reducer, List(message.Progress)) {
   case get_field(payload, "usageMetadata") {
     Error(Nil) -> #(reducer, [])
     Ok(meta) -> {
@@ -256,8 +242,8 @@ fn extract_usage(
         Ok(prompt), Ok(candidates), Ok(total)
           if prompt >= 0 && candidates >= 0 && total >= 0
         -> {
-          let usage = types.Usage(prompt, candidates, total)
-          #(Reducer(..reducer, usage: Some(usage)), [types.UsageUpdate(usage)])
+          let usage = message.Usage(prompt, candidates, total)
+          #(Reducer(..reducer, usage: Some(usage)), [message.UsageUpdate(usage)])
         }
         _, _, _ -> #(reducer, [])
       }
@@ -268,7 +254,7 @@ fn extract_usage(
 fn process_candidate_content(
   reducer: Reducer,
   candidate: Dynamic,
-) -> Result(#(Reducer, List(types.StreamProgress)), types.WireError) {
+) -> Result(#(Reducer, List(message.Progress)), error.Error) {
   case get_field(candidate, "content") {
     Error(Nil) -> Ok(#(reducer, []))
     Ok(content) -> {
@@ -277,7 +263,7 @@ fn process_candidate_content(
         Ok(parts_val) -> {
           use parts <- result.try(case get_list(parts_val) {
             Ok(items) -> Ok(items)
-            Error(Nil) -> Error(types.ProtocolError("parts must be an array"))
+            Error(Nil) -> Error(error.Protocol("parts must be an array"))
           })
           list.fold(parts, Ok(#(reducer, [])), fn(acc, part) {
             use #(curr_reducer, curr_progress) <- result.try(acc)
@@ -296,11 +282,11 @@ fn process_candidate_content(
 fn process_part(
   reducer: Reducer,
   part: Dynamic,
-) -> Result(#(Reducer, List(types.StreamProgress)), types.WireError) {
+) -> Result(#(Reducer, List(message.Progress)), error.Error) {
   use thought_signature <- result.try(thought_signature(part))
   use encoded_part <- result.try(
     dynamic_json(part)
-    |> result.replace_error(types.ProtocolError(
+    |> result.replace_error(error.Protocol(
       "Gemini model part cannot be retained in the assistant turn",
     )),
   )
@@ -321,13 +307,13 @@ fn process_part(
   }
 }
 
-fn thought_signature(part: Dynamic) -> Result(Option(String), types.WireError) {
+fn thought_signature(part: Dynamic) -> Result(Option(String), error.Error) {
   case get_field(part, "thoughtSignature") {
     Error(Nil) -> Ok(None)
     Ok(value) ->
       get_string(value)
       |> result.map(Some)
-      |> result.replace_error(types.ProtocolError(
+      |> result.replace_error(error.Protocol(
         "Gemini thoughtSignature must be a string",
       ))
   }
@@ -336,19 +322,19 @@ fn thought_signature(part: Dynamic) -> Result(Option(String), types.WireError) {
 fn process_part_without_thought_signature(
   reducer: Reducer,
   part: Dynamic,
-) -> Result(#(Reducer, List(types.StreamProgress)), types.WireError) {
+) -> Result(#(Reducer, List(message.Progress)), error.Error) {
   // Check for text
   case get_field(part, "text") {
     Ok(text_val) -> {
       use text <- result.try(case get_string(text_val) {
         Ok(t) -> Ok(t)
-        Error(Nil) -> Error(types.ProtocolError("text part must be a string"))
+        Error(Nil) -> Error(error.Protocol("text part must be a string"))
       })
       let delta_bytes = string.byte_size(text)
       case delta_bytes > reducer.limits.text_bytes_per_block_limit {
         True ->
-          Error(types.ResourceLimitExceeded(
-            "text_bytes_per_block_limit",
+          Error(error.LimitExceeded(
+            limit.TextBytesPerBlock,
             reducer.limits.text_bytes_per_block_limit,
             delta_bytes,
           ))
@@ -356,8 +342,8 @@ fn process_part_without_thought_signature(
           let new_total = reducer.total_text_bytes + delta_bytes
           case new_total > reducer.limits.total_text_bytes_limit {
             True ->
-              Error(types.ResourceLimitExceeded(
-                "total_text_bytes_limit",
+              Error(error.LimitExceeded(
+                limit.TotalTextBytes,
                 reducer.limits.total_text_bytes_limit,
                 new_total,
               ))
@@ -369,7 +355,7 @@ fn process_part_without_thought_signature(
                   total_text_bytes: new_total,
                   semantic_progress_observed: True,
                 )
-              Ok(#(updated, [types.TextDelta(block_id: "0", text: text)]))
+              Ok(#(updated, [message.TextDelta(block_id: "0", text: text)]))
             }
           }
         }
@@ -386,13 +372,13 @@ fn process_function_call(
   reducer: Reducer,
   fc: Dynamic,
   provider_state: Option(String),
-) -> Result(#(Reducer, List(types.StreamProgress)), types.WireError) {
+) -> Result(#(Reducer, List(message.Progress)), error.Error) {
   use name_str <- result.try(
     get_field(fc, "name")
     |> result.try(get_string)
-    |> result.replace_error(types.ProtocolError("functionCall missing name")),
+    |> result.replace_error(error.Protocol("functionCall missing name")),
   )
-  use tool_name <- result.try(types.provider_tool_name(name_str))
+  use tool_name <- result.try(ids.provider_tool_name(name_str))
 
   let args_json = case get_field(fc, "args") {
     Ok(args_val) ->
@@ -406,8 +392,8 @@ fn process_function_call(
   let arg_bytes = string.byte_size(args_json)
   case arg_bytes > reducer.limits.argument_bytes_per_call_limit {
     True ->
-      Error(types.ResourceLimitExceeded(
-        "argument_bytes_per_call_limit",
+      Error(error.LimitExceeded(
+        limit.ArgumentBytesPerCall,
         reducer.limits.argument_bytes_per_call_limit,
         arg_bytes,
       ))
@@ -415,8 +401,8 @@ fn process_function_call(
       let new_total_args = reducer.total_argument_bytes + arg_bytes
       case new_total_args > reducer.limits.total_argument_bytes_limit {
         True ->
-          Error(types.ResourceLimitExceeded(
-            "total_argument_bytes_limit",
+          Error(error.LimitExceeded(
+            limit.TotalArgumentBytes,
             reducer.limits.total_argument_bytes_limit,
             new_total_args,
           ))
@@ -424,8 +410,8 @@ fn process_function_call(
           let call_count = list.length(reducer.tool_order)
           case call_count >= reducer.limits.active_blocks_limit {
             True ->
-              Error(types.ResourceLimitExceeded(
-                "active_blocks_limit",
+              Error(error.LimitExceeded(
+                limit.ActiveBlocks,
                 reducer.limits.active_blocks_limit,
                 call_count + 1,
               ))
@@ -443,11 +429,9 @@ fn process_function_call(
               }
               case list.contains(reducer.seen_call_ids, raw_id) {
                 True ->
-                  Error(types.ProtocolError(
-                    "Duplicate tool call id: " <> raw_id,
-                  ))
+                  Error(error.Protocol("Duplicate tool call id: " <> raw_id))
                 False -> {
-                  use call_id <- result.try(types.call_id(raw_id))
+                  use call_id <- result.try(ids.call_id(raw_id))
                   let buffer =
                     ToolBuffer(
                       call_id,
@@ -470,8 +454,11 @@ fn process_function_call(
                       total_argument_bytes: new_total_args,
                       semantic_progress_observed: True,
                     )
-                  // Do NOT emit executable ToolCall in progress!
-                  Ok(#(updated, []))
+                  // Arguments arrive whole; report them as progress, never as
+                  // an executable call before the terminal admission.
+                  Ok(
+                    #(updated, [message.ToolArgumentsDelta(call_id, args_json)]),
+                  )
                 }
               }
             }
@@ -485,8 +472,9 @@ fn process_function_call(
 fn apply_finish_reason(
   reducer: Reducer,
   reason: String,
-) -> Result(Reducer, types.WireError) {
-  let evidence = retry_evidence(reducer, types.RequestMayHaveReachedProvider)
+) -> Result(Reducer, error.Error) {
+  let evidence =
+    retry_evidence(reducer, stream_types.RequestMayHaveReachedProvider)
   case reason {
     "STOP" -> {
       case reducer.tool_order {
@@ -574,7 +562,7 @@ fn apply_finish_reason(
     "OTHER" -> {
       let outcome =
         stream_types.StreamFailed(
-          types.ProviderError(
+          error.Provider(
             Some("OTHER"),
             "Google generation stopped with reason: OTHER",
           ),
@@ -585,10 +573,7 @@ fn apply_finish_reason(
     other -> {
       let outcome =
         stream_types.StreamFailed(
-          types.ProviderError(
-            Some(other),
-            "Unknown Google finish reason: " <> other,
-          ),
+          error.Provider(Some(other), "Unknown Google finish reason: " <> other),
           evidence,
         )
       Ok(Reducer(..reducer, terminal_outcome: Some(outcome)))
@@ -600,13 +585,13 @@ fn apply_finish_reason(
 /// may report rather than reject.
 fn build_tool_calls(
   reducer: Reducer,
-) -> Result(List(types.ToolCall), types.WireError) {
+) -> Result(List(message.ToolCall), error.Error) {
   list.try_map(reducer.tool_order, fn(raw_id) {
     case dict.get(reducer.tool_buffers, raw_id) {
       Error(Nil) ->
-        Error(types.ProtocolError("Missing tool buffer for ID: " <> raw_id))
+        Error(error.Protocol("Missing tool buffer for ID: " <> raw_id))
       Ok(buf) ->
-        Ok(types.ToolCall(
+        Ok(message.ToolCall(
           buf.call_id,
           buf.name,
           buf.arguments,
@@ -617,11 +602,11 @@ fn build_tool_calls(
   })
 }
 
-fn build_unvalidated_tool_calls(reducer: Reducer) -> List(types.ToolCall) {
+fn build_unvalidated_tool_calls(reducer: Reducer) -> List(message.ToolCall) {
   list.filter_map(reducer.tool_order, fn(raw_id) {
     case dict.get(reducer.tool_buffers, raw_id) {
       Ok(buf) ->
-        Ok(types.ToolCall(
+        Ok(message.ToolCall(
           buf.call_id,
           buf.name,
           buf.arguments,

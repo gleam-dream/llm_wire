@@ -4,11 +4,13 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import gleeunit/should
+import llm_wire/error
+import llm_wire/internal/limits
 import llm_wire/internal/sse
-import llm_wire/types
+import llm_wire/limit
 
 pub fn simple_event_test() {
-  let framer = sse.new(types.default_limits())
+  let framer = sse.new(limits.default())
   let chunk = <<"data: hello world\n\n":utf8>>
   let assert Ok(#(_framer, events)) = sse.feed(framer, chunk)
 
@@ -19,17 +21,16 @@ pub fn simple_event_test() {
 }
 
 pub fn event_burst_is_bounded_before_materializing_unbounded_events_test() {
-  let limits = types.Limits(..types.default_limits(), queue_count_limit: 1)
-  let framer = sse.new(limits)
+  let framer = sse.new(limits.set(limits.default(), limit.QueueCount, 1))
+  // The typed limit replaces the old "events_per_chunk_limit" string.
   case sse.feed(framer, <<"data: one\n\ndata: two\n\n":utf8>>) {
-    Error(types.ResourceLimitExceeded("events_per_chunk_limit", 1, 2)) ->
-      should.be_true(True)
+    Error(error.LimitExceeded(limit.QueueCount, 1, 2)) -> should.be_true(True)
     _ -> should.fail()
   }
 }
 
 pub fn multiline_data_test() {
-  let framer = sse.new(types.default_limits())
+  let framer = sse.new(limits.default())
   let chunk = <<"data: first line\ndata: second line\n\n":utf8>>
   let assert Ok(#(_framer, events)) = sse.feed(framer, chunk)
 
@@ -45,7 +46,7 @@ pub fn multiline_data_test() {
 }
 
 pub fn crlf_and_split_crlf_test() {
-  let framer = sse.new(types.default_limits())
+  let framer = sse.new(limits.default())
   // Chunk 1 ends with \r
   let chunk1 = <<"data: chunked\r":utf8>>
   let assert Ok(#(framer, events1)) = sse.feed(framer, chunk1)
@@ -61,7 +62,7 @@ pub fn crlf_and_split_crlf_test() {
 }
 
 pub fn event_id_and_comment_test() {
-  let framer = sse.new(types.default_limits())
+  let framer = sse.new(limits.default())
   let payload =
     ": ping comment\nevent: custom\nid: msg_99\nretry: 3000\ndata: payload\n\n"
   let assert Ok(#(_framer, events)) = sse.feed(framer, <<payload:utf8>>)
@@ -78,7 +79,7 @@ pub fn event_id_and_comment_test() {
 }
 
 pub fn byte_by_byte_split_test() {
-  let framer = sse.new(types.default_limits())
+  let framer = sse.new(limits.default())
   let raw = "event: message\ndata: {\"text\": \"hello 🚀 world\"}\n\n"
   let bytes = bit_array.from_string(raw)
   let byte_list = split_bytes(bytes)
@@ -132,7 +133,7 @@ pub fn representative_frames_survive_every_single_byte_boundary_test() {
     let bits = bit_array.from_string(raw)
     list.each(split_boundaries(bits), fn(boundary) {
       let #(before, after) = boundary
-      let framer = sse.new(types.default_limits())
+      let framer = sse.new(limits.default())
       let assert Ok(#(framer, left_events)) = sse.feed(framer, before)
       let assert Ok(#(_framer, right_events)) = sse.feed(framer, after)
       list.append(left_events, right_events) |> should.equal(expected)
@@ -141,7 +142,7 @@ pub fn representative_frames_survive_every_single_byte_boundary_test() {
 }
 
 pub fn split_utf8_multibyte_test() {
-  let framer = sse.new(types.default_limits())
+  let framer = sse.new(limits.default())
   // The rocket emoji 🚀 is 4 bytes: 0xF0 0x9F 0x99 0x80
   // We feed data: prefix and first 2 bytes of rocket
   let chunk1 = <<"data: hello ":utf8, 0xF0, 0x9F>>
@@ -163,8 +164,8 @@ pub fn split_utf8_multibyte_test() {
 }
 
 pub fn chunk_limit_test() {
-  let limits =
-    types.Limits(
+  let bounds =
+    limits.Limits(
       chunk_bytes_limit: 10,
       line_bytes_limit: 100,
       event_bytes_limit: 100,
@@ -179,16 +180,17 @@ pub fn chunk_limit_test() {
       total_argument_bytes_limit: 100,
       extension_bytes_limit: 100,
       response_body_bytes_limit: 100,
+      error_body_bytes_limit: 100,
     )
-  let framer = sse.new(limits)
+  let framer = sse.new(bounds)
   let chunk = <<"data: this is longer than ten bytes\n\n":utf8>>
   sse.feed(framer, chunk)
   |> should.be_error
 }
 
 pub fn line_limit_test() {
-  let limits =
-    types.Limits(
+  let bounds =
+    limits.Limits(
       chunk_bytes_limit: 100,
       line_bytes_limit: 15,
       event_bytes_limit: 100,
@@ -203,8 +205,9 @@ pub fn line_limit_test() {
       total_argument_bytes_limit: 100,
       extension_bytes_limit: 100,
       response_body_bytes_limit: 100,
+      error_body_bytes_limit: 100,
     )
-  let framer = sse.new(limits)
+  let framer = sse.new(bounds)
   let chunk = <<
     "data: this_is_a_very_long_line_exceeding_fifteen_bytes\n\n":utf8,
   >>
@@ -213,14 +216,14 @@ pub fn line_limit_test() {
 }
 
 pub fn invalid_utf8_test() {
-  let framer = sse.new(types.default_limits())
+  let framer = sse.new(limits.default())
   let chunk = <<"data: ":utf8, 0xFF, 0xFE, "\n\n":utf8>>
   sse.feed(framer, chunk)
   |> should.be_error
 }
 
 pub fn incomplete_eof_test() {
-  let framer = sse.new(types.default_limits())
+  let framer = sse.new(limits.default())
   let chunk = <<"data: incomplete":utf8>>
   let assert Ok(#(framer2, [])) = sse.feed(framer, chunk)
   sse.finish(framer2)
@@ -228,7 +231,7 @@ pub fn incomplete_eof_test() {
 }
 
 pub fn finish_uncommitted_event_test() {
-  let framer = sse.new(types.default_limits())
+  let framer = sse.new(limits.default())
   let chunk = <<"data: final line\n":utf8>>
   let assert Ok(#(framer2, [])) = sse.feed(framer, chunk)
   let assert Ok(events) = sse.finish(framer2)
@@ -290,7 +293,7 @@ pub fn long_line_in_small_chunks_is_scanned_in_linear_time_test() {
   let stream = bit_array.from_string("data: " <> payload <> "\r\n\r\n")
   let millisecond = atom.create("millisecond")
   let started = monotonic_time(millisecond)
-  let events = feed_in_chunks(sse.new(types.default_limits()), stream, 1400, [])
+  let events = feed_in_chunks(sse.new(limits.default()), stream, 1400, [])
   let elapsed = monotonic_time(millisecond) - started
   events
   |> should.equal([

@@ -1,13 +1,14 @@
 import gleam/option.{None, Some}
 import gleeunit/should
+import llm_wire/error
 import llm_wire/internal/anthropic
+import llm_wire/internal/limits
 import llm_wire/internal/sse
 import llm_wire/internal/stream_types
-import llm_wire/types
-import tool_fixtures
+import llm_wire/message
 
 pub fn anthropic_text_stream_test() {
-  let reducer = anthropic.new(types.default_limits())
+  let reducer = anthropic.new(limits.default())
 
   // message_start
   let ev1 =
@@ -41,7 +42,7 @@ pub fn anthropic_text_stream_test() {
     )
   let assert Ok(#(reducer, p3)) = anthropic.step(reducer, ev3)
   p3
-  |> should.equal([types.TextDelta(block_id: "0", text: "Hello ")])
+  |> should.equal([message.TextDelta(block_id: "0", text: "Hello ")])
 
   // ping event (should be ignored)
   let ev_ping =
@@ -64,7 +65,7 @@ pub fn anthropic_text_stream_test() {
     )
   let assert Ok(#(reducer, p4)) = anthropic.step(reducer, ev4)
   p4
-  |> should.equal([types.TextDelta(block_id: "0", text: "Claude!")])
+  |> should.equal([message.TextDelta(block_id: "0", text: "Claude!")])
 
   // content_block_stop (index 0)
   let ev5 =
@@ -88,7 +89,7 @@ pub fn anthropic_text_stream_test() {
   let assert Ok(#(reducer, p6)) = anthropic.step(reducer, ev6)
   p6
   |> should.equal([
-    types.UsageUpdate(types.Usage(
+    message.UsageUpdate(message.Usage(
       input_tokens: 15,
       output_tokens: 10,
       total_tokens: 25,
@@ -110,7 +111,7 @@ pub fn anthropic_text_stream_test() {
   |> should.equal(
     Some(stream_types.StreamFinished(
       outcome: stream_types.CompletedText("Hello Claude!"),
-      usage: Some(types.Usage(
+      usage: Some(message.Usage(
         input_tokens: 15,
         output_tokens: 10,
         total_tokens: 25,
@@ -120,9 +121,9 @@ pub fn anthropic_text_stream_test() {
 }
 
 pub fn anthropic_tool_use_stream_test() {
-  let tool = tool_fixtures.string_field_tool("get_stock_price", "symbol")
-  let assert Ok(reducer) =
-    anthropic.new_with_tools(types.default_limits(), [tool])
+  // The reducer no longer takes the tool list (`new_with_tools` is gone):
+  // the runtime admits calls against tools at the terminal.
+  let reducer = anthropic.new(limits.default())
 
   // message_start
   let ev1 =
@@ -153,7 +154,9 @@ pub fn anthropic_tool_use_stream_test() {
       retry: None,
     )
   let assert Ok(#(reducer, p3)) = anthropic.step(reducer, ev3)
-  p3 |> should.equal([])
+  // Wave 4 reports argument text as progress; the call stays private.
+  p3
+  |> should.equal([message.ToolArgumentsDelta("toolu_123", "{\"symbol\": ")])
 
   // content_block_delta index 0: input_json_delta fragment 2
   let ev4 =
@@ -164,7 +167,8 @@ pub fn anthropic_tool_use_stream_test() {
       retry: None,
     )
   let assert Ok(#(reducer, p4)) = anthropic.step(reducer, ev4)
-  p4 |> should.equal([])
+  p4
+  |> should.equal([message.ToolArgumentsDelta("toolu_123", "\"AAPL\"}")])
 
   // Closing a block validates it but keeps executable calls private until terminal.
   let ev5 =
@@ -175,8 +179,9 @@ pub fn anthropic_tool_use_stream_test() {
       retry: None,
     )
   let assert Ok(#(reducer, p5)) = anthropic.step(reducer, ev5)
-  let assert Ok(expected_call_id) = types.call_id("toolu_123")
-  let assert Ok(expected_tool_name) = types.tool_name("get_stock_price")
+  // Call ids and tool names are plain strings now.
+  let expected_call_id = "toolu_123"
+  let expected_tool_name = "get_stock_price"
   p5 |> should.equal([])
 
   // message_delta
@@ -203,7 +208,7 @@ pub fn anthropic_tool_use_stream_test() {
     anthropic.terminal(reducer)
   usage
   |> should.equal(
-    Some(types.Usage(input_tokens: 20, output_tokens: 35, total_tokens: 55)),
+    Some(message.Usage(input_tokens: 20, output_tokens: 35, total_tokens: 55)),
   )
 
   case outcome {
@@ -211,7 +216,7 @@ pub fn anthropic_tool_use_stream_test() {
       response_id |> should.equal(Some("msg_2"))
       calls
       |> should.equal([
-        types.ToolCall(
+        message.ToolCall(
           id: expected_call_id,
           name: expected_tool_name,
           arguments_json: "{\"symbol\": \"AAPL\"}",
@@ -225,7 +230,7 @@ pub fn anthropic_tool_use_stream_test() {
 }
 
 pub fn anthropic_server_tool_test() {
-  let reducer = anthropic.new(types.default_limits())
+  let reducer = anthropic.new(limits.default())
   let ev1 =
     sse.ServerSentEvent(
       event: Some("content_block_start"),
@@ -257,7 +262,7 @@ pub fn anthropic_server_tool_test() {
 }
 
 pub fn anthropic_incomplete_block_at_stop_test() {
-  let reducer = anthropic.new(types.default_limits())
+  let reducer = anthropic.new(limits.default())
   let ev1 =
     sse.ServerSentEvent(
       event: Some("content_block_start"),
@@ -280,7 +285,7 @@ pub fn anthropic_incomplete_block_at_stop_test() {
 }
 
 pub fn anthropic_max_tokens_test() {
-  let reducer = anthropic.new(types.default_limits())
+  let reducer = anthropic.new(limits.default())
   let ev1 =
     sse.ServerSentEvent(
       event: Some("content_block_start"),
@@ -335,7 +340,7 @@ pub fn anthropic_max_tokens_test() {
 }
 
 pub fn anthropic_cumulative_usage_replacement_test() {
-  let reducer = anthropic.new(types.default_limits())
+  let reducer = anthropic.new(limits.default())
 
   let ev1 =
     sse.ServerSentEvent(
@@ -357,7 +362,7 @@ pub fn anthropic_cumulative_usage_replacement_test() {
   let assert Ok(#(reducer, p2)) = anthropic.step(reducer, ev2)
   p2
   |> should.equal([
-    types.UsageUpdate(types.Usage(
+    message.UsageUpdate(message.Usage(
       input_tokens: 100,
       output_tokens: 10,
       total_tokens: 110,
@@ -375,7 +380,7 @@ pub fn anthropic_cumulative_usage_replacement_test() {
   let assert Ok(#(_reducer, p3)) = anthropic.step(reducer, ev3)
   p3
   |> should.equal([
-    types.UsageUpdate(types.Usage(
+    message.UsageUpdate(message.Usage(
       input_tokens: 100,
       output_tokens: 25,
       total_tokens: 125,
@@ -384,7 +389,7 @@ pub fn anthropic_cumulative_usage_replacement_test() {
 }
 
 pub fn anthropic_error_test() {
-  let reducer = anthropic.new(types.default_limits())
+  let reducer = anthropic.new(limits.default())
   let ev =
     sse.ServerSentEvent(
       event: Some("error"),
@@ -396,12 +401,12 @@ pub fn anthropic_error_test() {
   anthropic.terminal(reducer)
   |> should.equal(
     Some(stream_types.StreamFailed(
-      error: types.ProviderError(
+      error: error.Provider(
         code: Some("overloaded_error"),
         message: "Service is temporarily overloaded",
       ),
-      retry: types.RetryEvidence(
-        classification: types.RequestMayHaveReachedProvider,
+      retry: stream_types.RetryEvidence(
+        classification: stream_types.RequestMayHaveReachedProvider,
         response_bytes_observed: True,
         semantic_progress_observed: False,
       ),
@@ -410,7 +415,7 @@ pub fn anthropic_error_test() {
 }
 
 pub fn anthropic_refusal_terminal_is_a_refusal_result_test() {
-  let reducer = anthropic.new(types.default_limits())
+  let reducer = anthropic.new(limits.default())
   let start =
     sse.ServerSentEvent(
       event: Some("content_block_start"),
@@ -461,7 +466,7 @@ pub fn anthropic_refusal_terminal_is_a_refusal_result_test() {
 }
 
 pub fn anthropic_unknown_stop_reason_is_not_reported_as_success_test() {
-  let reducer = anthropic.new(types.default_limits())
+  let reducer = anthropic.new(limits.default())
   let stop_reason =
     sse.ServerSentEvent(
       event: Some("message_delta"),
@@ -479,16 +484,14 @@ pub fn anthropic_unknown_stop_reason_is_not_reported_as_success_test() {
     )
   let assert Ok(#(reducer, _)) = anthropic.step(reducer, message_stop)
   case anthropic.terminal(reducer) {
-    Some(stream_types.StreamFailed(
-      types.ProviderError(Some("future_state"), _),
-      _,
-    )) -> should.be_true(True)
+    Some(stream_types.StreamFailed(error.Provider(Some("future_state"), _), _)) ->
+      should.be_true(True)
     _ -> should.fail()
   }
 }
 
 pub fn anthropic_successful_hosted_effect_remains_effect_unknown_test() {
-  let reducer = anthropic.new(types.default_limits())
+  let reducer = anthropic.new(limits.default())
   let start =
     sse.ServerSentEvent(
       event: Some("content_block_start"),
@@ -523,8 +526,8 @@ pub fn anthropic_successful_hosted_effect_remains_effect_unknown_test() {
   let assert Ok(#(reducer, _)) = anthropic.step(reducer, message_stop)
   case anthropic.terminal(reducer) {
     Some(stream_types.StreamFailed(
-      types.ProviderError(Some("pause_turn"), _),
-      types.RetryEvidence(classification: types.EffectUnknown, ..),
+      error.Provider(Some("pause_turn"), _),
+      stream_types.RetryEvidence(classification: stream_types.EffectUnknown, ..),
     )) -> should.be_true(True)
     _ -> should.fail()
   }

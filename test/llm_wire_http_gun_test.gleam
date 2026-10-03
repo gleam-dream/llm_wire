@@ -1,4 +1,3 @@
-import external_provider
 import fake_server
 import gleam/bit_array
 import gleam/erlang/process
@@ -6,17 +5,26 @@ import gleam/int
 import gleam/list
 import gleam/option.{None}
 import gleam/string
+import gleam/time/duration
 import gleeunit/should
 import http_gun
 import http_gun/config as http_config
 import http_gun/error as http_error
 import http_test_helpers
-import llm_wire/config
+import llm_wire
+import llm_wire/error
+import llm_wire/message
+import llm_wire/openai
 import llm_wire/provider
-import llm_wire/provider/openai
-import llm_wire/session
-import llm_wire/types
 import llm_wire_test_tcp as tcp
+
+fn ms(value: Int) -> llm_wire.Bound {
+  llm_wire.After(duration.milliseconds(value))
+}
+
+fn hello() -> llm_wire.Request(String) {
+  llm_wire.request("fixture", [llm_wire.user("hi")])
+}
 
 pub fn reducer_exception_releases_http_and_preserves_shared_client_test() {
   let assert Ok(server) = fake_server.start()
@@ -40,42 +48,25 @@ pub fn reducer_exception_releases_http_and_preserves_shared_client_test() {
       process.send(closed, tcp.recv(socket, 0, 3000))
       tcp.close(socket)
     })
-  let assert Ok(endpoint) =
-    types.endpoint("http://127.0.0.1:" <> int.to_string(server.port))
-  let base = external_provider.adapter(endpoint)
-  let adapter =
-    provider.adapter(
-      provider.Spec(
-        identity: types.Custom("exception-test"),
-        endpoint: endpoint,
-        headers: fn() { [] },
-        encode: fn(request, tools, format) {
-          provider.encode(base, request, tools, format)
-        },
-        project_tool_schema: provider.blueprint_schema,
-        project_output_schema: provider.blueprint_schema,
-        new_reducer: fn(_, _) {
-          Ok(
-            provider.reducer(
-              Nil,
-              fn(_, _) { panic as "controlled reducer exception" },
-              fn(_) { None },
-              fn(_, fallback) { types.RetryEvidence(fallback, False, False) },
-            ),
-          )
-        },
-      ),
+  let config =
+    provider.new(
+      message.Custom("exception-test"),
+      "http://127.0.0.1:" <> int.to_string(server.port),
+      fn(_request, _tools, _format) { Ok(provider.encoded("/events", "{}")) },
+      fn() {
+        provider.reducer(
+          Nil,
+          fn(_, _) { panic as "controlled reducer exception" },
+          fn(_) { None },
+        )
+      },
     )
-  let assert Ok(model) = types.model_id("fixture")
-  let assert Ok(call) =
-    session.prepare(
-      config.from_provider(adapter),
-      types.new_request(model, [types.UserMessage("hello")]),
-    )
+    |> provider.config
+  let assert Ok(call) = llm_wire.prepare(config, hello())
   let assert Ok(client) = http_gun.start(http_test_helpers.loopback_config())
   let consumer =
     process.spawn_unlinked(fn() {
-      let _ = session.run(client, call)
+      let _ = llm_wire.run(client, call)
       Nil
     })
   let monitor = process.monitor(consumer)
@@ -102,20 +93,9 @@ pub fn prepared_buffered_http_gun_test() {
           True,
         )
     })
-  let assert Ok(key) = types.api_key("synthetic-key")
-  let assert Ok(endpoint) =
-    types.endpoint("http://127.0.0.1:" <> int.to_string(server.port))
-  let assert Ok(model) = types.model_id("fixture")
-  let settings =
-    config.openai(openai.options(key)) |> config.with_endpoint(endpoint)
-  let assert Ok(prepared) =
-    session.prepare(
-      settings,
-      types.new_request(model, [types.UserMessage("hi")]),
-    )
   let assert Ok(client) = http_gun.start(http_test_helpers.loopback_config())
-  session.run(client, prepared)
-  |> should.equal(Ok(session.RunText("hello", None)))
+  llm_wire.run(client, prepared(server.port, fn(c) { c }))
+  |> should.equal(Ok(llm_wire.Answer("hello", "hello", None)))
   http_gun.stop(client)
   fake_server.stop(server)
 }
@@ -151,11 +131,21 @@ pub fn client_timeouts_do_not_cut_the_call_budget_test() {
   let assert Ok(client) =
     http_gun.start(
       http_test_helpers.loopback_config()
-      |> http_config.with_request_timeout(http_config.Milliseconds(100))
-      |> http_config.with_idle_timeout(http_config.Milliseconds(100)),
+      |> http_config.with_request_timeout(
+        http_config.After(duration.milliseconds(100)),
+      )
+      |> http_config.with_idle_timeout(
+        http_config.After(duration.milliseconds(100)),
+      ),
     )
-  session.run(client, prepared(server.port, types.Deadlines(5000, 2000, 10)))
-  |> should.equal(Ok(session.RunText("hello", None)))
+  let configure = fn(config) {
+    config
+    |> llm_wire.with_call_timeout(ms(5000))
+    |> llm_wire.with_first_token_timeout(ms(2000))
+    |> llm_wire.with_idle_timeout(ms(2000))
+  }
+  llm_wire.run(client, prepared(server.port, configure))
+  |> should.equal(Ok(llm_wire.Answer("hello", "hello", None)))
   http_gun.stop(client)
   fake_server.stop(server)
 }
@@ -170,28 +160,25 @@ pub fn text_events() -> String {
 pub fn closed_shared_client_keeps_http_evidence_test() {
   let assert Ok(client) = http_gun.start(http_test_helpers.loopback_config())
   http_gun.stop(client)
-  // HTTP Gun reports a stopped client as `NotSent`; the evidence passes through.
-  let assert Error(session.RunFailure(
-    types.HttpFailure(http_error.ClientClosed),
-    retry,
-  )) = session.run(client, prepared(1, types.default_deadlines()))
-  retry |> should.equal(types.initial_retry_evidence())
+  // HTTP Gun reports a stopped client as `NotSent`; the evidence passes
+  // through as `failure.sent`, which replaced the retry evidence.
+  let assert Error(failure) = llm_wire.run(client, prepared(1, fn(c) { c }))
+  let assert error.Http(http_failure) = failure.error
+  http_error.reason(http_failure) |> should.equal(http_error.ClientClosed)
+  failure.sent |> should.equal(llm_wire.NotSent)
+  failure.partial_output |> should.be_false
 }
 
-fn prepared(port: Int, deadlines: types.Deadlines) -> session.PreparedCall {
-  let assert Ok(key) = types.api_key("synthetic-key")
-  let assert Ok(endpoint) =
-    types.endpoint("http://127.0.0.1:" <> int.to_string(port))
-  let assert Ok(model) = types.model_id("fixture")
-  let settings =
-    config.openai(openai.options(key))
-    |> config.with_endpoint(endpoint)
-    |> config.with_deadlines(deadlines)
-  let assert Ok(call) =
-    session.prepare(
-      settings,
-      types.new_request(model, [types.UserMessage("hi")]),
-    )
+fn prepared(
+  port: Int,
+  configure: fn(llm_wire.Config) -> llm_wire.Config,
+) -> llm_wire.Prepared(String) {
+  let config =
+    openai.new("synthetic-key")
+    |> openai.config
+    |> llm_wire.with_endpoint("http://127.0.0.1:" <> int.to_string(port))
+    |> configure
+  let assert Ok(call) = llm_wire.prepare(config, hello())
   call
 }
 
@@ -201,15 +188,11 @@ pub fn pre_submission_http_limit_keeps_no_request_sent_test() {
       http_test_helpers.loopback_config()
       |> http_config.with_max_request_body_bytes(1),
     )
-  let assert Error(session.RunFailure(
-    types.HttpFailure(http_error.LimitExceeded(
-      http_error.RequestBodyBytes,
-      1,
-      _,
-    )),
-    retry,
-  )) = session.run(client, prepared(1, types.default_deadlines()))
-  retry |> should.equal(types.initial_retry_evidence())
+  let assert Error(failure) = llm_wire.run(client, prepared(1, fn(c) { c }))
+  let assert error.Http(http_failure) = failure.error
+  let assert http_error.LimitExceeded(http_error.RequestBodyBytes, 1, _) =
+    http_error.reason(http_failure)
+  failure.sent |> should.equal(llm_wire.NotSent)
   http_gun.stop(client)
 }
 
@@ -228,10 +211,10 @@ pub fn pre_header_close_releases_shared_admission_test() {
     })
   let assert Ok(client) = http_gun.start(http_test_helpers.loopback_config())
   let assert Ok(stream) =
-    session.stream(client, prepared(server.port, types.default_deadlines()))
+    llm_wire.stream(client, prepared(server.port, fn(c) { c }))
   let assert Ok(Nil) = process.receive(accepted, 2000)
-  session.close(stream) |> should.equal(Ok(types.ConsumerClosed))
-  session.close(stream) |> should.equal(Ok(types.AlreadyTerminal))
+  llm_wire.close(stream) |> should.equal(llm_wire.Closed)
+  llm_wire.close(stream) |> should.equal(llm_wire.AlreadyEnded)
   let assert Ok(Error(_)) = process.receive(released, 2000)
   wait_released(client, 200) |> should.be_true
   http_gun.stop(client)
@@ -252,19 +235,17 @@ pub fn close_during_tls_connection_setup_releases_request_test() {
       process.send(closed, await_tls_socket_close(socket, 8))
       tcp.close(socket)
     })
-  let assert Ok(endpoint) =
-    types.endpoint("https://127.0.0.1:" <> int.to_string(server.port))
-  let assert Ok(key) = types.api_key("synthetic-key")
-  let assert Ok(model) = types.model_id("fixture")
-  let assert Ok(call) =
-    session.prepare(
-      config.openai(openai.options(key)) |> config.with_endpoint(endpoint),
-      types.new_request(model, [types.UserMessage("hello")]),
+  let config =
+    openai.new("synthetic-key")
+    |> openai.config
+    |> llm_wire.with_endpoint(
+      "https://127.0.0.1:" <> int.to_string(server.port),
     )
+  let assert Ok(call) = llm_wire.prepare(config, hello())
   let assert Ok(client) = http_gun.start(http_test_helpers.loopback_config())
-  let assert Ok(stream) = session.stream(client, call)
+  let assert Ok(stream) = llm_wire.stream(client, call)
   let assert Ok(Nil) = process.receive(connecting, 2000)
-  session.close(stream) |> should.equal(Ok(types.ConsumerClosed))
+  llm_wire.close(stream) |> should.equal(llm_wire.Closed)
   let assert Ok(Ok(Nil)) = process.receive(closed, 2000)
   wait_released(client, 200) |> should.be_true
   http_gun.stop(client)
@@ -327,38 +308,78 @@ pub fn consumer_read_timeout_preserves_http_and_terminal_precedes_eof_test() {
     })
   let assert Ok(release) = process.receive(gate, 1000)
   let assert Ok(client) = http_gun.start(http_test_helpers.loopback_config())
-  let call = prepared(server.port, types.Deadlines(3000, 1000, 10))
-  let assert Ok(stream) = session.stream(client, call)
-  session.next(stream)
-  |> should.equal(Error(session.StreamReadError(types.ReadTimeout)))
+  let configure = fn(config) {
+    config
+    |> llm_wire.with_call_timeout(ms(5000))
+    |> llm_wire.with_first_token_timeout(ms(3000))
+  }
+  let assert Ok(stream) =
+    llm_wire.stream(client, prepared(server.port, configure))
+  // `next` now waits for an event; a bounded read is `next_within`, which
+  // gives up with `TimedOut` and leaves the stream readable.
+  llm_wire.next_within(stream, duration.milliseconds(10))
+  |> should.equal(Error(llm_wire.TimedOut))
   process.send(release, Nil)
-  session.collect(stream) |> should.equal(Ok(session.RunText("hello", None)))
+  llm_wire.collect(stream)
+  |> should.equal(Ok(llm_wire.Answer("hello", "hello", None)))
   let assert Ok(Error(_)) = process.receive(closed, 2000)
   wait_released(client, 200) |> should.be_true
   http_gun.stop(client)
   fake_server.stop(server)
 }
 
+fn serve_then_ping(
+  server: fake_server.FakeServer,
+  opening: String,
+  pings: Int,
+) -> Nil {
+  let assert Ok(socket) = fake_server.accept_connection(server, 5000)
+  let assert Ok(_) = fake_server.read_request_headers(socket, 5000)
+  let _ =
+    fake_server.send_sse_stream(
+      socket,
+      [
+        #(0, bit_array.from_string(opening)),
+        ..list.repeat(#(20, <<": ping\r\n\r\n":utf8>>), pings)
+      ],
+      True,
+    )
+  Nil
+}
+
+/// SSE comments are bytes, not events: they reset neither timer. Before any
+/// progress the first-token timer fires (the old idle deadline ran from the
+/// start); after progress the idle gap fires.
 pub fn keepalive_bytes_do_not_extend_semantic_idle_test() {
   let assert Ok(server) = fake_server.start()
-  let _ =
-    process.spawn_unlinked(fn() {
-      let assert Ok(socket) = fake_server.accept_connection(server, 5000)
-      let assert Ok(_) = fake_server.read_request_headers(socket, 5000)
-      let _ =
-        fake_server.send_sse_stream(
-          socket,
-          list.repeat(#(10, <<": ping\r\n\r\n":utf8>>), 50),
-          True,
-        )
-    })
+  let _ = process.spawn_unlinked(fn() { serve_then_ping(server, "", 100) })
   let assert Ok(client) = http_gun.start(http_test_helpers.loopback_config())
-  let assert Error(session.RunFailure(
-    types.DeadlineExceeded(types.IdleDeadline),
-    evidence,
-  )) = session.run(client, prepared(server.port, types.Deadlines(2000, 80, 10)))
-  evidence.response_bytes_observed |> should.be_true
-  evidence.semantic_progress_observed |> should.be_false
+  let configure = fn(config) {
+    config
+    |> llm_wire.with_call_timeout(ms(5000))
+    |> llm_wire.with_first_token_timeout(ms(150))
+  }
+  let assert Error(failure) =
+    llm_wire.run(client, prepared(server.port, configure))
+  failure.error |> should.equal(error.DeadlineExceeded(error.FirstToken))
+  failure.sent |> should.equal(llm_wire.MaybeSent)
+  failure.partial_output |> should.be_false
+  wait_released(client, 200) |> should.be_true
+  fake_server.stop(server)
+
+  let assert [opening, ..] =
+    string.split(text_events(), "event: response.output_item.done")
+  let assert Ok(server) = fake_server.start()
+  let _ = process.spawn_unlinked(fn() { serve_then_ping(server, opening, 100) })
+  let configure = fn(config) {
+    config
+    |> llm_wire.with_call_timeout(ms(5000))
+    |> llm_wire.with_idle_timeout(ms(150))
+  }
+  let assert Error(failure) =
+    llm_wire.run(client, prepared(server.port, configure))
+  failure.error |> should.equal(error.DeadlineExceeded(error.IdleGap))
+  failure.partial_output |> should.be_true
   wait_released(client, 200) |> should.be_true
   http_gun.stop(client)
   fake_server.stop(server)
@@ -374,17 +395,23 @@ pub fn partial_status_body_keeps_bytes_when_semantic_idle_wins_test() {
         tcp.send(socket, <<
           "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nerr\r\n":utf8,
         >>)
-      let _ = tcp.recv(socket, 0, 2000)
+      let _ = tcp.recv(socket, 0, 3000)
       tcp.close(socket)
     })
   let assert Ok(client) = http_gun.start(http_test_helpers.loopback_config())
-  let assert Error(session.RunFailure(
-    types.DeadlineExceeded(types.IdleDeadline),
-    evidence,
-  )) =
-    session.run(client, prepared(server.port, types.Deadlines(3000, 100, 10)))
-  evidence.response_bytes_observed |> should.be_true
-  evidence.semantic_progress_observed |> should.be_false
+  let configure = fn(config) {
+    config
+    |> llm_wire.with_call_timeout(ms(5000))
+    |> llm_wire.with_first_token_timeout(ms(150))
+  }
+  // The first-token timer covers the response head and a status body; it
+  // replaces the old idle deadline here. Response bytes are no longer
+  // reported separately: the request reached the provider, so `MaybeSent`.
+  let assert Error(failure) =
+    llm_wire.run(client, prepared(server.port, configure))
+  failure.error |> should.equal(error.DeadlineExceeded(error.FirstToken))
+  failure.sent |> should.equal(llm_wire.MaybeSent)
+  failure.partial_output |> should.be_false
   http_gun.stop(client)
   fake_server.stop(server)
 }
@@ -397,17 +424,16 @@ pub fn execution_starts_budget_and_delayed_headers_spend_it_test() {
       let assert Ok(socket) = fake_server.accept_connection(server, 5000)
       let assert Ok(_) = fake_server.read_request_headers(socket, 5000)
       process.send(accepted, Nil)
-      let _ = tcp.recv(socket, 0, 1000)
+      let _ = tcp.recv(socket, 0, 3000)
       tcp.close(socket)
     })
-  let call = prepared(server.port, types.Deadlines(80, 2000, 10))
-  process.sleep(100)
+  let call = prepared(server.port, llm_wire.with_call_timeout(_, ms(400)))
+  // Waiting longer than the budget after `prepare` spends none of it.
+  process.sleep(500)
   let assert Ok(client) = http_gun.start(http_test_helpers.loopback_config())
-  let assert Error(session.RunFailure(
-    types.DeadlineExceeded(types.OverallDeadline),
-    _,
-  )) = session.run(client, call)
-  let assert Ok(Nil) = process.receive(accepted, 0)
+  let assert Error(failure) = llm_wire.run(client, call)
+  failure.error |> should.equal(error.DeadlineExceeded(error.WholeCall))
+  let assert Ok(Nil) = process.receive(accepted, 1000)
   wait_released(client, 200) |> should.be_true
   http_gun.stop(client)
   fake_server.stop(server)
@@ -433,11 +459,12 @@ pub fn disconnect_preserves_raw_and_semantic_evidence_test() {
           )
       })
     let assert Ok(client) = http_gun.start(http_test_helpers.loopback_config())
-    let assert Error(session.RunFailure(_, evidence)) =
-      session.run(client, prepared(server.port, types.default_deadlines()))
-    evidence.response_bytes_observed |> should.be_true
-    evidence.semantic_progress_observed |> should.equal(input.1)
-    evidence.classification |> should.equal(types.RequestMayHaveReachedProvider)
+    // Response bytes are no longer reported apart from `sent`; semantic
+    // progress is `partial_output`.
+    let assert Error(failure) =
+      llm_wire.run(client, prepared(server.port, fn(c) { c }))
+    failure.partial_output |> should.equal(input.1)
+    failure.sent |> should.equal(llm_wire.MaybeSent)
     http_gun.stop(client)
     fake_server.stop(server)
   })
@@ -457,10 +484,10 @@ pub fn consumer_death_cancels_worker_before_headers_test() {
     })
   let assert Ok(client) = http_gun.start(http_test_helpers.loopback_config())
   let ready = process.new_subject()
-  let call = prepared(server.port, types.default_deadlines())
+  let call = prepared(server.port, fn(c) { c })
   let consumer =
     process.spawn_unlinked(fn() {
-      let assert Ok(stream) = session.stream(client, call)
+      let assert Ok(stream) = llm_wire.stream(client, call)
       process.send(ready, stream)
       process.sleep(5000)
     })

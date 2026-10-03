@@ -7,18 +7,18 @@ import gleam/string
 import gleeunit/should
 import http_gun/testing as http_testing
 import http_test_helpers
-import llm_wire/config
+import llm_wire
+import llm_wire/anthropic as anthropic_options
+import llm_wire/google as google_options
 import llm_wire/internal/anthropic
 import llm_wire/internal/google
+import llm_wire/internal/limits
 import llm_wire/internal/openai
 import llm_wire/internal/sse
 import llm_wire/internal/stream_types
-import llm_wire/provider/anthropic as anthropic_options
-import llm_wire/provider/google as google_options
-import llm_wire/provider/openai as openai_options
-import llm_wire/session
+import llm_wire/message
+import llm_wire/openai as openai_options
 import llm_wire/testing
-import llm_wire/types
 
 pub fn complete_provider_interactions_survive_every_byte_split_test() {
   openai_interaction_splits()
@@ -32,10 +32,10 @@ fn openai_interaction_splits() {
     <> "event: response.output_text.delta\ndata: {\"output_index\":0,\"item_id\":\"item\",\"delta\":\"oé🦊\"}\n\n"
     <> "event: response.output_item.done\ndata: {\"output_index\":0,\"item\":{\"id\":\"item\",\"type\":\"message\"}}\n\n"
     <> "event: response.completed\ndata: {\"response\":{\"id\":\"r1\",\"status\":\"completed\"}}\n\n"
-  check_session_fragments(raw, types.OpenAI)
+  check_session_fragments(raw, message.OpenAI)
   check_splits(raw, fn(events) {
     let assert Ok(reducer) =
-      list.fold(events, Ok(openai.new(types.default_limits())), fn(acc, event) {
+      list.fold(events, Ok(openai.new(limits.default())), fn(acc, event) {
         use current <- result.try(acc)
         openai.step(current, event)
         |> result.map(fn(pair) {
@@ -58,26 +58,22 @@ fn anthropic_interaction_splits() {
     <> "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n"
     <> "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\n"
     <> "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
-  check_session_fragments(raw, types.Anthropic)
+  check_session_fragments(raw, message.Anthropic)
   check_splits(raw, fn(events) {
     let assert Ok(reducer) =
-      list.fold(
-        events,
-        Ok(anthropic.new(types.default_limits())),
-        fn(acc, event) {
-          use current <- result.try(acc)
-          anthropic.step(current, event)
-          |> result.map(fn(pair) {
-            let #(next, _) = pair
-            next
-          })
-        },
-      )
+      list.fold(events, Ok(anthropic.new(limits.default())), fn(acc, event) {
+        use current <- result.try(acc)
+        anthropic.step(current, event)
+        |> result.map(fn(pair) {
+          let #(next, _) = pair
+          next
+        })
+      })
     anthropic.terminal(reducer)
     |> should.equal(
       Some(stream_types.StreamFinished(
         stream_types.CompletedText("oé🦊"),
-        Some(types.Usage(1, 1, 2)),
+        Some(message.Usage(1, 1, 2)),
       )),
     )
   })
@@ -87,10 +83,10 @@ fn google_interaction_splits() {
   let raw =
     "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"oé🦊\"}]}}]}\n\n"
     <> "data: {\"candidates\":[{\"finishReason\":\"STOP\",\"content\":{\"parts\":[]}}]}\n\n"
-  check_session_fragments(raw, types.Google)
+  check_session_fragments(raw, message.Google)
   check_splits(raw, fn(events) {
     let assert Ok(reducer) =
-      list.fold(events, Ok(google.new(types.default_limits())), fn(acc, event) {
+      list.fold(events, Ok(google.new(limits.default())), fn(acc, event) {
         use current <- result.try(acc)
         google.step(current, event)
         |> result.map(fn(pair) {
@@ -109,7 +105,7 @@ fn check_splits(raw: String, verify: fn(List(sse.ServerSentEvent)) -> Nil) {
   let bits = bit_array.from_string(raw)
   list.each(byte_boundaries(bits), fn(boundary) {
     let #(before, after) = boundary
-    let framer = sse.new(types.default_limits())
+    let framer = sse.new(limits.default())
     let assert Ok(#(framer, left_events)) = sse.feed(framer, before)
     let assert Ok(#(_framer, right_events)) = sse.feed(framer, after)
     verify(list.append(left_events, right_events))
@@ -139,19 +135,18 @@ fn byte_boundaries_loop(
 
 // Run every byte as its own HTTP chunk, including each UTF-8 continuation byte
 // and the CR/LF split, through the real worker and semantic owner.
-fn check_session_fragments(raw: String, provider: types.Provider) -> Nil {
-  let assert Ok(key) = types.api_key("synthetic-fragment-key")
+fn check_session_fragments(raw: String, provider: message.Provider) -> Nil {
+  let key = "synthetic-fragment-key"
   let settings = case provider {
-    types.OpenAI -> config.openai(openai_options.options(key))
-    types.Anthropic -> config.anthropic(anthropic_options.options(key))
-    types.Google -> config.google(google_options.options(key))
-    types.Custom(_) -> panic as "built-in fixture required"
+    message.OpenAI -> openai_options.new(key) |> openai_options.config
+    message.Anthropic -> anthropic_options.new(key) |> anthropic_options.config
+    message.Google -> google_options.new(key) |> google_options.config
+    message.Custom(_) -> panic as "built-in fixture required"
   }
-  let assert Ok(model) = types.model_id("fixture")
   let assert Ok(call) =
-    session.prepare(
+    llm_wire.prepare(
       settings,
-      types.new_request(model, [types.UserMessage("hello")]),
+      llm_wire.request("fixture", [message.User("hello")]),
     )
   let exchange = testing.exchange(call, testing.text("unused"))
   let chunks =
@@ -164,7 +159,7 @@ fn check_session_fragments(raw: String, provider: types.Provider) -> Nil {
   use client <- http_test_helpers.with_script([
     http_testing.exchange(http_testing.request(exchange), reply),
   ])
-  let assert Ok(session.RunText("oé🦊", _)) = session.run(client, call)
+  let assert Ok(llm_wire.Answer(text: "oé🦊", ..)) = llm_wire.run(client, call)
   Nil
 }
 

@@ -4,13 +4,17 @@ import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import llm_wire/error
+import llm_wire/internal/ids
+import llm_wire/internal/limits
 import llm_wire/internal/sse
 import llm_wire/internal/stream_types
-import llm_wire/types
+import llm_wire/limit
+import llm_wire/message
 
 pub opaque type Reducer {
   Reducer(
-    limits: types.Limits,
+    limits: limits.Limits,
     input_tokens: Int,
     output_tokens: Int,
     has_usage: Bool,
@@ -32,15 +36,15 @@ pub opaque type Reducer {
 type BlockState {
   TextBlock(text: String, is_closed: Bool)
   ToolUseBlock(
-    call_id: types.CallId,
-    name: types.ToolName,
+    call_id: String,
+    name: String,
     arguments: String,
     is_closed: Bool,
   )
   ServerToolBlock(is_closed: Bool)
 }
 
-pub fn new(limits: types.Limits) -> Reducer {
+pub fn new(limits: limits.Limits) -> Reducer {
   Reducer(
     limits: limits,
     input_tokens: 0,
@@ -61,19 +65,6 @@ pub fn new(limits: types.Limits) -> Reducer {
   )
 }
 
-/// Admits the catalog so duplicate names fail before transport. Whether a
-/// returned call names a declared tool with valid arguments is decided by the
-/// runtime's terminal admission, not by this reducer.
-pub fn new_with_tools(
-  limits: types.Limits,
-  tools: List(types.ToolDefinition),
-) -> Result(Reducer, types.WireError) {
-  case types.admit_tool_catalog(tools) {
-    Error(error) -> Error(error)
-    Ok(_) -> Ok(new(limits))
-  }
-}
-
 pub fn server_tool_observed(reducer: Reducer) -> Bool {
   reducer.server_tool_observed
 }
@@ -84,13 +75,13 @@ pub fn semantic_progress_observed(reducer: Reducer) -> Bool {
 
 pub fn retry_evidence(
   reducer: Reducer,
-  fallback_classification: types.RetryClassification,
-) -> types.RetryEvidence {
+  fallback_classification: stream_types.RetryClassification,
+) -> stream_types.RetryEvidence {
   let classification = case reducer.server_tool_observed {
-    True -> types.EffectUnknown
+    True -> stream_types.EffectUnknown
     False -> fallback_classification
   }
-  types.RetryEvidence(
+  stream_types.RetryEvidence(
     classification: classification,
     response_bytes_observed: reducer.response_bytes_observed,
     semantic_progress_observed: reducer.semantic_progress_observed,
@@ -104,10 +95,9 @@ pub fn terminal(reducer: Reducer) -> Option(stream_types.TerminalOutcome) {
 pub fn step(
   reducer: Reducer,
   event: sse.ServerSentEvent,
-) -> Result(#(Reducer, List(types.StreamProgress)), types.WireError) {
+) -> Result(#(Reducer, List(message.Progress)), error.Error) {
   case reducer.terminal_outcome {
-    Some(_) ->
-      Error(types.ProtocolError("Event received after stream terminal"))
+    Some(_) -> Error(error.Protocol("Event received after stream terminal"))
     None -> {
       let with_bytes = Reducer(..reducer, response_bytes_observed: True)
       case event.event {
@@ -134,15 +124,15 @@ pub fn step(
           let event_bytes = string.byte_size(other_event)
           case event_bytes > with_bytes.limits.extension_bytes_limit {
             True ->
-              Error(types.ResourceLimitExceeded(
-                "extension_bytes_limit",
+              Error(error.LimitExceeded(
+                limit.ExtensionBytes,
                 with_bytes.limits.extension_bytes_limit,
                 event_bytes,
               ))
             False ->
               Ok(
                 #(with_bytes, [
-                  types.ProviderExtension(
+                  message.ProviderExtension(
                     provider: "anthropic",
                     event_name: other_event,
                   ),
@@ -191,9 +181,9 @@ fn decode_message_start() -> decode.Decoder(MessageStartPayload) {
 fn handle_message_start(
   reducer: Reducer,
   data: String,
-) -> Result(#(Reducer, List(types.StreamProgress)), types.WireError) {
+) -> Result(#(Reducer, List(message.Progress)), error.Error) {
   case json.parse(data, decode_message_start()) {
-    Error(_) -> Error(types.ProtocolError("Malformed message_start payload"))
+    Error(_) -> Error(error.Protocol("Malformed message_start payload"))
     Ok(payload) -> {
       Ok(
         #(
@@ -243,22 +233,21 @@ fn decode_content_block_start() -> decode.Decoder(ContentBlockStartPayload) {
 fn handle_content_block_start(
   reducer: Reducer,
   data: String,
-) -> Result(#(Reducer, List(types.StreamProgress)), types.WireError) {
+) -> Result(#(Reducer, List(message.Progress)), error.Error) {
   case json.parse(data, decode_content_block_start()) {
-    Error(_) ->
-      Error(types.ProtocolError("Malformed content_block_start payload"))
+    Error(_) -> Error(error.Protocol("Malformed content_block_start payload"))
     Ok(payload) -> {
       case reducer.active_blocks_count >= reducer.limits.active_blocks_limit {
         True ->
-          Error(types.ResourceLimitExceeded(
-            "active_blocks_limit",
+          Error(error.LimitExceeded(
+            limit.ActiveBlocks,
             reducer.limits.active_blocks_limit,
             reducer.active_blocks_count + 1,
           ))
         False -> {
           case dict.has_key(reducer.blocks, payload.index) {
             True ->
-              Error(types.ProtocolError(
+              Error(error.Protocol(
                 "Duplicate content block index: "
                 <> string.inspect(payload.index),
               ))
@@ -290,13 +279,13 @@ fn handle_content_block_start(
                     Some(id_str), Some(name_str) -> {
                       case list.contains(reducer.seen_call_ids, id_str) {
                         True ->
-                          Error(types.ProtocolError(
+                          Error(error.Protocol(
                             "Duplicate tool call id: " <> id_str,
                           ))
                         False -> {
                           case
-                            types.call_id(id_str),
-                            types.provider_tool_name(name_str)
+                            ids.call_id(id_str),
+                            ids.provider_tool_name(name_str)
                           {
                             Ok(call_id), Ok(tool_name) -> {
                               let updated_blocks =
@@ -329,7 +318,7 @@ fn handle_content_block_start(
                       }
                     }
                     _, _ ->
-                      Error(types.ProtocolError(
+                      Error(error.Protocol(
                         "tool_use content block missing id or name",
                       ))
                   }
@@ -416,14 +405,13 @@ fn decode_content_block_delta() -> decode.Decoder(ContentBlockDeltaPayload) {
 fn handle_content_block_delta(
   reducer: Reducer,
   data: String,
-) -> Result(#(Reducer, List(types.StreamProgress)), types.WireError) {
+) -> Result(#(Reducer, List(message.Progress)), error.Error) {
   case json.parse(data, decode_content_block_delta()) {
-    Error(_) ->
-      Error(types.ProtocolError("Malformed content_block_delta payload"))
+    Error(_) -> Error(error.Protocol("Malformed content_block_delta payload"))
     Ok(payload) -> {
       case dict.get(reducer.blocks, payload.index) {
         Error(Nil) ->
-          Error(types.ProtocolError(
+          Error(error.Protocol(
             "Unknown content block index: " <> string.inspect(payload.index),
           ))
         Ok(block) -> {
@@ -431,7 +419,7 @@ fn handle_content_block_delta(
             TextBlock(existing, is_closed) -> {
               case is_closed {
                 True ->
-                  Error(types.ProtocolError(
+                  Error(error.Protocol(
                     "Delta received after content_block_stop",
                   ))
                 False -> {
@@ -453,8 +441,8 @@ fn handle_content_block_delta(
                         block_bytes > reducer.limits.text_bytes_per_block_limit
                       {
                         True ->
-                          Error(types.ResourceLimitExceeded(
-                            "text_bytes_per_block_limit",
+                          Error(error.LimitExceeded(
+                            limit.TextBytesPerBlock,
                             reducer.limits.text_bytes_per_block_limit,
                             block_bytes,
                           ))
@@ -463,8 +451,8 @@ fn handle_content_block_delta(
                             total_bytes > reducer.limits.total_text_bytes_limit
                           {
                             True ->
-                              Error(types.ResourceLimitExceeded(
-                                "total_text_bytes_limit",
+                              Error(error.LimitExceeded(
+                                limit.TotalTextBytes,
                                 reducer.limits.total_text_bytes_limit,
                                 total_bytes,
                               ))
@@ -479,13 +467,13 @@ fn handle_content_block_delta(
                                 )
                               let progress = case payload.delta_type {
                                 "thinking_delta" -> [
-                                  types.ReasoningDelta(
+                                  message.ReasoningDelta(
                                     block_id: string.inspect(payload.index),
                                     text: fragment,
                                   ),
                                 ]
                                 _ -> [
-                                  types.TextDelta(
+                                  message.TextDelta(
                                     block_id: string.inspect(payload.index),
                                     text: fragment,
                                   ),
@@ -505,7 +493,7 @@ fn handle_content_block_delta(
                       }
                     }
                     other ->
-                      Error(types.ProtocolError(
+                      Error(error.Protocol(
                         "Delta type mismatch for text block: " <> other,
                       ))
                   }
@@ -515,7 +503,7 @@ fn handle_content_block_delta(
             ToolUseBlock(call_id, name, existing_args, is_closed) -> {
               case is_closed {
                 True ->
-                  Error(types.ProtocolError(
+                  Error(error.Protocol(
                     "Delta received after content_block_stop",
                   ))
                 False -> {
@@ -536,8 +524,8 @@ fn handle_content_block_delta(
                         > reducer.limits.argument_bytes_per_call_limit
                       {
                         True ->
-                          Error(types.ResourceLimitExceeded(
-                            "argument_bytes_per_call_limit",
+                          Error(error.LimitExceeded(
+                            limit.ArgumentBytesPerCall,
                             reducer.limits.argument_bytes_per_call_limit,
                             tool_bytes,
                           ))
@@ -547,8 +535,8 @@ fn handle_content_block_delta(
                             > reducer.limits.total_argument_bytes_limit
                           {
                             True ->
-                              Error(types.ResourceLimitExceeded(
-                                "total_argument_bytes_limit",
+                              Error(error.LimitExceeded(
+                                limit.TotalArgumentBytes,
                                 reducer.limits.total_argument_bytes_limit,
                                 total_bytes,
                               ))
@@ -574,7 +562,15 @@ fn handle_content_block_delta(
                                     total_argument_bytes: total_bytes,
                                     semantic_progress_observed: True,
                                   ),
-                                  [],
+                                  case fragment {
+                                    "" -> []
+                                    _ -> [
+                                      message.ToolArgumentsDelta(
+                                        call_id,
+                                        fragment,
+                                      ),
+                                    ]
+                                  },
                                 ),
                               )
                             }
@@ -582,7 +578,7 @@ fn handle_content_block_delta(
                       }
                     }
                     other ->
-                      Error(types.ProtocolError(
+                      Error(error.Protocol(
                         "Delta type mismatch for tool_use block: " <> other,
                       ))
                   }
@@ -592,7 +588,7 @@ fn handle_content_block_delta(
             ServerToolBlock(is_closed) -> {
               case is_closed {
                 True ->
-                  Error(types.ProtocolError(
+                  Error(error.Protocol(
                     "Delta received after content_block_stop",
                   ))
                 False -> Ok(#(reducer, []))
@@ -617,22 +613,20 @@ fn decode_content_block_stop() -> decode.Decoder(ContentBlockStopPayload) {
 fn handle_content_block_stop(
   reducer: Reducer,
   data: String,
-) -> Result(#(Reducer, List(types.StreamProgress)), types.WireError) {
+) -> Result(#(Reducer, List(message.Progress)), error.Error) {
   case json.parse(data, decode_content_block_stop()) {
-    Error(_) ->
-      Error(types.ProtocolError("Malformed content_block_stop payload"))
+    Error(_) -> Error(error.Protocol("Malformed content_block_stop payload"))
     Ok(payload) -> {
       case dict.get(reducer.blocks, payload.index) {
         Error(Nil) ->
-          Error(types.ProtocolError(
+          Error(error.Protocol(
             "Unknown content block index: " <> string.inspect(payload.index),
           ))
         Ok(block) -> {
           case block {
             TextBlock(text, is_closed) -> {
               case is_closed {
-                True ->
-                  Error(types.ProtocolError("Duplicate content_block_stop"))
+                True -> Error(error.Protocol("Duplicate content_block_stop"))
                 False -> {
                   let updated_blocks =
                     dict.insert(
@@ -646,8 +640,7 @@ fn handle_content_block_stop(
             }
             ToolUseBlock(call_id, name, args, is_closed) -> {
               case is_closed {
-                True ->
-                  Error(types.ProtocolError("Duplicate content_block_stop"))
+                True -> Error(error.Protocol("Duplicate content_block_stop"))
                 False -> {
                   // Catalog and schema admission belong to the runtime's
                   // terminal check, which may report rather than reject.
@@ -672,8 +665,7 @@ fn handle_content_block_stop(
             }
             ServerToolBlock(is_closed) -> {
               case is_closed {
-                True ->
-                  Error(types.ProtocolError("Duplicate content_block_stop"))
+                True -> Error(error.Protocol("Duplicate content_block_stop"))
                 False -> {
                   let updated_blocks =
                     dict.insert(
@@ -723,9 +715,9 @@ fn decode_message_delta() -> decode.Decoder(MessageDeltaPayload) {
 fn handle_message_delta(
   reducer: Reducer,
   data: String,
-) -> Result(#(Reducer, List(types.StreamProgress)), types.WireError) {
+) -> Result(#(Reducer, List(message.Progress)), error.Error) {
   case json.parse(data, decode_message_delta()) {
-    Error(_) -> Error(types.ProtocolError("Malformed message_delta payload"))
+    Error(_) -> Error(error.Protocol("Malformed message_delta payload"))
     Ok(payload) -> {
       let updated_stop_reason = case payload.stop_reason {
         Some(sr) -> Some(sr)
@@ -735,12 +727,12 @@ fn handle_message_delta(
         Some(ot) -> {
           let tot = reducer.input_tokens + ot
           let usage =
-            types.Usage(
+            message.Usage(
               input_tokens: reducer.input_tokens,
               output_tokens: ot,
               total_tokens: tot,
             )
-          #(ot, [types.UsageUpdate(usage)])
+          #(ot, [message.UsageUpdate(usage)])
         }
         None -> #(reducer.output_tokens, [])
       }
@@ -761,7 +753,7 @@ fn handle_message_delta(
 fn handle_message_stop(
   reducer: Reducer,
   _data: String,
-) -> Result(#(Reducer, List(types.StreamProgress)), types.WireError) {
+) -> Result(#(Reducer, List(message.Progress)), error.Error) {
   // Check that all blocks are closed
   case check_all_blocks_closed(reducer.blocks) {
     Error(err) -> Error(err)
@@ -779,11 +771,11 @@ fn handle_message_stop(
         list.filter_map(reducer.block_order, fn(idx) {
           case dict.get(reducer.blocks, idx) {
             Ok(ToolUseBlock(cid, name, args, _)) ->
-              Ok(types.ToolCall(
+              Ok(message.ToolCall(
                 id: cid,
                 name: name,
                 arguments_json: args,
-                provider_id: Some(types.call_id_to_string(cid)),
+                provider_id: Some(cid),
                 provider_state: None,
               ))
             _ -> Error(Nil)
@@ -792,7 +784,7 @@ fn handle_message_stop(
 
       let final_usage = case reducer.has_usage {
         True ->
-          Some(types.Usage(
+          Some(message.Usage(
             input_tokens: reducer.input_tokens,
             output_tokens: reducer.output_tokens,
             total_tokens: reducer.input_tokens + reducer.output_tokens,
@@ -801,7 +793,7 @@ fn handle_message_stop(
       }
 
       let retry_evidence =
-        retry_evidence(reducer, types.RequestMayHaveReachedProvider)
+        retry_evidence(reducer, stream_types.RequestMayHaveReachedProvider)
       let terminal = case reducer.stop_reason {
         Some("max_tokens") ->
           stream_types.StreamFinished(
@@ -832,7 +824,7 @@ fn handle_message_stop(
               )
             _ ->
               stream_types.StreamFailed(
-                types.ProviderError(
+                error.Provider(
                   code: Some("end_turn"),
                   message: "Tool calls ended without the provider tool_use stop reason",
                 ),
@@ -841,7 +833,7 @@ fn handle_message_stop(
           }
         Some("pause_turn") ->
           stream_types.StreamFailed(
-            types.ProviderError(
+            error.Provider(
               code: Some("pause_turn"),
               message: "Provider paused for a hosted effect outside the application tool contract",
             ),
@@ -849,7 +841,7 @@ fn handle_message_stop(
           )
         Some(other) ->
           stream_types.StreamFailed(
-            types.ProviderError(
+            error.Provider(
               code: Some(other),
               message: "Unsupported Anthropic stop reason: " <> other,
             ),
@@ -857,7 +849,7 @@ fn handle_message_stop(
           )
         None ->
           stream_types.StreamFailed(
-            types.ProviderError(
+            error.Provider(
               code: None,
               message: "Anthropic message_stop arrived without a stop reason",
             ),
@@ -892,23 +884,23 @@ fn decode_error_payload() -> decode.Decoder(ErrorPayload) {
 fn handle_error_event(
   reducer: Reducer,
   data: String,
-) -> Result(#(Reducer, List(types.StreamProgress)), types.WireError) {
+) -> Result(#(Reducer, List(message.Progress)), error.Error) {
   case json.parse(data, decode_error_payload()) {
-    Error(_) -> Error(types.ProtocolError("Malformed error event payload"))
+    Error(_) -> Error(error.Protocol("Malformed error event payload"))
     Ok(err) -> {
       let classification = case reducer.server_tool_observed {
-        True -> types.EffectUnknown
-        False -> types.RequestMayHaveReachedProvider
+        True -> stream_types.EffectUnknown
+        False -> stream_types.RequestMayHaveReachedProvider
       }
       let retry_evidence =
-        types.RetryEvidence(
+        stream_types.RetryEvidence(
           classification: classification,
           response_bytes_observed: reducer.response_bytes_observed,
           semantic_progress_observed: reducer.semantic_progress_observed,
         )
       let terminal =
         stream_types.StreamFailed(
-          error: types.ProviderError(
+          error: error.Provider(
             code: Some(err.error_type),
             message: err.message,
           ),
@@ -921,7 +913,7 @@ fn handle_error_event(
 
 fn check_all_blocks_closed(
   blocks: Dict(Int, BlockState),
-) -> Result(Nil, types.WireError) {
+) -> Result(Nil, error.Error) {
   dict.fold(blocks, Ok(Nil), fn(acc, idx, block) {
     case acc {
       Error(e) -> Error(e)
@@ -934,7 +926,7 @@ fn check_all_blocks_closed(
         case is_closed {
           True -> Ok(Nil)
           False ->
-            Error(types.ProtocolError(
+            Error(error.Protocol(
               "Content block incomplete at message_stop: index "
               <> string.inspect(idx),
             ))
