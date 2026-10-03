@@ -162,7 +162,7 @@ an `error.Error`; `error.Http` carries HTTP Gun's opaque `Failure`, so
 
 ```gleam
 case llm_wire.advise(failure) {
-  llm_wire.RetryAdvice(llm_wire.MayHelp, delay: llm_wire.RetryAfter(wait)) ->
+  llm_wire.RetryAdvice(llm_wire.MayHelp, delay: llm_wire.ProviderDelay(wait)) ->
     snooze(wait)
   llm_wire.RetryAdvice(llm_wire.MayHelp, delay: llm_wire.Backoff) ->
     retry_with_backoff()
@@ -172,7 +172,7 @@ case llm_wire.advise(failure) {
 
 `advise` decides from the failure alone: HTTP Gun failures by `Kind`, HTTP
 statuses, and provider error codes matched exactly per provider. The `delay`
-says who chose the wait. `RetryAfter(duration)` is the provider's own
+says who chose the wait. `ProviderDelay(duration)` is the provider's own
 `Retry-After`, in delay seconds or as an HTTP date, so a scheduler can snooze
 without counting an attempt; LLM Wire does not cap it. `Backoff` means the
 provider named no delay and the caller's backoff applies.

@@ -9,8 +9,9 @@ its dependents.
 
 - **Breaking:** `RetryAdvice(prospect, after: Option(Duration))` became
   `RetryAdvice(prospect, delay: RetryDelay)`. `RetryDelay` is
-  `RetryAfter(Duration)`, the provider's own `Retry-After`, or `Backoff`, no
-  provider delay. A scheduler that snoozes for a provider's delay and backs
+  `ProviderDelay(Duration)`, the provider's own `Retry-After`, or `Backoff`, no
+  provider delay. The name avoids grind's `worker.RetryAfter`, which spends an
+  attempt where a `ProviderDelay` snoozes. A scheduler that snoozes for a provider's delay and backs
   off otherwise (grind) matches on it directly. `advise(failure).prospect` is
   unchanged.
 - `llm_wire/testing` scripts a provider's failures: `rate_limited(provider)`,
@@ -29,7 +30,8 @@ response.error.message)`, classified by `advise` like `event: error`. A
   `response.incomplete` event ends the stream as an output limit.
   `testing.response_failed(reply, code, message)` scripts the failed form.
 - `testing.http_response(provider, reply)` is a `gleam/http` response for a
-  fake server, so no caller unwraps `Events`, `Interrupted` and `Status`.
+  fake server, so no caller unwraps `Events`, `Interrupted` and `Status`;
+  `testing.with_retry_after_header(response, delay)` adds its `Retry-After`.
 - `testing.failure(provider, error)` builds a `llm_wire.Failure` for tests
   that do not run a call.
 - Existing `testing` items are unchanged: `Reply`, `events_for` and

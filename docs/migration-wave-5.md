@@ -14,13 +14,14 @@ Contents: [advise](#advise) · [testing](#llm_wiretesting) ·
 | Before                                                          | After                                                     |
 | --------------------------------------------------------------- | --------------------------------------------------------- |
 | `RetryAdvice(prospect: RetryProspect, after: Option(Duration))` | `RetryAdvice(prospect: RetryProspect, delay: RetryDelay)` |
-| —                                                               | `RetryDelay { RetryAfter(Duration) Backoff }`             |
+| —                                                               | `RetryDelay { ProviderDelay(Duration) Backoff }`          |
 
-`RetryAfter(wait)` is a readable `Retry-After` header of the failed response,
+`ProviderDelay(wait)` (named so it cannot be mistaken for grind's
+`worker.RetryAfter`, which spends an attempt, where this one snoozes) is a readable `Retry-After` header of the failed response,
 in delay seconds or as an HTTP date (a past date is a zero delay). `Backoff`
 means the provider named no delay, or the failure had no response headers (a
 timer, a cancellation, a stream error). LLM Wire invents no number: the
-caller owns its backoff curve. LLM Wire also does not cap `RetryAfter`, so
+caller owns its backoff curve. LLM Wire also does not cap `ProviderDelay`, so
 bound it before sleeping or scheduling.
 
 ```gleam
@@ -33,7 +34,7 @@ case llm_wire.advise(failure) {
 
 // After
 case llm_wire.advise(failure) {
-  llm_wire.RetryAdvice(llm_wire.MayHelp, delay: llm_wire.RetryAfter(wait)) ->
+  llm_wire.RetryAdvice(llm_wire.MayHelp, delay: llm_wire.ProviderDelay(wait)) ->
     snooze(wait)
   llm_wire.RetryAdvice(llm_wire.MayHelp, delay: llm_wire.Backoff) ->
     retry_with_backoff()
@@ -43,7 +44,7 @@ case llm_wire.advise(failure) {
 
 Code that reads only `advise(failure).prospect` needs no change. A caller that
 wants the old `Option` writes
-`case advice.delay { RetryAfter(d) -> Some(d)  Backoff -> None }`.
+`case advice.delay { ProviderDelay(d) -> Some(d)  Backoff -> None }`.
 
 ## `llm_wire/testing`
 
@@ -51,18 +52,19 @@ Every item below is new. Nothing was removed or retyped: `Reply` keeps
 `Events`, `Interrupted` and `Status`, and `events_for(provider, reply)`,
 `exchange` and the reply builders keep their signatures.
 
-| Item                                                            | Use                                                                                                                                                                                                                                      |
-| --------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `rate_limited(provider) -> Reply`                               | HTTP 429 with the provider's rate-limit body; the call fails with `error.Status(429, ..)`                                                                                                                                                |
-| `overloaded(provider) -> Reply`                                 | 529 on Anthropic, 503 elsewhere, with the provider's overload body                                                                                                                                                                       |
-| `http_status(provider, status, message) -> Reply`               | Any error status with a body shaped as the provider shapes errors; a `Custom` provider gets the bare message                                                                                                                             |
-| `interrupted(reply) -> Reply`                                   | The connection drops after the reply's content, before its end: a transport failure with `sent: MaybeSent` and `partial_output: True`. Apply it before `events_for`                                                                      |
-| `stream_error(provider, reply, code, message) -> Reply`         | The content streams, then the provider's in-band error event: `error.Provider(Some(code), message)`, `sent: Completed`, `partial_output: True`. The result is already in the provider's wire: pass it to `exchange`, not to `events_for` |
-| `response_failed(reply, code, message) -> Reply`                | OpenAI's `response.failed` event after the content, with `response.error.code` and `message`; same failure as `stream_error(message.OpenAI, ..)`. Already in the OpenAI wire                                                             |
-| `invalid_output() -> Reply`                                     | A final text that is not JSON: a plain call answers, a structured call fails with `error.InvalidOutput(raw_output:, ..)`                                                                                                                 |
-| `with_retry_after(exchange, delay) -> Exchange`                 | Adds `Retry-After` (whole seconds, a fraction rounds up) to the exchange's response, so `advise` answers `RetryAfter(delay)`                                                                                                             |
-| `http_response(provider, reply) -> gleam/http Response(String)` | A fake server's response for any reply: status, `content-type` and the joined body. Replaces the `case` on `Events`, `Interrupted` and `Status`                                                                                          |
-| `failure(provider, error) -> llm_wire.Failure`                  | A `Failure` for a test that runs no call; `sent` follows the error, `partial_output` is `False`, `usage` is `None`. Change a field with a record update                                                                                  |
+| Item                                                                      | Use                                                                                                                                                                                                                                      |
+| ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `rate_limited(provider) -> Reply`                                         | HTTP 429 with the provider's rate-limit body; the call fails with `error.Status(429, ..)`                                                                                                                                                |
+| `overloaded(provider) -> Reply`                                           | 529 on Anthropic, 503 elsewhere, with the provider's overload body                                                                                                                                                                       |
+| `http_status(provider, status, message) -> Reply`                         | Any error status with a body shaped as the provider shapes errors; a `Custom` provider gets the bare message                                                                                                                             |
+| `interrupted(reply) -> Reply`                                             | The connection drops after the reply's content, before its end: a transport failure with `sent: MaybeSent` and `partial_output: True`. Apply it before `events_for`                                                                      |
+| `stream_error(provider, reply, code, message) -> Reply`                   | The content streams, then the provider's in-band error event: `error.Provider(Some(code), message)`, `sent: Completed`, `partial_output: True`. The result is already in the provider's wire: pass it to `exchange`, not to `events_for` |
+| `response_failed(reply, code, message) -> Reply`                          | OpenAI's `response.failed` event after the content, with `response.error.code` and `message`; same failure as `stream_error(message.OpenAI, ..)`. Already in the OpenAI wire                                                             |
+| `invalid_output() -> Reply`                                               | A final text that is not JSON: a plain call answers, a structured call fails with `error.InvalidOutput(raw_output:, ..)`                                                                                                                 |
+| `with_retry_after(exchange, delay) -> Exchange`                           | Adds `Retry-After` (whole seconds, a fraction rounds up) to the exchange's response, so `advise` answers `ProviderDelay(delay)`                                                                                                          |
+| `http_response(provider, reply) -> gleam/http Response(String)`           | A fake server's response for any reply: status, `content-type` and the joined body. Replaces the `case` on `Events`, `Interrupted` and `Status`                                                                                          |
+| `with_retry_after_header(response, delay) -> gleam/http Response(String)` | Adds `Retry-After` (whole seconds, a fraction rounds up) to an `http_response`, for a fake server; the counterpart of `with_retry_after` for exchanges                                                                                   |
+| `failure(provider, error) -> llm_wire.Failure`                            | A `Failure` for a test that runs no call; `sent` follows the error, `partial_output` is `False`, `usage` is `None`. Change a field with a record update                                                                                  |
 
 ```gleam
 // Before: a 429 body written by hand, the header set on the server
@@ -122,7 +124,7 @@ Searched: `/code/gleam-dream/*/src`, `*/test`, `*/integrations`, `*/consumers`,
 
 | Dependent                                                                                                             | Effect                                                                                                                                                                                                 |
 | --------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `oversight/apps/extractor/src/extractor/outcome.gleam` (L100-111)                                                     | **Breaks**: matches `RetryAdvice(MayHelp, after:)` and `RetryAdvice(.., ..)`. Match `delay: RetryAfter(wait)` for the snooze arm and `delay: Backoff` for the default-snooze arm.                      |
+| `oversight/apps/extractor/src/extractor/outcome.gleam` (L100-111)                                                     | **Breaks**: matches `RetryAdvice(MayHelp, after:)` and `RetryAdvice(.., ..)`. Match `delay: ProviderDelay(wait)` for the snooze arm and `delay: Backoff` for the default-snooze arm.                   |
 | `oversight/apps/extractor/src/extractor/scripted.gleam` (L190-260)                                                    | Compiles. `provider_error` (43 lines) becomes `testing.http_status` / `rate_limited` / `overloaded`; `sse`'s `case` becomes `testing.http_response`.                                                   |
 | `oversight/apps/extractor/test/extractor_test.gleam` (L219, 289, 297, 445, 532)                                       | Compiles. The five hand-built `llm_wire.Failure(..)` can use `testing.failure`.                                                                                                                        |
 | `oversight/apps/tool_hub/src/tool_hub/scripted_llm.gleam` (L132-136)                                                  | Compiles. `respond` can use `testing.http_response(message.Custom("scripted"), reply)`.                                                                                                                |

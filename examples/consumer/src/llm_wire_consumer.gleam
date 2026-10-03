@@ -200,7 +200,7 @@ pub fn run_with_retries(
         llm_wire.RetryAdvice(prospect: llm_wire.MayHelp, delay:) -> {
           process.sleep(
             duration.to_milliseconds(case delay {
-              llm_wire.RetryAfter(wait) -> wait
+              llm_wire.ProviderDelay(wait) -> wait
               llm_wire.Backoff -> fallback
             }),
           )

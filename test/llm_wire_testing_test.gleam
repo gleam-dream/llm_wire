@@ -455,7 +455,7 @@ pub fn retry_after_makes_the_advice_a_provider_delay_in_every_wire_test() {
   llm_wire.advise(failure)
   |> should.equal(llm_wire.RetryAdvice(
     llm_wire.MayHelp,
-    llm_wire.RetryAfter(duration.seconds(7)),
+    llm_wire.ProviderDelay(duration.seconds(7)),
   ))
 }
 
@@ -842,4 +842,15 @@ pub fn response_incomplete_is_an_output_limit_test() {
 pub fn response_failed_leaves_status_and_interrupted_replies_alone_test() {
   let status = testing.Status(503, "busy")
   testing.response_failed(status, "a", "b") |> should.equal(status)
+}
+
+pub fn a_fake_server_response_carries_retry_after_test() {
+  let http =
+    testing.http_response(message.OpenAI, testing.rate_limited(message.OpenAI))
+    |> testing.with_retry_after_header(duration.milliseconds(1500))
+  http.status |> should.equal(429)
+  http.headers |> list.key_find("retry-after") |> should.equal(Ok("2"))
+  http.headers
+  |> list.key_find("content-type")
+  |> should.equal(Ok("application/json"))
 }

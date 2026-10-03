@@ -223,7 +223,7 @@ pub fn status_prospect_does_not_infer_policy_from_body_or_retry_hint_test() {
   ))
   |> should.equal(llm_wire.RetryAdvice(
     llm_wire.MayHelp,
-    llm_wire.RetryAfter(duration.seconds(60)),
+    llm_wire.ProviderDelay(duration.seconds(60)),
   ))
   llm_wire.advise(failure(
     message.OpenAI,
@@ -231,7 +231,7 @@ pub fn status_prospect_does_not_infer_policy_from_body_or_retry_hint_test() {
   ))
   |> should.equal(llm_wire.RetryAdvice(
     llm_wire.WillNotHelpUnchanged,
-    llm_wire.RetryAfter(duration.seconds(1)),
+    llm_wire.ProviderDelay(duration.seconds(1)),
   ))
 }
 
@@ -305,7 +305,7 @@ fn after(headers: List(#(String, String))) -> Option(duration.Duration) {
       headers,
     )).delay
   {
-    llm_wire.RetryAfter(wait) -> Some(wait)
+    llm_wire.ProviderDelay(wait) -> Some(wait)
     llm_wire.Backoff -> None
   }
 }
@@ -345,7 +345,7 @@ pub fn a_provider_delay_and_a_missing_one_are_different_advice_test() {
   llm_wire.advise(with_header)
   |> should.equal(llm_wire.RetryAdvice(
     llm_wire.MayHelp,
-    llm_wire.RetryAfter(duration.seconds(30)),
+    llm_wire.ProviderDelay(duration.seconds(30)),
   ))
   llm_wire.advise(without)
   |> should.equal(llm_wire.RetryAdvice(llm_wire.MayHelp, llm_wire.Backoff))
@@ -371,7 +371,8 @@ pub fn failures_without_response_headers_advise_a_backoff_test() {
 pub fn a_scheduler_chooses_snooze_backoff_or_discard_from_the_advice_test() {
   let choose = fn(problem) {
     case llm_wire.advise(failure(message.Anthropic, problem)) {
-      llm_wire.RetryAdvice(llm_wire.MayHelp, llm_wire.RetryAfter(_)) -> "snooze"
+      llm_wire.RetryAdvice(llm_wire.MayHelp, llm_wire.ProviderDelay(_)) ->
+        "snooze"
       llm_wire.RetryAdvice(llm_wire.MayHelp, llm_wire.Backoff) -> "backoff"
       llm_wire.RetryAdvice(_, _) -> "discard"
     }

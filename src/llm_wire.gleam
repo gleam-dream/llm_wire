@@ -197,10 +197,12 @@ pub type RetryAdvice {
 /// scheduler that distinguishes the two can snooze for a provider's delay
 /// without counting an attempt, and back off otherwise.
 pub type RetryDelay {
-  /// The provider's own `Retry-After`, read from the response headers. LLM
+  /// The provider's own `Retry-After`, read from the response headers. A
+  /// scheduler maps it to a snooze: the provider chose the time, so no
+  /// attempt is spent. (Not a scheduler's "retry after": that spends one.) LLM
   /// Wire does not cap it: bound it before sleeping or scheduling. A date
   /// in the past is a zero delay.
-  RetryAfter(Duration)
+  ProviderDelay(Duration)
   /// The provider named no delay: choose a backoff. Also the delay of a
   /// failure that carried no response headers, such as a timeout.
   Backoff
@@ -697,14 +699,14 @@ pub fn describe_failure(failure: Failure) -> String {
 /// and timeout failures may help; refused destinations, invalid requests
 /// and limits will not. HTTP statuses 408, 429, 500, 502, 503 and 504 (and
 /// Anthropic's 529) may help. Provider error codes are matched exactly per
-/// provider; prose is never parsed. The `delay` is `RetryAfter` when the
+/// provider; prose is never parsed. The `delay` is `ProviderDelay` when the
 /// provider sent a readable `Retry-After` (delay seconds or an HTTP date)
 /// and `Backoff` otherwise. LLM Wire never retries by itself, and `MayHelp`
 /// does not make a `MaybeSent` call free: it may have spent tokens.
 ///
 /// ```gleam
 /// case llm_wire.advise(failure) {
-///   RetryAdvice(MayHelp, delay: RetryAfter(wait)) -> snooze(wait)
+///   RetryAdvice(MayHelp, delay: ProviderDelay(wait)) -> snooze(wait)
 ///   RetryAdvice(MayHelp, delay: Backoff) -> retry_with_backoff()
 ///   RetryAdvice(_, _) -> give_up(llm_wire.describe_failure(failure))
 /// }
@@ -740,7 +742,7 @@ pub fn advise(failure: Failure) -> RetryAdvice {
 
 fn delay(after: Option(Duration)) -> RetryDelay {
   case after {
-    Some(wait) -> RetryAfter(wait)
+    Some(wait) -> ProviderDelay(wait)
     None -> Backoff
   }
 }

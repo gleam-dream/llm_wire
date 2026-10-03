@@ -157,6 +157,16 @@ pub fn http_status(provider: Provider, status: Int, message: String) -> Reply {
   Status(status, error_body(provider, status, message))
 }
 
+/// Add `Retry-After: seconds` to a fake server's `http_response`, rounding a
+/// fraction up, so `advise` answers `ProviderDelay(delay)`. For a scripted
+/// exchange, use `with_retry_after`.
+pub fn with_retry_after_header(
+  http: HttpResponse(String),
+  delay: Duration,
+) -> HttpResponse(String) {
+  response.set_header(http, "retry-after", whole_seconds(delay))
+}
+
 /// Answer with `Retry-After: seconds`, rounding a fraction up. Use it on an
 /// exchange of an error reply. An exchange that fails before a response is
 /// unchanged.

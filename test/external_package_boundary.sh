@@ -194,7 +194,7 @@ pub fn pending_work(outcome: llm_wire.Outcome(o)) -> List(message.ToolCall) {
 
 pub fn retry_delay(failure: llm_wire.Failure) -> Option(Duration) {
   case llm_wire.advise(failure) {
-    llm_wire.RetryAdvice(prospect: llm_wire.MayHelp, delay: llm_wire.RetryAfter(wait)) ->
+    llm_wire.RetryAdvice(prospect: llm_wire.MayHelp, delay: llm_wire.ProviderDelay(wait)) ->
       Some(wait)
     llm_wire.RetryAdvice(prospect: llm_wire.MayHelp, delay: llm_wire.Backoff) ->
       Some(duration.seconds(1))
