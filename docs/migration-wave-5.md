@@ -7,7 +7,7 @@ breaks (`RetryAdvice`); the rest is additive, so existing `llm_wire/testing`
 call sites keep compiling.
 
 Contents: [advise](#advise) · [testing](#llm_wiretesting) ·
-[dependents](#dependents) · [round 6](#round-6)
+[dependents](#dependents) · [round 6](#round-6) · [round 7](#round-7)
 
 ## advise
 
@@ -125,14 +125,15 @@ of a nested `codec.union` now prepare. The wire form is `anyOf` of strict
 objects, `{"tag": {"type": "string", "enum": ["Found"]}, "value": ..}`, with
 the fixtures `test/fixtures/structured-union-{openai,anthropic,google}.request.txt`.
 
-| Provider  | Now accepted                                              | Still refused                                            | Basis                                                                                                                 |
-| --------- | --------------------------------------------------------- | -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| OpenAI    | a union below the root (`anyOf`, single-value `enum` tag) | a union at the root                                      | strict mode: root object must not be `anyOf`; nested `anyOf`, `enum` and `const` supported                            |
-| Anthropic | the same                                                  | the same                                                 | `output_config.format` documents `anyOf`, `const`, `enum` and `additionalProperties: false`; no `oneOf`               |
-| Gemini    | the same                                                  | the same; `codec.nullable` stays refused (existing rule) | sent as `responseJsonSchema` since round 6; accepted live on 2026-10-04 (see [Live verification](#live-verification)) |
+| Provider  | Now accepted                                              | Still refused                                                | Basis                                                                                                                 |
+| --------- | --------------------------------------------------------- | ------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------- |
+| OpenAI    | a union below the root (`anyOf`, single-value `enum` tag) | a union at the root                                          | strict mode: root object must not be `anyOf`; nested `anyOf`, `enum` and `const` supported                            |
+| Anthropic | the same                                                  | the same                                                     | `output_config.format` documents `anyOf`, `const`, `enum` and `additionalProperties: false`; no `oneOf`               |
+| Gemini    | the same                                                  | the same; `codec.nullable` stays refused (lifted in round 7) | sent as `responseJsonSchema` since round 6; accepted live on 2026-10-04 (see [Live verification](#live-verification)) |
 
 Payloads must themselves be strict (no optional fields, pairs, number ranges or
-`codec.value()`). Tool parameters still refuse unions.
+`codec.value()`); [round 7](#round-7) admits these for Gemini. Tool parameters
+still refuse unions.
 
 ## Dependents
 
@@ -400,7 +401,7 @@ GenerateContent reference: set it or `responseSchema`, not both) and accepted
 the same document, `anyOf` and single-value `enum` tags included. Tool
 parameters already used `parametersJsonSchema`. No public item changed; the
 schema itself is unchanged, and `codec.nullable` stays refused for Gemini (not
-verified live). The pinned body `test/fixtures/structured-union-google.request.txt`
+verified live; lifted in [round 7](#round-7)). The pinned body `test/fixtures/structured-union-google.request.txt`
 changed accordingly.
 
 Dependents: none. No repository outside LLM Wire pins a Gemini request body
@@ -416,3 +417,83 @@ cassette. It is not part of the gate. HTTP Gun redacts `authorization`,
 `x-goog-api-key`, `set-cookie`, `openai-organization`, `openai-project` and a
 `key` query parameter before anything is written; a failed call aborts its
 cassette and stops the run.
+
+## Round 7
+
+Round 7 lifts the Gemini structured-output refusals that `responseJsonSchema`
+does not need, and moves the tests off the retired `gemini-2.5-flash`. It is
+additive: every output codec that prepared before prepares to the same body,
+and some that failed now prepare.
+
+### Gemini admits more output schemas
+
+| Output codec below the root | Before (Gemini)                                                                                       | After (Gemini)                                                          |
+| --------------------------- | ----------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `codec.nullable(inner)`     | `UnsupportedSchema(Output, "Google structured output does not support nullable/anyOf schema")`        | sent as Blueprint renders it: `{"anyOf": [{"type": "null"}, inner]}`    |
+| `codec.optional_field`      | `UnsupportedSchema(Output, "Strict structured output requires every object property to be required")` | the field is left out of `required`; an omitted field decodes to `None` |
+| `codec.number_between`      | `UnsupportedSchema(Output, "Structured output uses an unsupported Blueprint schema variant")`         | `{"type": "number", "minimum": .., "maximum": ..}`                      |
+| `codec.pair`                | the same                                                                                              | `{"type": "array", "prefixItems": [..], "minItems": 2, "maxItems": 2}`  |
+| `codec.value()`             | the same                                                                                              | `{}`                                                                    |
+
+The same holds inside a union payload. Still refused for Gemini: a non-record
+root (a union, a nullable or `codec.value()` at the root) and a schema kind
+LLM Wire does not know. OpenAI and Anthropic keep the strict profile
+unchanged (`codec.nullable` was already admitted there). Gemini tool
+parameters (`parametersJsonSchema`) are unchanged: they still refuse number
+ranges, pairs and unions.
+
+```gleam
+// Before: Error(error.UnsupportedSchema(error.Output, "Google structured output does not support nullable/anyOf schema"))
+// After: Ok(prepared), `"phone":{"anyOf":[{"type":"null"},{"type":"string"}]}`
+use phone <- codec.field("phone", codec.nullable(codec.string()), get: fn(c) { c.phone })
+```
+
+Basis: Google's structured-output guide lists for JSON Schema the types
+`string`, `number`, `integer`, `boolean`, `object`, `array` and `null`, shows
+`"type": ["string", "null"]` for a nullable value, and lists `properties`,
+`required`, `additionalProperties`, `anyOf`, `enum`, `minimum`, `maximum`,
+`items`, `prefixItems`, `minItems` and `maxItems` (read 2026-10-04). Blueprint's
+`anyOf` form was accepted live, so no `type` array rewrite is needed.
+
+### Live verification
+
+On 2026-10-04, with `gemini-3.8-flash` and owner approval, 7 live requests in
+all, each HTTP 200:
+
+| Scenario                                                                                                    | Live result                                                                                               | Cassette                 |
+| ----------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- | ------------------------ |
+| `{"contact": {name, phone: nullable String, address: nullable {city}}}`, both unknown                       | `Contact("Ada Lovelace", None, None)`; the text has `"phone":null,"address":null`                         | `google-nullable-null`   |
+| the same, both known                                                                                        | `Contact("Bob Stone", Some("555-0100"), Some(Address("Paris")))`, streamed in 2 text deltas               | `google-nullable-value`  |
+| `{label, note?: String, score: number_between(0, 1), point: pair(Int, Int), extra: value()}`, note left out | `Reading("north", None, 0.75, #(3, 4), {"unit": "cm"})`; `note` absent from the text, not null            | `google-wide-schema`     |
+| the round 6 union, text and tool scenarios, re-recorded with `dev/record-live`                              | the same results as round 6: `Written("Tides", ..)`, `NoSources(..)`, one to twenty, `get_weather(Paris)` | the four `google-*` ones |
+
+`test/llm_wire_live_replay_test.gleam` replays the three new cassettes,
+offline and without keys: each reply decodes through its codec to the value
+above, and the prepared body carries the `anyOf`-with-null, the `required`
+list without `note`, `minimum`/`maximum`, `prefixItems` and `{}`. The OpenAI
+cassettes were not re-recorded. Every cassette is redacted by the recorder
+before it is written; no file outside `.env.local` contains either key.
+
+### Retired model
+
+`gemini-2.5-flash` answers 404 ("no longer available to new users"), so the
+pinned tests in `test/llm_wire_google_test.gleam` now name
+`gemini-3.8-flash`, including the asserted path
+`/v1beta/models/gemini-3.8-flash:streamGenerateContent?alt=sse`. No
+recorded fixture names a model, LLM Wire has no default model, and no
+example names a Gemini model.
+
+### Dependents
+
+- None break: no repository outside LLM Wire matches the removed refusal
+  text or expects a Gemini `UnsupportedSchema` (searched
+  `/code/gleam-dream/*/src`, `*/test`, `*/integrations`, `*/consumers`,
+  `*/examples` and `oversight/apps`).
+- `oversight/apps/extractor/src/extractor/llm.gleam` L66 names
+  `gemini-2.5-flash` for its Google model against a local proxy; a live
+  Gemini call with it fails with HTTP 404. Replace it with
+  `gemini-3.8-flash`.
+- An output codec passed through fabric (`fabric/llm.gleam`,
+  `fabric/graph/llm.gleam` `with_output`) or an app with a nullable,
+  optional, pair, number-range or `codec.value()` field now prepares for
+  Gemini where it failed; none in the searched code does today.

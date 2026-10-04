@@ -77,6 +77,12 @@ fn record(scenario: Scenario) -> Result(Nil, Nil) {
     live_scenarios.GoogleTool ->
       llm_wire.run(recorded.client, live_scenarios.tool_call(key))
       |> result.map(summary)
+    live_scenarios.GoogleNullableNull | live_scenarios.GoogleNullableValue ->
+      llm_wire.run(recorded.client, live_scenarios.nullable_call(scenario, key))
+      |> result.map(summary)
+    live_scenarios.GoogleWideSchema ->
+      llm_wire.run(recorded.client, live_scenarios.wide_call(key))
+      |> result.map(summary)
     _ ->
       llm_wire.run(
         recorded.client,

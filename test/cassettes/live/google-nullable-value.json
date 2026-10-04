@@ -1,0 +1,57 @@
+{
+  "http_gun": 2,
+  "exchanges": [
+    {
+      "request": {
+        "method": "POST",
+        "url": "https://generativelanguage.googleapis.com:443/v1beta/models/gemini-3.8-flash:streamGenerateContent?alt=sse",
+        "headers": [
+          ["content-type", "application/json"],
+          ["accept", "text/event-stream"],
+          ["accept-encoding", "identity"]
+        ],
+        "body": {
+          "text": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"Fill in the contact for Bob Stone. His phone number is 555-0100 and he lives in Paris.\"}]}],\"generationConfig\":{\"maxOutputTokens\":2048,\"responseMimeType\":\"application/json\",\"responseJsonSchema\":{\"type\":\"object\",\"properties\":{\"contact\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"},\"phone\":{\"anyOf\":[{\"type\":\"null\"},{\"type\":\"string\"}]},\"address\":{\"anyOf\":[{\"type\":\"null\"},{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"],\"additionalProperties\":false}]}},\"required\":[\"name\",\"phone\",\"address\"],\"additionalProperties\":false}},\"required\":[\"contact\"],\"additionalProperties\":false}}}"
+        }
+      },
+      "reply": {
+        "kind": "response",
+        "status": 200,
+        "headers": [
+          ["content-type", "text/event-stream"],
+          ["content-disposition", "attachment"],
+          ["vary", "Origin"],
+          ["vary", "X-Origin"],
+          ["vary", "Referer"],
+          ["transfer-encoding", "chunked"],
+          ["date", "Sun, 04 Oct 2026 12:48:30 GMT"],
+          ["server", "scaffolding on HTTPServer2"],
+          ["x-xss-protection", "0"],
+          ["x-frame-options", "SAMEORIGIN"],
+          ["x-content-type-options", "nosniff"],
+          ["server-timing", "gfet4t7; dur=2922"],
+          ["alt-svc", "h3=\":443\"; ma=2592000,h3-29=\":443\"; ma=2592000"]
+        ],
+        "chunks": [
+          {
+            "text": "data: {\"candidates\": [{\"content\": {\"parts\": [{\"text\": \"{\\\"contact\\\":{\\\"name\\\":\\\"Bob Stone\\\",\\\"phone\\\":\\\"555-0100\\\",\\\"\"}],\"role\": \"model\"},\"index\": 0}],\"usageMetadata\": {\"promptTokenCount\": 28,\"candidatesTokenCount\": 19,\"totalTokenCount\": 332,\"promptTokensDetails\": [{\"modality\": \"TEXT\",\"tokenCount\": 28}],\"thoughtsTokenCount\": 285,\"serviceTier\": \"standard\"},\"modelVersion\": \"gemini-3.8-flash\",\"responseId\": \"HEvCarqIEtWsqtsPpLKImAI\"}\r\n\r\n"
+          },
+          {
+            "text": "data: {\"candidates\": [{\"content\": {\"parts\": [{\"text\": \"address\\\":{\\\"city\\\":\\\"Paris\\\"}}}\"}],\"role\": \"model\"},\"index\": 0}],\"usageMetadata\": {\"promptTokenCount\": 28,\"candidatesTokenCount\": 26,\"totalTokenCount\": 339,\"promptTokensDetails\": [{\"modality\": \"TEXT\",\"tokenCount\": 28}],\"thoughtsTokenCount\": 285,\"serviceTier\": \"standard\"},\"modelVersion\": \"gemini-3.8-flash\",\"responseId\": \"HEvCarqIEtWsqtsPpLKImAI\"}\r\n\r\n"
+          },
+          {
+            "text": "data: {\"candidates\": [{\"content\": {\"parts\": [{\"text\": \"\",\"thoughtSignature\": \"EtQJCtEJAWkUfRNAq8AcXXOOjS/zUmfp+cHVlW/P+4CdvH6yCHZHBjZdMjQTqZ1pmMzg2e84mhAu58tYxSUW44X217mXAxia5OdYy4Mqpxn2eB9FxuhjGzpNzcxSk++jMyT1REBnYonG11IBrD1C2dncS/u6WosE+/QMoVsqeesc6JWGvRa5TdJh2xsiwxMStvxI9uNNLy+gVVv08RuOlvySOLTcTlk7qQFxhkeV3jIPYfhuDTSr4aqeim5MTeNK7OysF2ZDoA8EDdm2eL2WWxuOrySNHQWEb5DCwtlzMVW7o/0ykPam1d3dGC9PbG6EcmEeLbM6mEkvYLk8BTWCNNiY1FO6m17tMNMQlPNQx/IPUM/DlSfwcJWjVeR3CX8/KGGHcnhSIOTu+LzgUfa6D/qPyc+VlCezDyl4brRnpa9QhuayZNLb617T0TWqBRFn7MyGy4jqfXYRKSBWaqkrLTmoNJsaOv1RhM5kFVucX09rz/3I+Dw9OB2euWjfSRK6gz1r5N9aIpbhumW6YUVJuXQNXeqhZ03/8y21ngEptk08MHkzRYfcNuSw0Yd/vNYSYODstEtx9n1Cdn9gQBZv09kBwWknFcKhCn0cKfNjlCon53P6RaiUKQrC6tImDsKiFP222vFLIGvxmTiGkqixJi8OdIirNIp9XSu36NVIbjrPBRpGoNLuWRGi4sS/rIy+m7m1MQpz/RpdGX7jd0iizGp3x0Ox1LDElBi1FelY5syiDJwtMeLwTBLuzrhklLVC0FuQ+O2Ind4KPJs00j68l/QHJz5C2i4z0fz86LaysABAe8QZoh0YFBAB90/F7C5G7Xsp2+KUWV7xoqDoo9H4O+7JiUtdIRx3v4izvDV7JjBkn9XHlFG5ZravjyS25FRvumOZAJ+DVy0tnqysalkuZrkGFi1FMb3guqLNpmS7Y6b6xuep3AS0oxN53VFwkDSMOrGsUeWZFz3TiGrf8LEOg9ItG9TZ+CwCtgP+PTtnXXPwTZv2jd8CbWxXUPrtF0JhDMqzBoFyfgcSBgm9CN1JXFilE8unm2BrwVvRvLFULnGr2cjztNPcxnDWReboglGQnRyr5qKEXN41po+2vMmHLYruhlR+V9tcFflEM4IRlin3GbsgbXR+2czbKAHjz6u7jNGALJ3wC+of1oE2KFlsiZiSWgKzkO82Qtzfh4D0wx+QyM4w/QWnGAr7Q031hFMazhcDzpl35CIJTDSATiS2iCsPKYsq8D0BisGSXJSPmAEwyXde+wk6YZBoONJo/RKCTyaaXQ23HU39Yevq+W4og0JdN2g8FgOzZQ7wg9QJA5K+KbbGhmEc2SGVk1qYaoGIX9KX7/uBnrX1umw6Z2ip0gePjrYHHjAZ11LiuUJlEcAT5QD1GbZ5PZb1Lu0HVJgMrRedkJdJ5Q1l01Pb010/3nvi0MGXJgOvzpzE0FxbN3ozR0Lt1NgOced2HhGbcy3i98HLqDkuvzaJfgwJTKd20LEsD5gaU8y73PTSch/cBERHMMi2OSRG96FIZtYnwyYLpEeFh0F1EL4wWwK1JSl6xwA8tlqyifxjL0aAigT+GMvPqR0TQaGqdCt6YjMVCCElBvInYXPxEmSveF03bS0szu+xCTA8cVjp9NH2qYi8y4RVQv4WlwE/\"}],\"role\": \"model\"},\"finishReason\": \"STOP\",\"index\": 0}],\"usageMetadata\": {\"promptTokenCount\": 28,\"candidatesTokenCount\": 26,\"totalTokenCount\": 339,\"promptTokensDetails\": [{\"modality\": \"TEXT\",\"tokenCount\": 28}],\"thoughtsTokenCount\": 285,\"serviceTier\": \"standard\"},\"modelVersion\": \"gemini-3.8-flash\",\"responseId\": \"HEvCarqIEtWsqtsPpLKImAI\"}\r\n\r\n"
+          }
+        ],
+        "ending": {
+          "kind": "aborted",
+          "failure": {
+            "name": "cancelled",
+            "evidence": "maybe_sent",
+            "status": 200
+          }
+        }
+      }
+    }
+  ]
+}

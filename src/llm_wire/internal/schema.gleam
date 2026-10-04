@@ -252,37 +252,34 @@ pub fn google_strict_output_schema(
   }
 }
 
+/// Gemini's `responseJsonSchema` takes JSON Schema with `required`,
+/// `anyOf` with `{"type": "null"}`, `minimum`/`maximum` and `prefixItems`
+/// (Google's structured-output guide, checked live on `gemini-3.8-flash`).
+/// So, unlike the strict profile, it admits `codec.nullable`, optional
+/// fields, number ranges and pairs.
 fn validate_google_strict_schema(schema: codec.Schema) -> Result(Nil, String) {
   case codec.view(schema) {
-    codec.NullableSchema(_) ->
-      Error("Google structured output does not support nullable/anyOf schema")
-    codec.ObjectSchema(properties) -> {
-      case list.any(properties, fn(property) { !property.required }) {
-        True ->
-          Error(
-            "Strict structured output requires every object property to be required",
-          )
-        False ->
-          list.fold(properties, Ok(Nil), fn(acc, property) {
-            use Nil <- result.try(acc)
-            validate_google_strict_schema(property.schema)
-          })
-      }
+    codec.ObjectSchema(properties) ->
+      list.try_each(properties, fn(property) {
+        validate_google_strict_schema(property.schema)
+      })
+    codec.ListSchema(inner) | codec.NullableSchema(inner) ->
+      validate_google_strict_schema(inner)
+    codec.PairSchema(left, right) -> {
+      use Nil <- result.try(validate_google_strict_schema(left))
+      validate_google_strict_schema(right)
     }
-    codec.ListSchema(inner) -> validate_google_strict_schema(inner)
     codec.StringSchema
     | codec.StringEnumSchema(_)
     | codec.IntSchema
     | codec.IntegerRangeSchema(_, _)
     | codec.NumberSchema
+    | codec.NumberRangeSchema(_, _)
+    | codec.AnySchema
     | codec.BoolSchema -> Ok(Nil)
     codec.UnionSchema(variants) ->
       validate_variants(variants, validate_google_strict_schema)
-    // Strict mode needs a `type`: `{}` and an unknown kind cannot give one.
-    codec.PairSchema(_, _)
-    | codec.NumberRangeSchema(_, _)
-    | codec.AnySchema
-    | codec.OtherSchema(_) ->
+    codec.OtherSchema(_) ->
       Error("Structured output uses an unsupported Blueprint schema variant")
   }
 }

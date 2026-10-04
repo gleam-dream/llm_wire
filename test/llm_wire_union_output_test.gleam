@@ -2,11 +2,12 @@
 //// Gemini document `anyOf` of objects for structured output, so a Blueprint
 //// union (`oneOf` of tagged objects) is sent as `anyOf` of strict objects
 //// whose tag is a single-value `enum`; the reply is decoded by the original
-//// codec. A union at the root, or one with an unsupported payload, is
-//// refused with the typed schema error.
+//// codec. A union at the root, or one with a payload the provider's profile
+//// does not admit, is refused with the typed schema error.
 
 import gleam/json
 import gleam/list
+import gleam/option
 import gleam/string
 import gleeunit/should
 import http_test_helpers
@@ -106,8 +107,14 @@ pub fn a_union_in_a_list_item_is_accepted_test() {
   |> should.be_true
 }
 
+/// The wires whose structured output is strict: Gemini's
+/// `responseJsonSchema` also takes pairs and optional fields.
+fn strict_wires() -> List(#(String, message.Provider, llm_wire.Config)) {
+  list.filter(wires(), fn(wire) { wire.1 != message.Google })
+}
+
 pub fn a_union_payload_with_an_unsupported_schema_is_refused_test() {
-  use #(_, _, config) <- list.each(wires())
+  use #(_, _, config) <- list.each(strict_wires())
   let pairs =
     codec.union({
       use pair <- codec.variant(
@@ -122,7 +129,7 @@ pub fn a_union_payload_with_an_unsupported_schema_is_refused_test() {
 }
 
 pub fn an_optional_payload_field_is_still_refused_test() {
-  use #(_, _, config) <- list.each(wires())
+  use #(_, _, config) <- list.each(strict_wires())
   let loose =
     codec.union({
       use note <- codec.variant(
@@ -140,6 +147,36 @@ pub fn an_optional_payload_field_is_still_refused_test() {
   let assert Error(error.UnsupportedSchema(error.Output, reason)) =
     llm_wire.prepare(config, question(tool_fixtures.one_field("answer", loose)))
   string.contains(reason, "required") |> should.be_true
+}
+
+pub fn gemini_admits_a_pair_and_an_optional_field_in_a_payload_test() {
+  let config = google.new("test-key") |> google.config
+  let loose =
+    codec.union({
+      use point <- codec.variant(
+        "Point",
+        {
+          use at <- codec.field(
+            "at",
+            codec.pair(codec.int(), codec.int()),
+            get: fn(p: #(#(Int, Int), option.Option(String))) { p.0 },
+          )
+          use label <- codec.optional_field(
+            "label",
+            codec.string(),
+            get: fn(p: #(#(Int, Int), option.Option(String))) { p.1 },
+          )
+          codec.success(#(at, label))
+        },
+        fn(p) { p },
+      )
+      codec.match(fn(p) { point(p) })
+    })
+  let assert Ok(prepared) =
+    llm_wire.prepare(config, question(tool_fixtures.one_field("answer", loose)))
+  let body = llm_wire.request_json(prepared)
+  string.contains(body, "\"prefixItems\":[") |> should.be_true
+  string.contains(body, "\"required\":[\"at\"]") |> should.be_true
 }
 
 fn run_text(

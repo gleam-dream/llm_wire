@@ -2,6 +2,23 @@
 
 ## Unreleased — initial release candidate
 
+### Changed in round 7
+
+[docs/migration-wave-5.md](docs/migration-wave-5.md#round-7) records the live
+evidence.
+
+- Gemini structured output admits `codec.nullable`, optional fields, number
+  ranges, pairs and `codec.value()`, which `prepare` refused with
+  `error.UnsupportedSchema(error.Output, _)`. `responseJsonSchema` accepted
+  each live (2026-10-04, `gemini-3.8-flash`): a nested nullable string and
+  nullable object, replied as null and as values, sent as Blueprint's
+  `anyOf` with `{"type": "null"}`; an optional field, which the model left
+  out; `minimum`/`maximum`; `prefixItems`; and `{}`. OpenAI and Anthropic
+  keep the strict profile. Tool parameters are unchanged.
+- The tests name `gemini-3.8-flash`: `gemini-2.5-flash` is no longer offered
+  to new users. The Gemini live cassettes were re-recorded with
+  `dev/record-live`, and three new ones replay the round 7 schemas.
+
 ### Changed in round 6
 
 [docs/migration-wave-5.md](docs/migration-wave-5.md#round-6) lists each item

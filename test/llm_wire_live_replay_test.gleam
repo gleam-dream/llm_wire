@@ -3,18 +3,25 @@
 //// decodes through the original codec and is classified as the live call
 //// was: a nested union of strict objects sent as Gemini's
 //// `responseJsonSchema` and OpenAI's strict `json_schema`, Gemini's plain
-//// text stream and a Gemini tool call with its signed part.
+//// text stream and a Gemini tool call with its signed part. Round 7 added
+//// Gemini's nested `codec.nullable` (a null and a non-null reply) and one
+//// schema with an optional field, a number range, a pair and
+//// `codec.value()`, all of which the strict profile refuses.
 
 import gleam/json
 import gleam/list
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import gleam/string
 import gleeunit/should
 import http_gun
 import http_gun/cassette
 import http_gun/testing as http_testing
 import json/blueprint/codec
-import live_scenarios.{type Scenario, NoSources, Written}
+import json/blueprint/number
+import json/blueprint/value
+import live_scenarios.{
+  type Scenario, Address, Contact, NoSources, Reading, Written,
+}
 import llm_wire
 import llm_wire/message
 import llm_wire/tool
@@ -140,4 +147,83 @@ pub fn gemini_tool_call_needs_tools_and_replays_its_signed_part_test() {
 
 fn google_config() -> llm_wire.Config {
   live_scenarios.google_config(key)
+}
+
+/// Runs a Gemini scenario whose output is not the union, and checks that
+/// the answer text decodes through the codec, on its own, to the same value.
+fn gemini_answer(
+  scenario: Scenario,
+  prepared: llm_wire.Prepared(o),
+  output: codec.Codec(o),
+) -> #(o, String) {
+  use client <- with_tape(scenario)
+  let assert Ok(llm_wire.Answer(output: decoded, text:, usage: Some(_))) =
+    llm_wire.run(client, prepared)
+  codec.decode_json(output, text) |> should.equal(Ok(decoded))
+  #(decoded, text)
+}
+
+pub fn gemini_sends_nullable_as_any_of_with_null_test() {
+  let body =
+    llm_wire.request_json(live_scenarios.nullable_call(
+      live_scenarios.GoogleNullableNull,
+      key,
+    ))
+  string.contains(
+    body,
+    "\"phone\":{\"anyOf\":[{\"type\":\"null\"},{\"type\":\"string\"}]}",
+  )
+  |> should.be_true
+  string.contains(body, "\"address\":{\"anyOf\":[{\"type\":\"null\"},")
+  |> should.be_true
+}
+
+pub fn gemini_nested_nullable_replies_null_test() {
+  let scenario = live_scenarios.GoogleNullableNull
+  let #(contact, text) =
+    gemini_answer(
+      scenario,
+      live_scenarios.nullable_call(scenario, key),
+      live_scenarios.contact_output(),
+    )
+  contact |> should.equal(Contact("Ada Lovelace", None, None))
+  string.contains(text, "\"phone\":null") |> should.be_true
+}
+
+pub fn gemini_nested_nullable_replies_a_value_test() {
+  let scenario = live_scenarios.GoogleNullableValue
+  let #(contact, _) =
+    gemini_answer(
+      scenario,
+      live_scenarios.nullable_call(scenario, key),
+      live_scenarios.contact_output(),
+    )
+  contact
+  |> should.equal(Contact("Bob Stone", Some("555-0100"), Some(Address("Paris"))))
+}
+
+pub fn gemini_takes_an_optional_field_range_pair_and_any_value_test() {
+  let prepared = live_scenarios.wide_call(key)
+  let body = llm_wire.request_json(prepared)
+  string.contains(
+    body,
+    "\"required\":[\"label\",\"score\",\"point\",\"extra\"]",
+  )
+  |> should.be_true
+  string.contains(body, "\"minimum\":0,\"maximum\":1") |> should.be_true
+  string.contains(body, "\"prefixItems\":[") |> should.be_true
+  string.contains(body, "\"extra\":{}") |> should.be_true
+  let #(reading, text) =
+    gemini_answer(
+      live_scenarios.GoogleWideSchema,
+      prepared,
+      live_scenarios.reading_output(),
+    )
+  let assert Reading(label: "north", note: None, score:, point: #(3, 4), extra:) =
+    reading
+  // The model left the optional field out rather than sending null.
+  string.contains(text, "\"note\"") |> should.be_false
+  number.to_float(score) |> should.equal(Ok(0.75))
+  extra
+  |> should.equal(value.Object([#("unit", value.String("cm"))]))
 }

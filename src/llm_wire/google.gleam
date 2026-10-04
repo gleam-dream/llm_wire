@@ -6,7 +6,10 @@
 ////
 //// The adapter targets `https://generativelanguage.googleapis.com/v1beta`.
 //// Gemini's signed parts travel in each assistant turn's `provider_data`
-//// and must be replayed unchanged. The key is held in a closure and never
+//// and must be replayed unchanged. Structured output is sent as
+//// `generationConfig.responseJsonSchema`, which also takes what strict
+//// providers refuse: optional fields, `codec.nullable`, number ranges,
+//// pairs and `codec.value()`. The key is held in a closure and never
 //// prints.
 
 import gleam/option.{type Option, None, Some}

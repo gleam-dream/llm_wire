@@ -299,7 +299,10 @@ pub fn request(model: String, messages: List(Message)) -> Request(String) {
 
 /// Ask for structured output matching `codec`'s schema, named `name`. The
 /// answer is validated and decoded; invalid output fails the call with
-/// `error.InvalidOutput`.
+/// `error.InvalidOutput`. The codec must be a record at the root. OpenAI and
+/// Anthropic take a strict schema (every field required; no pair, number
+/// range or `codec.value()`); Gemini takes all of these too. `prepare`
+/// refuses what the provider cannot take with `error.UnsupportedSchema`.
 pub fn with_output(
   request: Request(a),
   name: String,

@@ -4,6 +4,7 @@ import gleam/string
 import gleeunit/should
 import json/blueprint/codec
 import json/blueprint/contract
+import json/blueprint/number
 import llm_wire
 import llm_wire/anthropic
 import llm_wire/error
@@ -114,6 +115,17 @@ pub fn configured_structured_prepare_accepts_field_codec_for_all_providers_test(
   })
 }
 
+fn strict_configs() -> List(llm_wire.Config) {
+  [
+    openai.new("test-key") |> openai.config,
+    anthropic.new("test-key") |> anthropic.config,
+  ]
+}
+
+fn google_config() -> llm_wire.Config {
+  google.new("test-key") |> google.config
+}
+
 pub fn optional_field_is_not_converted_to_nullable_required_test() {
   let optional_codec = {
     use item <- codec.optional_field("answer", codec.int(), get: fn(item) {
@@ -122,40 +134,54 @@ pub fn optional_field_is_not_converted_to_nullable_required_test() {
     codec.success(item)
   }
   let optional = schema_of(optional_codec)
-  // Projections now return a plain reason; `prepare` wraps it in
+  // Projections return a plain reason; `prepare` wraps it in
   // `error.UnsupportedSchema(error.Output, reason)`.
   let reason =
     "Strict structured output requires every object property to be required"
   schema.strict_output_schema(optional) |> should.equal(Error(reason))
-  schema.google_strict_output_schema(optional) |> should.be_error
   let request =
     llm_wire.request("model-test", [llm_wire.user("answer")])
     |> llm_wire.with_output("optional_shape", optional_codec)
-  list.each(builtin_configs(), fn(config) {
+  list.each(strict_configs(), fn(config) {
     llm_wire.prepare(config, request)
     |> should.equal(Error(error.UnsupportedSchema(error.Output, reason)))
   })
+  // Gemini honours `required` (live, 2026-10-04): the field stays optional,
+  // not nullable.
+  let assert Ok(prepared) = llm_wire.prepare(google_config(), request)
+  let body = llm_wire.request_json(prepared)
+  string.contains(body, "\"answer\":{\"type\":\"integer\"}")
+  |> should.be_true
+  string.contains(body, "\"required\":[]") |> should.be_true
 }
 
-pub fn unsupported_vocabulary_and_google_nullable_restriction_remain_test() {
-  let unsupported =
+pub fn strict_refusals_that_gemini_admits_test() {
+  let assert Ok(zero) = number.from_int(0)
+  let assert Ok(one) = number.from_int(1)
+  let pair =
     schema_of(tool_fixtures.one_field(
       "answer",
       codec.pair(codec.int(), codec.int()),
     ))
-  schema.strict_output_schema(unsupported) |> should.be_error
-  schema.google_strict_output_schema(unsupported) |> should.be_error
+  let range =
+    schema_of(tool_fixtures.one_field("answer", codec.number_between(zero, one)))
+  let any_field = schema_of(tool_fixtures.one_field("answer", codec.value()))
+  let reason = "Structured output uses an unsupported Blueprint schema variant"
+  list.each([pair, range, any_field], fn(admitted) {
+    schema.strict_output_schema(admitted) |> should.equal(Error(reason))
+    schema.google_strict_output_schema(admitted) |> should.be_ok
+  })
 
   let nullable =
     schema_of(tool_fixtures.one_field("answer", codec.nullable(codec.int())))
   schema.strict_output_schema(nullable) |> should.be_ok
-  schema.google_strict_output_schema(nullable)
-  |> should.equal(Error(
-    "Google structured output does not support nullable/anyOf schema",
-  ))
+  schema.google_strict_output_schema(nullable) |> should.be_ok
+  // Gemini still needs an object root.
+  schema.google_strict_output_schema(schema_of(codec.nullable(codec.int())))
+  |> should.equal(Error("Structured output requires an object root schema"))
 }
 
-pub fn any_schema_is_a_tool_parameter_but_not_a_strict_output_test() {
+pub fn any_schema_is_a_tool_parameter_and_a_gemini_output_but_not_strict_test() {
   let any_field = schema_of(tool_fixtures.one_field("payload", codec.value()))
   let expected =
     json.object([
@@ -170,7 +196,7 @@ pub fn any_schema_is_a_tool_parameter_but_not_a_strict_output_test() {
 
   let reason = "Structured output uses an unsupported Blueprint schema variant"
   schema.strict_output_schema(any_field) |> should.equal(Error(reason))
-  schema.google_strict_output_schema(any_field) |> should.equal(Error(reason))
+  schema.google_strict_output_schema(any_field) |> should.equal(Ok(expected))
   // A bare `{}` has no object root.
   let bare = schema_of(codec.value())
   schema.strict_output_schema(bare)

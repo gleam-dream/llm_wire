@@ -268,7 +268,7 @@ pub fn google_request_encoding_messages_options_and_tools_test() {
   let add = tool_fixtures.int_field_tool("add", "amount")
 
   let request =
-    llm_wire.request("gemini-2.5-flash", [
+    llm_wire.request("gemini-3.8-flash", [
       message.System("You are a helpful calculator assistant."),
       message.User("Add 5"),
     ])
@@ -283,7 +283,7 @@ pub fn google_request_encoding_messages_options_and_tools_test() {
   // Check path
   path(prepared)
   |> should.equal(
-    "/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse",
+    "/v1beta/models/gemini-3.8-flash:streamGenerateContent?alt=sse",
   )
 
   // Check body structure
@@ -320,7 +320,7 @@ pub fn google_function_declaration_uses_json_schema_profile_and_stop_limit_test(
       tool_fixtures.one_field("values", codec.nullable(codec.list(codec.int()))),
     )
   let request =
-    llm_wire.request("gemini-2.5-flash", [message.User("shape")])
+    llm_wire.request("gemini-3.8-flash", [message.User("shape")])
     |> llm_wire.with_tools([shape])
     |> llm_wire.with_stop_sequences(["1", "2", "3", "4", "5"])
   let assert Ok(prepared) = llm_wire.prepare(config, request)
@@ -336,7 +336,7 @@ pub fn google_function_declaration_uses_json_schema_profile_and_stop_limit_test(
 
   let six_stops =
     llm_wire.with_stop_sequences(
-      llm_wire.request("gemini-2.5-flash", [message.User("shape")]),
+      llm_wire.request("gemini-3.8-flash", [message.User("shape")]),
       ["1", "2", "3", "4", "5", "6"],
     )
   // The typed problem replaces the "at most 5" message.
@@ -351,7 +351,7 @@ pub fn google_function_declaration_uses_json_schema_profile_and_stop_limit_test(
     tool.new("range", "Range input", tool_fixtures.one_field("value", range))
   let range_request =
     llm_wire.with_tools(
-      llm_wire.request("gemini-2.5-flash", [message.User("range")]),
+      llm_wire.request("gemini-3.8-flash", [message.User("range")]),
       [range_tool],
     )
   // The typed error names the tool whose schema Google cannot take.
@@ -362,50 +362,40 @@ pub fn google_function_declaration_uses_json_schema_profile_and_stop_limit_test(
   }
 }
 
-pub fn google_structured_output_accepts_valid_schema_and_rejects_nullable_test() {
+pub fn google_structured_output_sends_response_json_schema_with_nullable_test() {
   let config = google_config("test-key", "http://127.0.0.1:8080")
-  let request = llm_wire.request("gemini-2.5-flash", [message.User("Extract")])
+  let request = llm_wire.request("gemini-3.8-flash", [message.User("Extract")])
 
-  // Valid non-nullable schema: should succeed
   let valid_codec = tool_fixtures.one_field("count", codec.int())
-  case
+  let assert Ok(prepared) =
     llm_wire.prepare(
       config,
       request |> llm_wire.with_output("count_shape", valid_codec),
     )
-  {
-    Ok(prep) -> {
-      let body = llm_wire.request_json(prep)
-      string.contains(body, "\"responseMimeType\":\"application/json\"")
-      |> should.equal(True)
-      // The JSON Schema field: Gemini's OpenAPI `responseSchema` rejects
-      // `additionalProperties` (live, 2026-10-04).
-      string.contains(body, "\"responseJsonSchema\":{")
-      |> should.equal(True)
-      string.contains(body, "\"responseSchema\"")
-      |> should.equal(False)
-    }
-    _ -> should.fail()
-  }
+  let body = llm_wire.request_json(prepared)
+  string.contains(body, "\"responseMimeType\":\"application/json\"")
+  |> should.equal(True)
+  // The JSON Schema field: Gemini's OpenAPI `responseSchema` rejects
+  // `additionalProperties` (live, 2026-10-04).
+  string.contains(body, "\"responseJsonSchema\":{")
+  |> should.equal(True)
+  string.contains(body, "\"responseSchema\"")
+  |> should.equal(False)
 
-  // Nullable schema: still refused for Gemini (not verified live)
-  let invalid_codec =
+  // `codec.nullable` is sent as Blueprint's `anyOf` with `{"type": "null"}`,
+  // which `responseJsonSchema` accepted live (2026-10-04, round 7).
+  let nullable_codec =
     tool_fixtures.one_field("maybe_note", codec.nullable(codec.string()))
-  case
+  let assert Ok(prepared) =
     llm_wire.prepare(
       config,
-      request |> llm_wire.with_output("note_shape", invalid_codec),
+      request |> llm_wire.with_output("note_shape", nullable_codec),
     )
-  {
-    // The rejection is typed as an unsupported output schema now.
-    Error(error.UnsupportedSchema(error.Output, reason)) ->
-      string.contains(
-        reason,
-        "Google structured output does not support nullable/anyOf schema",
-      )
-      |> should.equal(True)
-    _ -> should.fail()
-  }
+  llm_wire.request_json(prepared)
+  |> string.contains(
+    "\"maybe_note\":{\"anyOf\":[{\"type\":\"null\"},{\"type\":\"string\"}]}",
+  )
+  |> should.equal(True)
 }
 
 pub fn google_loopback_integration_text_stream_test() {
@@ -440,7 +430,7 @@ pub fn google_loopback_integration_text_stream_test() {
   })
 
   let config = loopback_config(server.port)
-  let request = llm_wire.request("gemini-2.5-flash", [message.User("hi")])
+  let request = llm_wire.request("gemini-3.8-flash", [message.User("hi")])
   let assert Ok(prepared) = llm_wire.prepare(config, request)
 
   let assert Ok(llm_wire.Answer(text:, usage:, ..)) =
@@ -501,7 +491,7 @@ pub fn google_loopback_integration_caller_owned_tool_round_test() {
   let calc = tool_fixtures.int_field_tool("calc", "x")
 
   let request =
-    llm_wire.request("gemini-2.5-flash", [message.User("double 7")])
+    llm_wire.request("gemini-3.8-flash", [message.User("double 7")])
     |> llm_wire.with_tools([calc])
 
   let assert Ok(prepared) = llm_wire.prepare(config, request)
@@ -563,7 +553,7 @@ pub fn google_loopback_integration_blocked_prompt_test() {
 
   let config = loopback_config(server.port)
   let request =
-    llm_wire.request("gemini-2.5-flash", [message.User("harmful query")])
+    llm_wire.request("gemini-3.8-flash", [message.User("harmful query")])
   let assert Ok(prepared) = llm_wire.prepare(config, request)
 
   let assert Error(failure) = llm_wire.run(owned_http, prepared)
@@ -628,7 +618,7 @@ pub fn google_missing_provider_id_is_omitted_from_next_request_test() {
   let config = loopback_config(server.port)
   let calc = tool_fixtures.int_field_tool("calc", "x")
   let request =
-    llm_wire.request("gemini-2.5-flash", [message.User("double 7")])
+    llm_wire.request("gemini-3.8-flash", [message.User("double 7")])
     |> llm_wire.with_tools([calc])
   let assert Ok(prepared) = llm_wire.prepare(config, request)
   let assert Ok(llm_wire.NeedsTools(turn:, ..)) =
