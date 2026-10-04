@@ -141,7 +141,10 @@ and the reply is decoded by your codec. A union at the root, or with a pair,
 number range, optional field or `codec.value()` in a payload, fails `prepare`
 with `error.UnsupportedSchema(error.Output, _)`. Providers may not enforce the
 tag text exactly (Anthropic documents that `enum` and `const` capitalization is
-not guaranteed), so the codec's decoding is the final check.
+not guaranteed), so the codec's decoding is the final check. Gemini receives
+the schema as `generationConfig.responseJsonSchema`. The nested union was
+verified against live Gemini and OpenAI on 2026-10-04; the replies replay
+offline from `test/cassettes/live/`.
 
 ## Streaming
 
@@ -263,6 +266,28 @@ feed code that takes a `llm_wire.Failure`, build one with
 `testing.failure(provider, error)` instead of running a call. HTTP Gun's
 cassettes record and replay the same exchanges.
 
+### Re-record the live cassettes
+
+`test/cassettes/live/` holds replies recorded from the live Gemini and OpenAI
+APIs; `test/llm_wire_live_replay_test.gleam` replays them in the gate, offline
+and without keys. To re-record, put the keys in `.env.local` at the repository
+root, which is git-ignored and never committed:
+
+```sh
+GEMINI_API_KEY=...
+OPENAI_API_KEY=...
+```
+
+Then run `nix develop -c sh dev/record-live`, or name scenarios of
+`test/live_scenarios.gleam` (`sh dev/record-live google-tool-call`). Each
+scenario makes one small live request and spends tokens; the command is
+opt-in and never part of the gate. The keys are read from the environment
+and never printed, and HTTP Gun's redaction removes credential headers,
+OpenAI account headers and a `key` query parameter before a cassette is
+written. Before committing, check that no file contains a key, for example
+`grep -rlF "$GEMINI_API_KEY" . --exclude=.env.local --exclude-dir=build`
+inside a shell that loaded `.env.local`.
+
 ## Observe
 
 `telemetry.event()` is the Sinal event `[llm_wire, observation]`. Its
@@ -284,6 +309,7 @@ nix flake check
 
 The fast gate checks formatting, the build without warnings, public module
 docs and the unit, local H1 and TLS suite. Full adds a clean build, external
-consumers and local nghttpd H2 checks. All calls use local or offline inputs.
+consumers and local nghttpd H2 checks. All calls use local or offline inputs;
+only `dev/record-live` calls a provider.
 The [wave 4 migration guide](docs/migration-wave-4.md) lists every changed
 public item.

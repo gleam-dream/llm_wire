@@ -1,0 +1,18 @@
+#!/bin/sh
+# Opt-in: re-record the live-provider cassettes under test/cassettes/live/.
+# Not part of the gate. Calls the live Gemini and OpenAI APIs, one request
+# per named scenario (all six by default), and spends a few tokens.
+# Keys come from the git-ignored .env.local (GEMINI_API_KEY, OPENAI_API_KEY)
+# or the environment; they are never printed and never stored in a cassette.
+#   sh dev/record-live [google-union-written google-text-stream ...]
+set -eu
+cd "$(dirname "$0")/.."
+if [ -f .env.local ]; then
+  set -a
+  . ./.env.local
+  set +a
+fi
+mkdir -p test/cassettes/live
+gleam run -m llm_wire_live_record -- "$@"
+# The gate checks formatting, cassettes included.
+if command -v treefmt >/dev/null 2>&1; then treefmt test/cassettes/live; fi

@@ -31,6 +31,16 @@ reason)`, not an outcome. OpenAI's `response.incomplete` with
 - `testing.content_filtered(partial_text)` and `testing.prompt_blocked()`
   script the safety stop on each wire. `testing.refusal` panics when lowered
   to Anthropic or Google, whose wires carry no model refusal.
+- **Fixed:** Gemini structured output sends `generationConfig.responseJsonSchema`
+  instead of `responseSchema`. The live API rejected every strict output
+  schema under `responseSchema` (HTTP 400, unknown `additionalProperties`)
+  and accepted the same schema, nested union included, under
+  `responseJsonSchema` (2026-10-04, `gemini-3.8-flash`). OpenAI
+  (`gpt-4.1-mini`) accepted the union unchanged.
+- Cassettes recorded from the live Gemini and OpenAI APIs replay in the gate
+  (`test/cassettes/live/`): the nested union on both, Gemini text streaming and
+  a Gemini tool call. `sh dev/record-live` re-records them from `.env.local`;
+  it is opt-in and never part of the gate.
 
 ### Changed in wave 5
 

@@ -1,0 +1,44 @@
+{
+  "http_gun": 2,
+  "exchanges": [
+    {
+      "request": {
+        "method": "POST",
+        "url": "https://generativelanguage.googleapis.com:443/v1beta/models/gemini-3.8-flash:streamGenerateContent?alt=sse",
+        "headers": [
+          ["content-type", "application/json"],
+          ["accept", "text/event-stream"],
+          ["accept-encoding", "identity"]
+        ],
+        "body": {
+          "text": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"You have no sources about my breakfast today. Reply with the NoSources variant and a reason of at most ten words.\"}]}],\"generationConfig\":{\"maxOutputTokens\":2048,\"responseMimeType\":\"application/json\",\"responseJsonSchema\":{\"type\":\"object\",\"properties\":{\"answer\":{\"anyOf\":[{\"type\":\"object\",\"properties\":{\"tag\":{\"type\":\"string\",\"enum\":[\"Written\"]},\"value\":{\"type\":\"object\",\"properties\":{\"title\":{\"type\":\"string\"},\"body\":{\"type\":\"string\"}},\"required\":[\"title\",\"body\"],\"additionalProperties\":false}},\"required\":[\"tag\",\"value\"],\"additionalProperties\":false},{\"type\":\"object\",\"properties\":{\"tag\":{\"type\":\"string\",\"enum\":[\"NoSources\"]},\"value\":{\"type\":\"object\",\"properties\":{\"reason\":{\"type\":\"string\"}},\"required\":[\"reason\"],\"additionalProperties\":false}},\"required\":[\"tag\",\"value\"],\"additionalProperties\":false}]}},\"required\":[\"answer\"],\"additionalProperties\":false}}}"
+        }
+      },
+      "reply": {
+        "kind": "response",
+        "status": 200,
+        "headers": [
+          ["content-type", "text/event-stream"],
+          ["content-disposition", "attachment"],
+          ["vary", "Origin"],
+          ["vary", "X-Origin"],
+          ["vary", "Referer"],
+          ["transfer-encoding", "chunked"],
+          ["date", "Sun, 04 Oct 2026 10:01:53 GMT"],
+          ["server", "scaffolding on HTTPServer2"],
+          ["x-xss-protection", "0"],
+          ["x-frame-options", "SAMEORIGIN"],
+          ["x-content-type-options", "nosniff"],
+          ["server-timing", "gfet4t7; dur=1221"],
+          ["alt-svc", "h3=\":443\"; ma=2592000,h3-29=\":443\"; ma=2592000"]
+        ],
+        "chunks": [
+          {
+            "text": "data: {\"candidates\": [{\"content\": {\"parts\": [{\"text\": \"{\\\"answer\\\":{\\\"tag\\\":\\\"NoSources\\\",\\\"value\\\":{\\\"reason\\\":\\\"No information available regarding your breakfast today\"}],\"role\": \"model\"},\"index\": 0}],\"usageMetadata\": {\"promptTokenCount\": 25,\"candidatesTokenCount\": 19,\"totalTokenCount\": 153,\"promptTokensDetails\": [{\"modality\": \"TEXT\",\"tokenCount\": 25}],\"thoughtsTokenCount\": 109,\"serviceTier\": \"standard\"},\"modelVersion\": \"gemini-3.8-flash\",\"responseId\": \"ECTCapKMPPusz7IPip-9GA\"}\r\n\r\ndata: {\"candidates\": [{\"content\": {\"parts\": [{\"text\": \".\\\"}}}\"}],\"role\": \"model\"},\"index\": 0}],\"usageMetadata\": {\"promptTokenCount\": 25,\"candidatesTokenCount\": 21,\"totalTokenCount\": 155,\"promptTokensDetails\": [{\"modality\": \"TEXT\",\"tokenCount\": 25}],\"thoughtsTokenCount\": 109,\"serviceTier\": \"standard\"},\"modelVersion\": \"gemini-3.8-flash\",\"responseId\": \"ECTCapKMPPusz7IPip-9GA\"}\r\n\r\ndata: {\"candidates\": [{\"content\": {\"parts\": [{\"text\": \"\",\"thoughtSignature\": \"EucECuQEAWkUfROJE9PnXXA89o9J4pMmCXurv6ELjDCknZSDUy6Rbt3cMXwQ4as4aKWPG8S4fj8HY3H+6fLZePw06vrmUDzIckNrbjfigKbAgPJeDl7ihHW03WGeMDxMT7HJPhVD5w+jwnfgRc2GYr66YJxuUmOk90WAXF0vCnn8vKQAJLWJouUGbHYb45kBdo7iCBViioHFDR7SPKegHl62aCsxXxpeOvO51eIRACpzfnIX24rGoEmsrBypOeQhsR5lXLD+FESyS8Iw/D59mCOQrOaIliUjlgHlXCw5ntv/p4T+FvLkOMuNT4NARd2z6dZAasj26mHn4IaYueqfqiWS3bFSLaN+/CZUQMDbVilNeHQWFIRRHyCSF4LMSkS2Li4v7LoY1ekyqg89sEtuAb9+/A7A2sAouYJs/h7vomdWhhtng7oXOTHXQQaTikOl5OIFsrfKph9Bdywp5zqDtVZnCUyRacRsJOlJVsrj+i4in+AXUprYX5v3uVM2Wc92ey2ZwinucsrxOBQEDqa1/ppbgpKa5NuNZihbq0je6uim6FUTpu2x63CS0Hdljn25fNqi6p5Nxi5kFhIXov/WMkrwT7wzIiKWH1U6hoiQyVZPbnrrKNOHM7bxit9ehNo/Sfvreah0ezIjAJFryVFHH0BRx6ISrHZIhAXusxzeQZTJrSjP0y0C25YWfv548jEgidBKzsyp+OXBIDCs0tXvCvwicdg0wlcshMdUKMRAcCGbgfVwgo9HiZLh5jN3CVR+WTzTtqoPDEI+En7Kq3z58/6acQjFpScYC2bw/SgUhdNRbCmi9PaOilvX\"}],\"role\": \"model\"},\"finishReason\": \"STOP\",\"index\": 0}],\"usageMetadata\": {\"promptTokenCount\": 25,\"candidatesTokenCount\": 21,\"totalTokenCount\": 155,\"promptTokensDetails\": [{\"modality\": \"TEXT\",\"tokenCount\": 25}],\"thoughtsTokenCount\": 109,\"serviceTier\": \"standard\"},\"modelVersion\": \"gemini-3.8-flash\",\"responseId\": \"ECTCapKMPPusz7IPip-9GA\"}\r\n\r\n"
+          }
+        ],
+        "ending": { "kind": "finished", "trailers": [] }
+      }
+    }
+  ]
+}

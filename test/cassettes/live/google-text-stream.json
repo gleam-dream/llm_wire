@@ -1,0 +1,60 @@
+{
+  "http_gun": 2,
+  "exchanges": [
+    {
+      "request": {
+        "method": "POST",
+        "url": "https://generativelanguage.googleapis.com:443/v1beta/models/gemini-3.8-flash:streamGenerateContent?alt=sse",
+        "headers": [
+          ["content-type", "application/json"],
+          ["accept", "text/event-stream"],
+          ["accept-encoding", "identity"]
+        ],
+        "body": {
+          "text": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"Write the numbers one to twenty in words, separated by commas, and nothing else.\"}]}],\"generationConfig\":{\"maxOutputTokens\":2048}}"
+        }
+      },
+      "reply": {
+        "kind": "response",
+        "status": 200,
+        "headers": [
+          ["content-type", "text/event-stream"],
+          ["content-disposition", "attachment"],
+          ["vary", "Origin"],
+          ["vary", "X-Origin"],
+          ["vary", "Referer"],
+          ["transfer-encoding", "chunked"],
+          ["date", "Sun, 04 Oct 2026 10:01:55 GMT"],
+          ["server", "scaffolding on HTTPServer2"],
+          ["x-xss-protection", "0"],
+          ["x-frame-options", "SAMEORIGIN"],
+          ["x-content-type-options", "nosniff"],
+          ["server-timing", "gfet4t7; dur=1609"],
+          ["alt-svc", "h3=\":443\"; ma=2592000,h3-29=\":443\"; ma=2592000"]
+        ],
+        "chunks": [
+          {
+            "text": "data: {\"candidates\": [{\"content\": {\"parts\": [{\"text\": \"one, two, three, four,\"}],\"role\": \"model\"},\"index\": 0}],\"usageMetadata\": {\"promptTokenCount\": 18,\"candidatesTokenCount\": 8,\"totalTokenCount\": 326,\"promptTokensDetails\": [{\"modality\": \"TEXT\",\"tokenCount\": 18}],\"thoughtsTokenCount\": 300,\"serviceTier\": \"standard\"},\"modelVersion\": \"gemini-3.8-flash\",\"responseId\": \"EiTCarWnE8jjz7IPjNntoAI\"}\r\n\r\n"
+          },
+          {
+            "text": "data: {\"candidates\": [{\"content\": {\"parts\": [{\"text\": \" five, six, seven, eight, nine, ten, eleven, twelve, thirteen, fourteen, fifteen, sixteen,\"}],\"role\": \"model\"},\"index\": 0}],\"usageMetadata\": {\"promptTokenCount\": 18,\"candidatesTokenCount\": 32,\"totalTokenCount\": 350,\"promptTokensDetails\": [{\"modality\": \"TEXT\",\"tokenCount\": 18}],\"thoughtsTokenCount\": 300,\"serviceTier\": \"standard\"},\"modelVersion\": \"gemini-3.8-flash\",\"responseId\": \"EiTCarWnE8jjz7IPjNntoAI\"}\r\n\r\n"
+          },
+          {
+            "text": "data: {\"candidates\": [{\"content\": {\"parts\": [{\"text\": \" seventeen, eighteen, nineteen, twenty\"}],\"role\": \"model\"},\"index\": 0}],\"usageMetadata\": {\"promptTokenCount\": 18,\"candidatesTokenCount\": 39,\"totalTokenCount\": 357,\"promptTokensDetails\": [{\"modality\": \"TEXT\",\"tokenCount\": 18}],\"thoughtsTokenCount\": 300,\"serviceTier\": \"standard\"},\"modelVersion\": \"gemini-3.8-flash\",\"responseId\": \"EiTCarWnE8jjz7IPjNntoAI\"}\r\n\r\n"
+          },
+          {
+            "text": "data: {\"candidates\": [{\"content\": {\"parts\": [{\"text\": \"\",\"thoughtSignature\": \"EsAJCr0JAWkUfRPeZeIBVIccOblYJDFuRAAALjoBcl8MCOeEjn0TC6e3Fo+Juv14xQd88Ef/kLuGViC2VFId2Hq/aHlUT7WwaA6vgDbxnCDVWEg9xsVu4Bpx2TYt7K9MA6x80ZHyjks+ScmmYCKIUBHYvrqyT+deOJq8cGWdwy+ghfaoybV9/3H5Nd020WEeDxkLUdnJX1zCGkT2/2kUUu7tfuYUviJ0jopDaobasdgjpYxZZ8eUYfcLYKz9BZdLPXR9IuVWSVLm3cCcZpZ26SeQ3EMDY3AcKW2cVte98G99ohlaiNjJ/VZLQ559xPSL5Ui5rD42XGY7HZouthBXM3BUcR/gTjAcUNqBW/4ZgA7gFJ1onsOu10c4fHyHi85RkCTjMlGIKPpUuKvvwTCt1/PYZCopt4ieAbvj9b9cJrJVib2grbv68/C8JGGQC7x2TY9jnH2ItZ+mgXU0+sImHzcf0CAQIvrblaeW4EyEtaG37ESJGcAMQCsdQz6KSqW4DPDuVb9Z3zu4gZdMYVLSNPqHjt7jHsz4BDFa7w620rkSMjRTy3VGZRghrml1XImgyG4FE3bKhl65T17GJ0LmSbIIo91SYAef+Et73HPU1u8157IWDAZBGR9WDwbFLYF7bLdlcUSrFJQ5vGVRMRzTiOB9DIqTqXLmW309N+YqAHsP7ZD4BN5C1k63do3ypqowO4ZNtjZWj1HhKxj4+u76slGHrqhe4ahec02yNNbsdmNgNfirEnoNw+M13f+h8L2louhVVuzvmqZkHuPJVBPVDA8FPFhFsliniT8L10Zdb9H88ZSYZj+iFYgKZtk/C4JX8PdXjpW3QuL9ihJudfR6LW7t9inaHcGtY9g3EPll1BRV6gGAYUaPPOWsNOpvptSbcp5nLrfOs0OhCwUiY++8RRa2AFwAQaYHsKfoTE4NTQf7VR8V87KKFheXmSmijfKAcE4z7eNKp6g4FniIVfJ7RLhlIaqJ6v+UzojjdXbOc5rgA2fpssdd+GKWvOs+8D9I2lljCCEepNbYAX5bneMtXorLQBVFdLIRdn7ceolxdVoTa0mN1AK6ceABSJJ9uTs4UP12x5p8W6JN4tOiTrM+7+GARzbH+SzAPOnTqAfKb7UdNjQWuGQQR3ves70WcXrXBsMJSbJHDsGAvRg55kUakJc+l5EzNRCJiviLFJ35kWWTEvD2PAC4GNKrcgWNfXHPzeb4EzTLsmMWVuzLhUd2ZMa/+K1qXql1EmZOc3odt9BD+AUcI8X8PDqxPOVxqkE2DRZNmUGotIRS/ItS/CnlATmxO8lVgelMZ9Esd0kQhamRzCNa0hEmCXBOH6IAw6VYZkH6XAe4g+bYoYYwGqYsF2w0AiM7kyBEy3E9BB9w19yUHy7k/cS6BSNXL7rsFg6GPWqxML7zEx72k5MoP8Iu68ji2rMQJIBBHlKH/Gw/642nPIaqIszYOoh+vUSxpnFK+a2D/e2SWCR+P6QCUNmoj/6upFpYUSdDr7IucKj0QoFjMYQZklgKA22iancLAGdtLOxoL6TRVPo16E+MfGncNAqjwXPiAd0J4J+U93i1JfsjKpFBv5vY6upEVX748NKlUjtKKTV8cBH93fNqsrG1dONBSA==\"}],\"role\": \"model\"},\"finishReason\": \"STOP\",\"index\": 0}],\"usageMetadata\": {\"promptTokenCount\": 18,\"candidatesTokenCount\": 39,\"totalTokenCount\": 357,\"promptTokensDetails\": [{\"modality\": \"TEXT\",\"tokenCount\": 18}],\"thoughtsTokenCount\": 300,\"serviceTier\": \"standard\"},\"modelVersion\": \"gemini-3.8-flash\",\"responseId\": \"EiTCarWnE8jjz7IPjNntoAI\"}\r\n\r\n"
+          }
+        ],
+        "ending": {
+          "kind": "aborted",
+          "failure": {
+            "name": "cancelled",
+            "evidence": "maybe_sent",
+            "status": 200
+          }
+        }
+      }
+    }
+  ]
+}

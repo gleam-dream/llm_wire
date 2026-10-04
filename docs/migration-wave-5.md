@@ -125,11 +125,11 @@ of a nested `codec.union` now prepare. The wire form is `anyOf` of strict
 objects, `{"tag": {"type": "string", "enum": ["Found"]}, "value": ..}`, with
 the fixtures `test/fixtures/structured-union-{openai,anthropic,google}.request.txt`.
 
-| Provider  | Now accepted                                              | Still refused                                            | Basis                                                                                                    |
-| --------- | --------------------------------------------------------- | -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| OpenAI    | a union below the root (`anyOf`, single-value `enum` tag) | a union at the root                                      | strict mode: root object must not be `anyOf`; nested `anyOf`, `enum` and `const` supported               |
-| Anthropic | the same                                                  | the same                                                 | `output_config.format` documents `anyOf`, `const`, `enum` and `additionalProperties: false`; no `oneOf`  |
-| Gemini    | the same                                                  | the same; `codec.nullable` stays refused (existing rule) | the structured output guide shows `anyOf` of objects; llm_wire sends `responseSchema`, not verified live |
+| Provider  | Now accepted                                              | Still refused                                            | Basis                                                                                                                 |
+| --------- | --------------------------------------------------------- | -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| OpenAI    | a union below the root (`anyOf`, single-value `enum` tag) | a union at the root                                      | strict mode: root object must not be `anyOf`; nested `anyOf`, `enum` and `const` supported                            |
+| Anthropic | the same                                                  | the same                                                 | `output_config.format` documents `anyOf`, `const`, `enum` and `additionalProperties: false`; no `oneOf`               |
+| Gemini    | the same                                                  | the same; `codec.nullable` stays refused (existing rule) | sent as `responseJsonSchema` since round 6; accepted live on 2026-10-04 (see [Live verification](#live-verification)) |
 
 Payloads must themselves be strict (no optional fields, pairs, number ranges or
 `codec.value()`). Tool parameters still refuse unions.
@@ -363,3 +363,56 @@ fabric's `gleam test` passed (771 tests) and `support_desk`, `research_agent`,
 unrelated stub: `src/tool_hub/assistant.gleam` L105
 (`server.new([fabric_relay.serve(service)])`) fails to type-check against the
 current relay and fabric_relay heads, independently of LLM Wire.
+
+### Live verification
+
+On 2026-10-04 the nested union and Gemini's text and tool wires were called
+against the live APIs (owner-approved, 8 requests in all), and the replies are
+committed as redacted HTTP Gun cassettes. `test/llm_wire_live_replay_test.gleam`
+replays them in the gate, offline and without keys, and checks that each reply
+decodes through the original codec and is classified as live.
+
+| Provider and model        | Scenario                                                                    | Live result                                                                                                                | Cassette                                          |
+| ------------------------- | --------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
+| Gemini `gemini-3.8-flash` | `{"answer": Written(title, body) \| NoSources(reason)}` as `responseSchema` | **rejected**, HTTP 400: `Unknown name "additionalProperties" at 'generation_config.response_schema'` (every strict object) | none                                              |
+| Gemini `gemini-3.8-flash` | the same union as `responseJsonSchema`, `Written` and `NoSources`           | accepted; `Answer(Written("Tides", ..))` and `Answer(NoSources(..))`, streamed in 2+ text deltas                           | `google-union-written`, `google-union-no-sources` |
+| Gemini `gemini-3.8-flash` | plain text stream                                                           | `Answer`, several `TextDelta` events whose concatenation is the text                                                       | `google-text-stream`                              |
+| Gemini `gemini-3.8-flash` | one tool call (`get_weather`)                                               | `NeedsTools` with one call, arguments `{"city":"Paris"}`, signed part in `provider_data`                                   | `google-tool-call`                                |
+| OpenAI `gpt-4.1-mini`     | the union as strict `json_schema`, `Written` and `NoSources`                | accepted unchanged; `Answer(Written("Tides", ..))` and `Answer(NoSources(..))`                                             | `openai-union-written`, `openai-union-no-sources` |
+
+Cassettes live in `test/cassettes/live/<name>.json`. `gemini-2.5-flash`
+answered 404 ("no longer available to new users"), so the Gemini scenarios use
+`gemini-3.8-flash`. Anthropic was not called. LLM Wire streams every call
+(`streamGenerateContent?alt=sse`, `"stream": true`), so there is no
+non-streamed wire; the replay tests consume each structured cassette both
+with `run` and with `stream`/`next`.
+
+#### Gemini sends `responseJsonSchema`
+
+| Before                                                                                 | After                                                                                      |
+| -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `"generationConfig": {"responseMimeType": "application/json", "responseSchema": {..}}` | `"generationConfig": {"responseMimeType": "application/json", "responseJsonSchema": {..}}` |
+
+`responseSchema` takes Google's OpenAPI subset, which has no
+`additionalProperties`, so every strict output schema, union or not, was
+rejected with HTTP 400. `responseJsonSchema` takes JSON Schema (the
+GenerateContent reference: set it or `responseSchema`, not both) and accepted
+the same document, `anyOf` and single-value `enum` tags included. Tool
+parameters already used `parametersJsonSchema`. No public item changed; the
+schema itself is unchanged, and `codec.nullable` stays refused for Gemini (not
+verified live). The pinned body `test/fixtures/structured-union-google.request.txt`
+changed accordingly.
+
+Dependents: none. No repository outside LLM Wire pins a Gemini request body
+(searched `/code/gleam-dream/*` and `oversight/apps` for `responseSchema`); a
+Gemini structured call from fabric or an app now succeeds where it failed.
+
+#### Re-recording
+
+`sh dev/record-live [scenario ...]` (inside `nix develop`) loads
+`GEMINI_API_KEY` and `OPENAI_API_KEY` from the git-ignored `.env.local`, makes
+one live request per scenario of `test/live_scenarios.gleam` and rewrites its
+cassette. It is not part of the gate. HTTP Gun redacts `authorization`,
+`x-goog-api-key`, `set-cookie`, `openai-organization`, `openai-project` and a
+`key` query parameter before anything is written; a failed call aborts its
+cassette and stops the run.
