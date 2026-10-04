@@ -29,6 +29,14 @@ its dependents.
 response.error.message)`, classified by `advise` like `event: error`. A
   `response.incomplete` event ends the stream as an output limit.
   `testing.response_failed(reply, code, message)` scripts the failed form.
+- Structured output accepts a `codec.union` below the root on OpenAI,
+  Anthropic and Gemini: `oneOf` of tagged objects is sent as `anyOf` of strict
+  objects with a single-value `enum` tag (OpenAI documents nested `anyOf`, not at
+  the root; Anthropic documents `anyOf`, `const` and `enum`; Gemini's structured
+  output guide shows `anyOf` of objects). The reply is still decoded by the
+  original codec. A union at the root, or with an unsupported payload, keeps
+  failing `prepare` with `error.UnsupportedSchema(error.Output, _)`. Tool
+  parameters still refuse unions. Request-body fixtures pin each wire.
 - `testing.http_response(provider, reply)` is a `gleam/http` response for a
   fake server, so no caller unwraps `Events`, `Interrupted` and `Status`;
   `testing.with_retry_after_header(response, delay)` adds its `Retry-After`.

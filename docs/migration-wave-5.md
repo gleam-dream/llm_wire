@@ -117,6 +117,22 @@ follow the pinned fixture (`response.error`, `response.incomplete_details`
 fields) and openai-python's `ResponseError`; `incomplete_details.reason` is not
 read, so a content-filter stop is also `OutputLimited`.
 
+## Structured output with a union
+
+Additive: output codecs that failed `prepare` with `UnsupportedSchema` because
+of a nested `codec.union` now prepare. The wire form is `anyOf` of strict
+objects, `{"tag": {"type": "string", "enum": ["Found"]}, "value": ..}`, with
+the fixtures `test/fixtures/structured-union-{openai,anthropic,google}.request.txt`.
+
+| Provider  | Now accepted                                              | Still refused                                            | Basis                                                                                                    |
+| --------- | --------------------------------------------------------- | -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| OpenAI    | a union below the root (`anyOf`, single-value `enum` tag) | a union at the root                                      | strict mode: root object must not be `anyOf`; nested `anyOf`, `enum` and `const` supported               |
+| Anthropic | the same                                                  | the same                                                 | `output_config.format` documents `anyOf`, `const`, `enum` and `additionalProperties: false`; no `oneOf`  |
+| Gemini    | the same                                                  | the same; `codec.nullable` stays refused (existing rule) | the structured output guide shows `anyOf` of objects; llm_wire sends `responseSchema`, not verified live |
+
+Payloads must themselves be strict (no optional fields, pairs, number ranges or
+`codec.value()`). Tool parameters still refuse unions.
+
 ## Dependents
 
 Searched: `/code/gleam-dream/*/src`, `*/test`, `*/integrations`, `*/consumers`,
@@ -132,4 +148,5 @@ Searched: `/code/gleam-dream/*/src`, `*/test`, `*/integrations`, `*/consumers`,
 | `oversight/apps/research_agent/src/research_agent/services.gleam` (L525-531)                                          | Compiles. The `let assert testing.Events(chunks)` becomes `testing.http_response(..).body`.                                                                                                            |
 | `fabric/src/fabric/llm.gleam` (L148)                                                                                  | Compiles. Reads `advise(failure).prospect` only.                                                                                                                                                       |
 | `fabric/test/fabric/support/fake_provider.gleam`, `llm_test.gleam`, `graph_llm_test.gleam`, `llm_recovery_test.gleam` | Compile. They match `Events`, `Interrupted`, `Status` exhaustively, so `Reply` gained no variant. `Interrupted([])` and `Status(429, ..)` in `graph_llm_test` can use `interrupted` and `http_status`. |
+| `oversight/apps/research_agent`                                                                                       | Can use `NoSources \| Found(..)` as a nested output (fabric wraps non-object roots in `{"answer": ..}`).                                                                                               |
 | `relay`, `warden`, `grind`, `saga`, `sinal`, `json_blueprint`, `http_gun`                                             | Do not import LLM Wire. grind's job worker can match `RetryAdvice` once an app wires `advise` to a snooze.                                                                                             |

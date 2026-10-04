@@ -1,5 +1,6 @@
 import gleam/json
 import gleam/list
+import gleam/option.{None, Some}
 import gleam/result
 import json/blueprint/codec
 import json/blueprint/value
@@ -80,7 +81,11 @@ pub fn google_function_parameters_schema(
 }
 
 /// Strict structured-output schemas require a closed object at the root and
-/// closed, fully required object properties recursively.
+/// closed, fully required object properties recursively. A union below the
+/// root is sent as `anyOf` of strict objects, each with its tag as a
+/// single-value `enum` (see `strict_unions`); a union at the root is refused,
+/// because OpenAI's strict mode rejects an `anyOf` root and the other
+/// providers share the object-root rule.
 pub fn strict_output_schema(schema: codec.Schema) -> Result(json.Json, String) {
   case object_root(schema) {
     True -> strict_schema(schema)
@@ -109,7 +114,85 @@ fn object_root(schema: codec.Schema) -> Bool {
 
 fn strict_schema(schema: codec.Schema) -> Result(json.Json, String) {
   use Nil <- result.try(validate_strict_schema(schema))
-  codec_schema_to_json(schema)
+  strict_unions_json(schema)
+}
+
+fn google_strict_schema(schema: codec.Schema) -> Result(json.Json, String) {
+  use Nil <- result.try(validate_google_strict_schema(schema))
+  strict_unions_json(schema)
+}
+
+fn strict_unions_json(schema: codec.Schema) -> Result(json.Json, String) {
+  codec.schema_value(schema)
+  |> strict_unions
+  |> value.to_json
+  |> result.replace_error(
+    "Number schema bound cannot be represented exactly as a JSON number",
+  )
+}
+
+/// Rewrites each union Blueprint renders as `{"type": "object", "oneOf":
+/// [..]}` into `{"anyOf": [..]}`, the form the providers' structured output
+/// accepts, and each variant's tag `{"const": t}` into `{"type": "string",
+/// "enum": [t]}`. Every variant stays a closed object with a required
+/// `tag` and, with a payload, `value`, so the reply keeps the JSON shape the
+/// original codec decodes. Nothing else is changed.
+fn strict_unions(document: value.Value) -> value.Value {
+  case document {
+    value.Object(members) ->
+      case list.key_find(members, "type"), list.key_find(members, "oneOf") {
+        Ok(value.String("object")), Ok(value.Array(variants)) ->
+          value.Object([
+            #(
+              "anyOf",
+              value.Array(
+                list.map(variants, fn(variant) {
+                  variant |> strict_unions |> strict_tag
+                }),
+              ),
+            ),
+          ])
+        _, _ ->
+          value.Object(
+            list.map(members, fn(member) {
+              #(member.0, strict_unions(member.1))
+            }),
+          )
+      }
+    value.Array(items) -> value.Array(list.map(items, strict_unions))
+    other -> other
+  }
+}
+
+fn strict_tag(variant: value.Value) -> value.Value {
+  case variant {
+    value.Object(members) ->
+      value.Object(
+        list.map(members, fn(member) {
+          case member {
+            #("properties", value.Object(properties)) -> #(
+              "properties",
+              value.Object(
+                list.map(properties, fn(property) {
+                  case property {
+                    #("tag", value.Object([#("const", tag)])) -> #(
+                      "tag",
+                      value.Object([
+                        #("type", value.String("string")),
+                        #("enum", value.Array([tag])),
+                      ]),
+                    )
+                    other -> other
+                  }
+                }),
+              ),
+            )
+            other -> other
+          }
+        }),
+      )
+    other -> other
+  }
 }
 
 fn validate_strict_schema(schema: codec.Schema) -> Result(Nil, String) {
@@ -135,14 +218,29 @@ fn validate_strict_schema(schema: codec.Schema) -> Result(Nil, String) {
           })
       }
     }
+    codec.UnionSchema(variants) ->
+      validate_variants(variants, validate_strict_schema)
     // Strict mode needs a `type`: `{}` and an unknown kind cannot give one.
     codec.PairSchema(_, _)
-    | codec.UnionSchema(_)
     | codec.NumberRangeSchema(_, _)
     | codec.AnySchema
     | codec.OtherSchema(_) ->
       Error("Structured output uses an unsupported Blueprint schema variant")
   }
+}
+
+/// Each variant is a closed object with a required tag, so only its payload
+/// needs checking.
+fn validate_variants(
+  variants: List(codec.VariantSchema),
+  validate: fn(codec.Schema) -> Result(Nil, String),
+) -> Result(Nil, String) {
+  list.try_each(variants, fn(variant) {
+    case variant.payload {
+      Some(payload) -> validate(payload)
+      None -> Ok(Nil)
+    }
+  })
 }
 
 pub fn google_strict_output_schema(
@@ -152,11 +250,6 @@ pub fn google_strict_output_schema(
     True -> google_strict_schema(schema)
     False -> Error("Structured output requires an object root schema")
   }
-}
-
-fn google_strict_schema(schema: codec.Schema) -> Result(json.Json, String) {
-  use Nil <- result.try(validate_google_strict_schema(schema))
-  codec_schema_to_json(schema)
 }
 
 fn validate_google_strict_schema(schema: codec.Schema) -> Result(Nil, String) {
@@ -183,9 +276,10 @@ fn validate_google_strict_schema(schema: codec.Schema) -> Result(Nil, String) {
     | codec.IntegerRangeSchema(_, _)
     | codec.NumberSchema
     | codec.BoolSchema -> Ok(Nil)
+    codec.UnionSchema(variants) ->
+      validate_variants(variants, validate_google_strict_schema)
     // Strict mode needs a `type`: `{}` and an unknown kind cannot give one.
     codec.PairSchema(_, _)
-    | codec.UnionSchema(_)
     | codec.NumberRangeSchema(_, _)
     | codec.AnySchema
     | codec.OtherSchema(_) ->

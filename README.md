@@ -133,6 +133,16 @@ Output that is not valid JSON, fails the schema or fails the codec is a
 `Failure` with `error.InvalidOutput`, which keeps the raw text and the typed
 reason, and `sent: Completed`.
 
+The output codec must be a record at the root, with every field required. Below
+the root, a `codec.union` (a sum type) is accepted on every built-in provider:
+it is sent as `anyOf` of strict objects, each with its tag as a single-value
+`enum` (`{"tag": "Found", "value": {..}}`; a unit variant has only the tag),
+and the reply is decoded by your codec. A union at the root, or with a pair,
+number range, optional field or `codec.value()` in a payload, fails `prepare`
+with `error.UnsupportedSchema(error.Output, _)`. Providers may not enforce the
+tag text exactly (Anthropic documents that `enum` and `const` capitalization is
+not guaranteed), so the codec's decoding is the final check.
+
 ## Streaming
 
 ```gleam
