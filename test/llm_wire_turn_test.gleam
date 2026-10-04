@@ -28,7 +28,7 @@ pub fn caller_can_reuse_a_complete_signed_turn_in_a_fresh_request_test() {
   let settings = google.new("first-key") |> google.config
   let request = calc_request("turn-model")
   let reply =
-    testing.Events([
+    testing.events([
       "data: {\"candidates\":[{\"finishReason\":\"STOP\",\"content\":{\"parts\":[{\"text\":\"thinking\",\"thoughtSignature\":\"text-sig\",\"opaque\":true},{\"functionCall\":{\"name\":\"calc\",\"id\":\"call_1\",\"args\":{\"x\":7}},\"thoughtSignature\":\"call-sig\"}]}}]}\n\n",
     ])
   let assert Ok(prepared) = llm_wire.prepare(settings, request)
@@ -55,7 +55,7 @@ pub fn modified_or_missing_provider_data_is_rejected_before_another_request_test
   let configured = google.new("turn-validation") |> google.config
   let source = calc_request("turn-model")
   let reply =
-    testing.Events([
+    testing.events([
       "data: {\"candidates\":[{\"finishReason\":\"STOP\",\"content\":{\"parts\":[{\"text\":\"thinking\",\"thoughtSignature\":\"text-sig\"},{\"functionCall\":{\"name\":\"calc\",\"id\":\"call_1\",\"args\":{\"x\":7}}}]}}]}\n\n",
     ])
   let assert Ok(prepared) = llm_wire.prepare(configured, source)
@@ -104,11 +104,11 @@ pub fn signed_history_and_repeated_ids_stay_with_their_caller_owned_round_test()
       tool_fixtures.int_field_tool("lookup", "x"),
     ])
   let first_reply =
-    testing.Events([
+    testing.events([
       "data: {\"candidates\":[{\"finishReason\":\"STOP\",\"content\":{\"parts\":[{\"text\":\"first thought\",\"thoughtSignature\":\"text-first\"},{\"functionCall\":{\"name\":\"calc\",\"id\":\"same-id\",\"args\":{\"x\":1}}}]}}]}\n\n",
     ])
   let second_reply =
-    testing.Events([
+    testing.events([
       "data: {\"candidates\":[{\"finishReason\":\"STOP\",\"content\":{\"parts\":[{\"text\":\"second thought\"},{\"functionCall\":{\"name\":\"lookup\",\"id\":\"same-id\",\"args\":{\"x\":2}}}]}}]}\n\n",
     ])
   let assert Ok(first) = llm_wire.prepare(settings, source)
@@ -346,7 +346,7 @@ fn terminal(state: State) -> Option(provider.Terminal) {
 }
 
 fn custom_reply() -> testing.Reply {
-  testing.Events([
+  testing.events([
     "event: text\ndata: custom turn\n\nevent: tool\ndata: call_1|calc|{\"x\":7}\n\nevent: done\ndata: {}\n\n",
   ])
 }

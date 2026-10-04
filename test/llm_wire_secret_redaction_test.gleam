@@ -108,8 +108,8 @@ fn custom_adapter() -> provider.Adapter {
 /// wire.
 fn configs() -> List(#(message.Provider, llm_wire.Config, List(String))) {
   let lowered = fn(provider) {
-    let assert testing.Events(chunks) =
-      testing.events_for(provider, testing.text("ok"))
+    let chunks =
+      testing.chunks(testing.events_for(provider, testing.text("ok")))
     chunks
   }
   [
@@ -202,11 +202,17 @@ pub fn failures_do_not_print_the_key_test() {
   use #(provider, config, _) <- list.each(configs())
   let assert Ok(prepared) = llm_wire.prepare(config, request())
   let assert Error(status) =
-    http_test_helpers.run_reply(prepared, testing.Status(401, "unauthorized"))
+    http_test_helpers.run_reply(
+      prepared,
+      testing.http_status(message.Custom("scripted"), 401, "unauthorized"),
+    )
   hidden(status)
   hidden(llm_wire.describe_failure(status))
   let assert Error(interrupted) =
-    http_test_helpers.run_reply(prepared, testing.Interrupted([]))
+    http_test_helpers.run_reply(
+      prepared,
+      testing.interrupted(testing.events([])),
+    )
   hidden(interrupted)
   // A request that matches no scripted exchange.
   let assert Ok(other) =

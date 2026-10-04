@@ -414,7 +414,9 @@ pub fn anthropic_error_test() {
   )
 }
 
-pub fn anthropic_refusal_terminal_is_a_refusal_result_test() {
+/// Anthropic's `stop_reason: "refusal"` is its streaming classifiers stopping
+/// the output, not the model's answer.
+pub fn anthropic_refusal_stop_is_content_filtered_test() {
   let reducer = anthropic.new(limits.default())
   let start =
     sse.ServerSentEvent(
@@ -456,13 +458,9 @@ pub fn anthropic_refusal_terminal_is_a_refusal_result_test() {
       retry: None,
     )
   let assert Ok(#(reducer, _)) = anthropic.step(reducer, message_stop)
-  anthropic.terminal(reducer)
-  |> should.equal(
-    Some(stream_types.StreamFinished(
-      stream_types.Refused("I cannot help with that request."),
-      None,
-    )),
-  )
+  let assert Some(stream_types.StreamFailed(error: problem, ..)) =
+    anthropic.terminal(reducer)
+  problem |> should.equal(error.ContentFiltered(error.InOutput, "refusal"))
 }
 
 pub fn anthropic_unknown_stop_reason_is_not_reported_as_success_test() {

@@ -17,6 +17,7 @@ import http_gun/testing as http_testing
 import http_test_helpers
 import llm_wire
 import llm_wire/error
+import llm_wire/message
 import llm_wire/openai
 import llm_wire/testing
 import simplifile
@@ -35,7 +36,7 @@ fn prepared(text: String) -> llm_wire.Prepared(String) {
 }
 
 fn reply(text: String) -> testing.Reply {
-  testing.Events([
+  testing.events([
     "event: response.output_item.added\ndata: {\"output_index\":0,\"item\":{\"id\":\"item\",\"type\":\"message\"}}\n\n",
     "event: response.output_text.delta\ndata: {\"output_index\":0,\"item_id\":\"item\",\"delta\":\""
       <> text
@@ -172,8 +173,11 @@ pub fn cassette_construction_rejects_invalid_status_and_bit_arrays_test() {
 pub fn recorded_status_and_interruption_keep_normal_error_evidence_test() {
   let call = prepared("Hello")
   use client <- http_test_helpers.with_script([
-    testing.exchange(call, testing.Status(429, "busy")),
-    testing.exchange(call, testing.Interrupted([])),
+    testing.exchange(
+      call,
+      testing.http_status(message.Custom("scripted"), 429, "busy"),
+    ),
+    testing.exchange(call, testing.interrupted(testing.events([]))),
   ])
   let assert Error(status) = llm_wire.run(client, call)
   status.error |> should.equal(error.Status(429, "busy", None))
@@ -251,9 +255,12 @@ pub fn significant_headers_must_match_and_credentials_are_excluded_test() {
 
 pub fn replayed_partial_stream_preserves_interruption_evidence_test() {
   let call = prepared("Hello")
-  let assert testing.Events(chunks) = reply("partial")
+  let chunks = testing.chunks(reply("partial"))
   use client <- http_test_helpers.with_script([
-    testing.exchange(call, testing.Interrupted(list.take(chunks, 2))),
+    testing.exchange(
+      call,
+      testing.interrupted(testing.events(list.take(chunks, 2))),
+    ),
   ])
   let assert Error(failure) = llm_wire.run(client, call)
   // Was response bytes and semantic progress observed.
@@ -264,7 +271,10 @@ pub fn replayed_partial_stream_preserves_interruption_evidence_test() {
 pub fn unexpected_success_statuses_match_the_http_transport_test() {
   let call = prepared("Hello")
   use client <- http_test_helpers.with_script([
-    testing.exchange(call, testing.Status(201, "created")),
+    testing.exchange(
+      call,
+      testing.http_status(message.Custom("scripted"), 201, "created"),
+    ),
   ])
   let assert Error(llm_wire.Failure(error: error.Status(201, "created", _), ..)) =
     llm_wire.run(client, call)

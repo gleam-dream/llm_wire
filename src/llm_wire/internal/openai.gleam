@@ -121,7 +121,8 @@ pub fn step(
           handle_output_item_done(with_bytes, event.data)
 
         // `response.incomplete` carries the same response object with
-        // status "incomplete", which ends the stream as an output limit.
+        // status "incomplete"; `incomplete_details.reason` says whether the
+        // output limit or the content filter ended it.
         Some("response.completed") | Some("response.incomplete") ->
           handle_response_completed(with_bytes, event.data)
 
@@ -854,6 +855,21 @@ fn decode_response_completed() -> decode.Decoder(ResponseCompleted) {
   decode.success(ResponseCompleted(id, status, usage))
 }
 
+/// `response.incomplete_details.reason` of an incomplete response:
+/// `"max_output_tokens"` or `"content_filter"` (openai-python
+/// `IncompleteDetails`), absent when the object is null.
+fn incomplete_reason(data: String) -> Option(String) {
+  let decoder =
+    decode.one_of(
+      decode.at(
+        ["response", "incomplete_details", "reason"],
+        decode.map(decode.string, Some),
+      ),
+      [decode.success(None)],
+    )
+  json.parse(data, decoder) |> result.unwrap(None)
+}
+
 /// The `response.error` object of a failed response: `code` and `message`
 /// (openai-python `ResponseError`), each absent when the object is null.
 fn response_error(data: String) -> #(Option(String), String) {
@@ -966,13 +982,30 @@ fn handle_response_completed(
                 usage: completed.usage,
               )
             }
-            "incomplete" -> {
-              let outcome = stream_types.OutputLimited(all_text, all_calls)
-              stream_types.StreamFinished(
-                outcome: outcome,
-                usage: completed.usage,
-              )
-            }
+            "incomplete" ->
+              case incomplete_reason(data) {
+                None | Some("max_output_tokens") ->
+                  stream_types.StreamFinished(
+                    outcome: stream_types.OutputLimited(all_text, all_calls),
+                    usage: completed.usage,
+                  )
+                Some("content_filter") ->
+                  stream_types.StreamFailed(
+                    error: error.ContentFiltered(
+                      error.InOutput,
+                      "content_filter",
+                    ),
+                    retry: retry_evidence,
+                  )
+                Some(other) ->
+                  stream_types.StreamFailed(
+                    error: error.Provider(
+                      code: Some(other),
+                      message: "Response incomplete with reason: " <> other,
+                    ),
+                    retry: retry_evidence,
+                  )
+              }
             "failed" -> {
               let #(code, reason) = response_error(data)
               stream_types.StreamFailed(

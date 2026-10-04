@@ -139,11 +139,12 @@ fn process_google_payload(
           case get_field(feedback, "blockReason") |> result.try(get_string) {
             Ok(reason) -> {
               let outcome =
-                stream_types.StreamFinished(
-                  stream_types.Refused(
-                    "Prompt blocked by safety policy: " <> reason,
+                stream_types.StreamFailed(
+                  error.ContentFiltered(error.InPrompt, reason),
+                  retry_evidence(
+                    reducer,
+                    stream_types.RequestMayHaveReachedProvider,
                   ),
-                  reducer.usage,
                 )
               Ok(#(Reducer(..reducer, terminal_outcome: Some(outcome)), []))
             }
@@ -513,49 +514,19 @@ fn apply_finish_reason(
         )
       Ok(Reducer(..reducer, terminal_outcome: Some(outcome)))
     }
-    "SAFETY" -> {
+    // The safety, recitation, blocklist and sensitive-data filters
+    // (google-genai `FinishReason`).
+    "SAFETY"
+    | "RECITATION"
+    | "BLOCKLIST"
+    | "PROHIBITED_CONTENT"
+    | "SPII"
+    | "IMAGE_SAFETY"
+    | "IMAGE_PROHIBITED_CONTENT" -> {
       let outcome =
-        stream_types.StreamFinished(
-          stream_types.Refused("Google refused generation with reason: SAFETY"),
-          reducer.usage,
-        )
-      Ok(Reducer(..reducer, terminal_outcome: Some(outcome)))
-    }
-    "RECITATION" -> {
-      let outcome =
-        stream_types.StreamFinished(
-          stream_types.Refused(
-            "Google refused generation with reason: RECITATION",
-          ),
-          reducer.usage,
-        )
-      Ok(Reducer(..reducer, terminal_outcome: Some(outcome)))
-    }
-    "BLOCKLIST" -> {
-      let outcome =
-        stream_types.StreamFinished(
-          stream_types.Refused(
-            "Google refused generation with reason: BLOCKLIST",
-          ),
-          reducer.usage,
-        )
-      Ok(Reducer(..reducer, terminal_outcome: Some(outcome)))
-    }
-    "PROHIBITED_CONTENT" -> {
-      let outcome =
-        stream_types.StreamFinished(
-          stream_types.Refused(
-            "Google refused generation with reason: PROHIBITED_CONTENT",
-          ),
-          reducer.usage,
-        )
-      Ok(Reducer(..reducer, terminal_outcome: Some(outcome)))
-    }
-    "SPII" -> {
-      let outcome =
-        stream_types.StreamFinished(
-          stream_types.Refused("Google refused generation with reason: SPII"),
-          reducer.usage,
+        stream_types.StreamFailed(
+          error.ContentFiltered(error.InOutput, reason),
+          evidence,
         )
       Ok(Reducer(..reducer, terminal_outcome: Some(outcome)))
     }

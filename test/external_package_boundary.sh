@@ -240,6 +240,37 @@ pub fn scripts_a_provider_failure(
   })
 }
 
+pub fn serves_a_reply_from_a_fake_server(
+  reply: testing.Reply,
+) -> #(Int, List(String), Bool) {
+  let lowered = testing.events_for(message.Anthropic, reply)
+  #(testing.status(lowered), testing.chunks(lowered), testing.is_interrupted(lowered))
+}
+
+pub fn builds_every_reply_without_a_constructor() -> List(testing.Reply) {
+  [
+    testing.tool_calls("", [
+      testing.tool_call(id: "c1", name: "lookup", arguments_json: "{}"),
+    ]),
+    testing.content_filtered("partial"),
+    testing.prompt_blocked(),
+    testing.events(["event: delta\ndata: hi\n\n"]),
+    testing.interrupted(testing.text("")),
+    testing.http_status(message.Custom("scripted"), 501, "not implemented"),
+  ]
+}
+
+pub fn content_filter_is_its_own_kind(failure: llm_wire.Failure) -> Bool {
+  case error.kind(failure.error) {
+    error.ContentPolicy -> True
+    error.Transport
+    | error.ProviderError
+    | error.UnusableResponse
+    | error.OverLimit
+    | error.Ended -> False
+  }
+}
+
 pub fn observe_with_sinal() -> sinal.Attachment {
   sinal.observe(telemetry.event(), fn(_, meta: telemetry.Metadata) {
     let _ = #(meta.call, meta.correlation, telemetry.stage_name(meta.stage))
@@ -362,6 +393,14 @@ import llm_wire/testing
 pub fn raw_reply() { testing.http_reply }
 EOF
 expect_rejected private_http_reply 'Unknown module value' 'http_reply'
+
+for constructor in Events Interrupted Status ScriptedCall; do
+  cat >"$negative/src/consumer.gleam" <<EOF
+import llm_wire/testing
+pub fn raw_reply() { testing.$constructor }
+EOF
+  expect_rejected "opaque_reply_$constructor" 'Unknown module value' "$constructor"
+done
 
 for removed in session config types retry; do
   cat >"$negative/src/consumer.gleam" <<EOF

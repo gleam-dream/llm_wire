@@ -14,6 +14,10 @@
 //// }
 //// ```
 ////
+//// `kind(error)` is a closed classification that never gains variants, for
+//// a caller that wants an exhaustive `case`; `name(error)` is a stable
+//// identifier for logs and stored records.
+////
 //// `Http` carries HTTP Gun's opaque `Failure`, so `http_gun/error.kind`,
 //// `is_retryable`, `status` and `headers` apply to it directly.
 ////
@@ -57,6 +61,46 @@ pub type Error {
   /// The process that owned the call stopped before a result, for example
   /// because it could not start.
   Stopped
+  /// The provider's safety system blocked the prompt or stopped the output.
+  /// `reason` is the provider's own value: OpenAI's
+  /// `incomplete_details.reason` (`"content_filter"`), Anthropic's
+  /// `stop_reason` (`"refusal"`), Gemini's `finishReason` (`"SAFETY"`,
+  /// `"RECITATION"`, `"BLOCKLIST"`, `"PROHIBITED_CONTENT"`, `"SPII"`,
+  /// `"IMAGE_SAFETY"`, `"IMAGE_PROHIBITED_CONTENT"`) or
+  /// `promptFeedback.blockReason`. Retrying the same request will not help.
+  /// A model that declines in its own words is the outcome
+  /// `llm_wire.Refused`, not this error.
+  ContentFiltered(stage: FilterStage, reason: String)
+}
+
+/// Where a provider's content filter stopped a call.
+pub type FilterStage {
+  /// The prompt was blocked before generation (Gemini's
+  /// `promptFeedback.blockReason`).
+  InPrompt
+  /// Generation stopped after it started.
+  InOutput
+}
+
+/// A small, closed classification of `Error`. Unlike `Error`, it gains no
+/// variants in a minor release, so a `case` on it needs no `_` arm. Branch
+/// on it, decide retries with `llm_wire.advise`, and read `Error` for
+/// detail.
+pub type Kind {
+  /// `Http` or `DeadlineExceeded`: the exchange did not complete.
+  Transport
+  /// `Status` or `Provider`: the provider answered with an error.
+  ProviderError
+  /// `ContentFiltered`: the provider's safety system stopped the call; the
+  /// prompt must change.
+  ContentPolicy
+  /// `Protocol` or `InvalidOutput`: the response arrived but cannot be used.
+  UnusableResponse
+  /// `LimitExceeded`: a bound set with `llm_wire.with_limit` stopped the
+  /// call.
+  OverLimit
+  /// `Cancelled` or `Stopped`: the call ended locally before a result.
+  Ended
 }
 
 /// The three timers of a call.
@@ -171,6 +215,34 @@ pub fn describe(error: Error) -> String {
     InvalidOutput(_, failure) ->
       "Invalid structured output: " <> describe_value_failure(failure)
     Stopped -> "The call's owner process stopped before a result"
+    ContentFiltered(InPrompt, reason) ->
+      "Provider content filter blocked the prompt: " <> reason
+    ContentFiltered(InOutput, reason) ->
+      "Provider content filter stopped the output: " <> reason
+  }
+}
+
+/// The closed classification of `error`.
+pub fn kind(error: Error) -> Kind {
+  case error {
+    Http(_) | DeadlineExceeded(_) -> Transport
+    Status(..) | Provider(..) -> ProviderError
+    ContentFiltered(..) -> ContentPolicy
+    Protocol(_) | InvalidOutput(..) -> UnusableResponse
+    LimitExceeded(..) -> OverLimit
+    Cancelled | Stopped -> Ended
+  }
+}
+
+/// A stable snake_case name, such as `"content_policy"`.
+pub fn kind_name(kind: Kind) -> String {
+  case kind {
+    Transport -> "transport"
+    ProviderError -> "provider_error"
+    ContentPolicy -> "content_policy"
+    UnusableResponse -> "unusable_response"
+    OverLimit -> "over_limit"
+    Ended -> "ended"
   }
 }
 
@@ -188,6 +260,8 @@ pub fn name(error: Error) -> String {
     InvalidOutput(failure:, ..) ->
       "invalid_output." <> value_failure_name(failure)
     Stopped -> "stopped"
+    ContentFiltered(InPrompt, _) -> "content_filtered.prompt"
+    ContentFiltered(InOutput, _) -> "content_filtered.output"
   }
 }
 

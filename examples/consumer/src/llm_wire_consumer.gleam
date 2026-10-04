@@ -405,7 +405,7 @@ pub fn main() -> Nil {
     testing.events_for(
       message.OpenAI,
       testing.tool_calls("", [
-        testing.ScriptedCall("call_1", "temperature", "{\"city\":\"Paris\"}"),
+        testing.tool_call("call_1", "temperature", "{\"city\":\"Paris\"}"),
       ]),
     )
   let assert Ok(llm_wire.NeedsTools(turn:, ..)) = {
@@ -466,7 +466,7 @@ pub fn main() -> Nil {
     use client <- scripted([
       testing.exchange(
         acme_call,
-        testing.Events([
+        testing.events([
           "event: delta\ndata: Hi from \n\n",
           "event: delta\ndata: Acme\n\n",
           "event: done\ndata: 3\n\n",

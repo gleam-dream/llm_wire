@@ -122,6 +122,9 @@ pub type Outcome(o) {
     partial_calls: List(ToolCall),
     usage: Option(Usage),
   )
+  /// The model declined in its own words: OpenAI's refusal content, or a
+  /// custom provider's `provider.refused`. A provider's safety filter is not
+  /// an outcome: the call fails with `error.ContentFiltered`.
   Refused(reason: String, usage: Option(Usage))
 }
 
@@ -697,7 +700,8 @@ pub fn describe_failure(failure: Failure) -> String {
 ///
 /// HTTP Gun failures are classified by their `Kind`: unavailable, network
 /// and timeout failures may help; refused destinations, invalid requests
-/// and limits will not. HTTP statuses 408, 429, 500, 502, 503 and 504 (and
+/// and limits will not, nor will a provider's content filter
+/// (`error.ContentFiltered`): the prompt must change. HTTP statuses 408, 429, 500, 502, 503 and 504 (and
 /// Anthropic's 529) may help. Provider error codes are matched exactly per
 /// provider; prose is never parsed. The `delay` is `ProviderDelay` when the
 /// provider sent a readable `Retry-After` (delay seconds or an HTTP date)
@@ -733,7 +737,7 @@ pub fn advise(failure: Failure) -> RetryAdvice {
       RetryAdvice(assess_code(failure.provider, code), Backoff)
     error.Provider(None, _) -> RetryAdvice(Unknown, Backoff)
     error.DeadlineExceeded(_) -> RetryAdvice(MayHelp, Backoff)
-    error.LimitExceeded(..) | error.Cancelled ->
+    error.LimitExceeded(..) | error.Cancelled | error.ContentFiltered(..) ->
       RetryAdvice(WillNotHelpUnchanged, Backoff)
     error.Protocol(_) | error.InvalidOutput(..) | error.Stopped ->
       RetryAdvice(Unknown, Backoff)

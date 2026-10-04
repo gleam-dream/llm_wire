@@ -84,7 +84,7 @@ pub fn scripted_tool_round_continues_with_exact_results_test() {
     http_test_helpers.run_reply(
       prepared,
       testing.tool_calls("Looking.", [
-        testing.ScriptedCall("call_1", "lookup", "{\"query\":\"gleam\"}"),
+        testing.tool_call("call_1", "lookup", "{\"query\":\"gleam\"}"),
       ]),
     )
   turn.text |> should.equal("Looking.")
@@ -145,7 +145,11 @@ pub fn scripted_status_fails_after_the_request_was_sent_test() {
   let assert Error(failure) =
     http_test_helpers.run_reply(
       prepared,
-      testing.Status(429, "{\"error\":\"slow down\"}"),
+      testing.http_status(
+        message.Custom("scripted"),
+        429,
+        "{\"error\":\"slow down\"}",
+      ),
     )
   failure.error
   |> should.equal(error.Status(429, "{\"error\":\"slow down\"}", None))
@@ -159,7 +163,10 @@ pub fn scripted_interruption_is_a_transport_failure_test() {
   let assert Ok(prepared) =
     llm_wire.prepare(testing.config(), request([llm_wire.user("Hi")]))
   let assert Error(llm_wire.Failure(error: error.Http(failure), ..)) =
-    http_test_helpers.run_reply(prepared, testing.Interrupted([]))
+    http_test_helpers.run_reply(
+      prepared,
+      testing.interrupted(testing.events([])),
+    )
   http_error.reason(failure)
   |> should.equal(http_error.RequestFailed(http_error.PeerClosed))
 }
@@ -189,10 +196,10 @@ pub fn raw_events_drive_a_built_in_provider_without_a_socket_test() {
   // Split inside an event: the SSE framer must reassemble it.
   http_test_helpers.run_reply(
     prepared,
-    testing.Events([string.slice(body, 0, 40), string.drop_start(body, 40)]),
+    testing.events([string.slice(body, 0, 40), string.drop_start(body, 40)]),
   )
   |> should.equal(Ok(llm_wire.Answer("ok", "ok", None)))
-  let exchange = testing.exchange(prepared, testing.Events([]))
+  let exchange = testing.exchange(prepared, testing.events([]))
   http_testing.request(exchange).path |> should.equal("/v1/responses")
   recorded_body(exchange) |> should.equal(Ok(llm_wire.request_json(prepared)))
 }
@@ -265,8 +272,8 @@ pub fn events_for_multiple_tool_calls_in_every_wire_test() {
   let assert Ok(prepared) = llm_wire.prepare(config, source)
   let reply =
     testing.tool_calls("Checking", [
-      testing.ScriptedCall("call_a", "lookup", "{\"query\":\"paris\"}"),
-      testing.ScriptedCall("call_b", "count", "{\"n\":3}"),
+      testing.tool_call("call_a", "lookup", "{\"query\":\"paris\"}"),
+      testing.tool_call("call_b", "count", "{\"n\":3}"),
     ])
   let assert Ok(llm_wire.NeedsTools(turn:, issues: [], ..)) =
     http_test_helpers.run_reply(prepared, testing.events_for(provider, reply))
@@ -289,21 +296,19 @@ pub fn events_for_multiple_tool_calls_in_every_wire_test() {
   let assert Ok(_) = llm_wire.prepare(config, next)
 }
 
-pub fn events_for_refusal_in_every_wire_test() {
-  use #(provider, config) <- list.each(wires())
-  let assert Ok(llm_wire.Refused(reason:, usage: _)) =
+pub fn events_for_refusal_on_openai_and_the_scripted_wire_test() {
+  let wires = [
+    #(message.OpenAI, openai.new("k") |> openai.config),
+    #(message.Custom("scripted"), testing.config()),
+  ]
+  use #(provider, config) <- list.each(wires)
+  let assert Ok(llm_wire.Refused(reason: "unsafe", usage: _)) =
     run_lowered(
       config,
       provider,
       request([llm_wire.user("Hi")]),
       testing.refusal("unsafe"),
     )
-  // Gemini reports a blocked prompt with its own prefix.
-  reason
-  |> should.equal(case provider {
-    message.Google -> "Prompt blocked by safety policy: unsafe"
-    _ -> "unsafe"
-  })
 }
 
 pub fn events_for_output_limited_in_every_wire_test() {
@@ -322,9 +327,10 @@ pub fn events_for_output_limited_in_every_wire_test() {
 pub fn events_for_interrupted_is_a_transport_failure_in_every_wire_test() {
   use #(provider, config) <- list.each(wires())
   // A scripted text event with no end, then the connection drops.
-  let assert testing.Events([text_event, ..]) = testing.text("partial")
-  let lowered = testing.events_for(provider, testing.Interrupted([text_event]))
-  let assert testing.Interrupted([_, ..]) = lowered
+  let lowered =
+    testing.events_for(provider, testing.interrupted(testing.text("partial")))
+  testing.is_interrupted(lowered) |> should.be_true
+  let assert [_, ..] = testing.chunks(lowered)
   let assert Ok(prepared) =
     llm_wire.prepare(config, request([llm_wire.user("Hi")]))
   let assert Error(failure) = http_test_helpers.run_reply(prepared, lowered)
@@ -337,14 +343,17 @@ pub fn events_for_interrupted_is_a_transport_failure_in_every_wire_test() {
 
 pub fn events_for_keeps_status_and_custom_replies_test() {
   list.each(wires(), fn(wire) {
-    testing.events_for(wire.0, testing.Status(503, "busy"))
-    |> should.equal(testing.Status(503, "busy"))
+    testing.events_for(
+      wire.0,
+      testing.http_status(message.Custom("scripted"), 503, "busy"),
+    )
+    |> should.equal(testing.http_status(message.Custom("scripted"), 503, "busy"))
   })
   let replies = [
     testing.text("a"),
     testing.refusal("r"),
-    testing.Interrupted(["x"]),
-    testing.Status(429, "slow"),
+    testing.interrupted(testing.events(["x"])),
+    testing.http_status(message.Custom("scripted"), 429, "slow"),
   ]
   list.each(replies, fn(reply) {
     testing.events_for(message.Custom("acme"), reply) |> should.equal(reply)
@@ -358,7 +367,7 @@ pub fn events_for_status_still_fails_with_the_status_test() {
       config,
       provider,
       request([llm_wire.user("Hi")]),
-      testing.Status(503, "busy"),
+      testing.http_status(message.Custom("scripted"), 503, "busy"),
     )
   failure.error |> should.equal(error.Status(503, "busy", None))
   failure.provider |> should.equal(provider)
@@ -398,7 +407,8 @@ pub fn interrupted_is_a_transport_failure_after_the_content_in_every_wire_test()
   let reply =
     testing.interrupted(testing.text("partial"))
     |> testing.events_for(provider, _)
-  let assert testing.Interrupted([_, ..]) = reply
+  testing.is_interrupted(reply) |> should.be_true
+  let assert [_, ..] = testing.chunks(reply)
   let assert Error(failure) = run_in(config, reply)
   let assert error.Http(http_failure) = failure.error
   http_error.reason(http_failure)
@@ -410,17 +420,20 @@ pub fn interrupted_is_a_transport_failure_after_the_content_in_every_wire_test()
 }
 
 pub fn interrupted_drops_the_scripted_end_and_keeps_the_rest_test() {
-  let assert testing.Events(whole) = testing.text("partial")
-  let assert testing.Interrupted(cut) =
-    testing.interrupted(testing.text("partial"))
+  let whole = testing.chunks(testing.text("partial"))
+  let cut = testing.chunks(testing.interrupted(testing.text("partial")))
   list.length(cut) |> should.equal(list.length(whole) - 1)
   list.take(whole, list.length(cut)) |> should.equal(cut)
 }
 
 pub fn interrupted_leaves_status_and_interrupted_replies_alone_test() {
-  testing.interrupted(testing.Status(503, "busy"))
-  |> should.equal(testing.Status(503, "busy"))
-  let cut = testing.Interrupted(["x"])
+  testing.interrupted(testing.http_status(
+    message.Custom("scripted"),
+    503,
+    "busy",
+  ))
+  |> should.equal(testing.http_status(message.Custom("scripted"), 503, "busy"))
+  let cut = testing.interrupted(testing.events(["x"]))
   testing.interrupted(cut) |> should.equal(cut)
 }
 
@@ -479,7 +492,11 @@ pub fn retry_after_rounds_a_fraction_up_to_whole_seconds_test() {
 
 pub fn with_retry_after_keeps_the_request_and_the_body_test() {
   let assert Ok(prepared) = llm_wire.prepare(testing.config(), hi())
-  let plain = testing.exchange(prepared, testing.Status(429, "slow"))
+  let plain =
+    testing.exchange(
+      prepared,
+      testing.http_status(message.Custom("scripted"), 429, "slow"),
+    )
   let delayed = testing.with_retry_after(plain, duration.seconds(3))
   http_testing.request(delayed) |> should.equal(http_testing.request(plain))
   let assert http_testing.Respond(before, _) = http_testing.reply(plain)
@@ -505,10 +522,7 @@ pub fn with_retry_after_leaves_an_exchange_without_a_response_alone_test() {
 }
 
 pub fn overloaded_uses_each_providers_status_test() {
-  let status = fn(provider) {
-    let assert testing.Status(code, _) = testing.overloaded(provider)
-    code
-  }
+  let status = fn(provider) { testing.status(testing.overloaded(provider)) }
   status(message.OpenAI) |> should.equal(503)
   status(message.Google) |> should.equal(503)
   status(message.Anthropic) |> should.equal(529)
@@ -525,7 +539,7 @@ pub fn overloaded_fails_with_a_status_that_may_help_in_every_wire_test() {
 
 pub fn error_bodies_follow_each_providers_shape_test() {
   let body = fn(reply) {
-    let assert testing.Status(_, body) = reply
+    let assert [body] = testing.chunks(reply)
     body
   }
   body(testing.rate_limited(message.OpenAI))
@@ -595,8 +609,8 @@ pub fn http_response_sends_the_lowered_events_as_one_body_test() {
   http.headers
   |> list.key_find("content-type")
   |> should.equal(Ok("text/event-stream"))
-  let assert testing.Events(chunks) =
-    testing.events_for(message.OpenAI, testing.text("hi"))
+  let chunks =
+    testing.chunks(testing.events_for(message.OpenAI, testing.text("hi")))
   http.body |> should.equal(string.concat(chunks))
 }
 
@@ -611,7 +625,10 @@ pub fn http_response_keeps_a_failure_status_and_picks_its_content_type_test() {
   |> list.key_find("content-type")
   |> should.equal(Ok("application/json"))
   let proxy =
-    testing.http_response(message.OpenAI, testing.Status(502, "bad gateway"))
+    testing.http_response(
+      message.OpenAI,
+      testing.http_status(message.Custom("scripted"), 502, "bad gateway"),
+    )
   proxy.status |> should.equal(502)
   proxy.body |> should.equal("bad gateway")
   proxy.headers
@@ -761,10 +778,10 @@ pub fn stream_error_works_on_the_scripted_wire_test() {
 }
 
 pub fn stream_error_leaves_status_and_interrupted_replies_alone_test() {
-  let status = testing.Status(503, "busy")
+  let status = testing.http_status(message.Custom("scripted"), 503, "busy")
   testing.stream_error(message.OpenAI, status, "a", "b")
   |> should.equal(status)
-  let cut = testing.Interrupted(["x"])
+  let cut = testing.interrupted(testing.events(["x"]))
   testing.stream_error(message.OpenAI, cut, "a", "b") |> should.equal(cut)
 }
 
@@ -817,7 +834,7 @@ pub fn response_failed_classifies_like_an_error_event_test() {
 pub fn response_failed_without_an_error_object_still_fails_test() {
   let body =
     "event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"id\":\"r\",\"status\":\"failed\",\"error\":null}}\n\n"
-  let assert Error(failure) = run_in(openai_config(), testing.Events([body]))
+  let assert Error(failure) = run_in(openai_config(), testing.events([body]))
   let assert error.Provider(None, text) = failure.error
   string.contains(text, "failed") |> should.be_true
 }
@@ -825,7 +842,7 @@ pub fn response_failed_without_an_error_object_still_fails_test() {
 pub fn a_completed_event_with_status_failed_reads_the_error_too_test() {
   let body =
     "event: response.completed\ndata: {\"response\":{\"id\":\"r\",\"status\":\"failed\",\"error\":{\"code\":\"server_error\",\"message\":\"late\"}}}\n\n"
-  let assert Error(failure) = run_in(openai_config(), testing.Events([body]))
+  let assert Error(failure) = run_in(openai_config(), testing.events([body]))
   failure.error |> should.equal(error.Provider(Some("server_error"), "late"))
 }
 
@@ -836,11 +853,134 @@ pub fn response_incomplete_is_an_output_limit_test() {
     <> "event: response.output_item.done\ndata: {\"output_index\":0,\"item\":{\"id\":\"i\",\"type\":\"message\"}}\n\n"
     <> "event: response.incomplete\ndata: {\"type\":\"response.incomplete\",\"response\":{\"id\":\"r\",\"status\":\"incomplete\",\"error\":null,\"incomplete_details\":{\"reason\":\"max_output_tokens\"}}}\n\n"
   let assert Ok(llm_wire.OutputLimited(partial_text: "cut", ..)) =
-    run_in(openai_config(), testing.Events([body]))
+    run_in(openai_config(), testing.events([body]))
+}
+
+fn incomplete(reason: String) -> String {
+  "event: response.incomplete\ndata: {\"type\":\"response.incomplete\",\"response\":{\"id\":\"r\",\"status\":\"incomplete\",\"error\":null,\"incomplete_details\":{\"reason\":\""
+  <> reason
+  <> "\"}}}\n\n"
+}
+
+pub fn response_incomplete_by_the_content_filter_is_not_an_output_limit_test() {
+  let assert Error(failure) =
+    run_in(openai_config(), testing.events([incomplete("content_filter")]))
+  failure.error
+  |> should.equal(error.ContentFiltered(error.InOutput, "content_filter"))
+  failure.sent |> should.equal(llm_wire.Completed)
+  llm_wire.advise(failure).prospect
+  |> should.equal(llm_wire.WillNotHelpUnchanged)
+}
+
+pub fn response_incomplete_with_an_unknown_reason_is_a_provider_error_test() {
+  let assert Error(failure) =
+    run_in(openai_config(), testing.events([incomplete("something_new")]))
+  let assert error.Provider(Some("something_new"), _) = failure.error
+  llm_wire.advise(failure).prospect |> should.equal(llm_wire.Unknown)
+}
+
+pub fn response_incomplete_without_details_is_still_an_output_limit_test() {
+  let body =
+    "event: response.incomplete\ndata: {\"type\":\"response.incomplete\",\"response\":{\"id\":\"r\",\"status\":\"incomplete\",\"incomplete_details\":null}}\n\n"
+  let assert Ok(llm_wire.OutputLimited(partial_text: "", ..)) =
+    run_in(openai_config(), testing.events([body]))
+}
+
+// --- content filters ------------------------------------------------------------
+
+pub fn content_filtered_fails_in_every_wire_with_the_wires_reason_test() {
+  use #(provider, config) <- list.each([
+    #(message.Custom("scripted"), testing.config()),
+    ..wires()
+  ])
+  let assert Error(failure) =
+    run_in(config, testing.content_filtered("I was say"))
+  let reason = case provider {
+    message.OpenAI -> "content_filter"
+    message.Anthropic -> "refusal"
+    message.Google -> "SAFETY"
+    message.Custom(_) -> "content_filter"
+  }
+  failure.error |> should.equal(error.ContentFiltered(error.InOutput, reason))
+  failure.sent |> should.equal(llm_wire.Completed)
+  failure.partial_output |> should.be_true
+  failure.provider |> should.equal(provider)
+  llm_wire.advise(failure)
+  |> should.equal(llm_wire.RetryAdvice(
+    llm_wire.WillNotHelpUnchanged,
+    llm_wire.Backoff,
+  ))
+  error.kind(failure.error) |> should.equal(error.ContentPolicy)
+}
+
+pub fn prompt_blocked_fails_on_gemini_and_the_scripted_wire_test() {
+  let wires = [
+    #(message.Google, "SAFETY", google.new("k") |> google.config),
+    #(message.Custom("scripted"), "content_filter", testing.config()),
+  ]
+  use #(provider, reason, config) <- list.each(wires)
+  let assert Error(failure) = run_in(config, testing.prompt_blocked())
+  failure.error |> should.equal(error.ContentFiltered(error.InPrompt, reason))
+  failure.partial_output |> should.be_false
+  failure.provider |> should.equal(provider)
+  llm_wire.advise(failure).prospect
+  |> should.equal(llm_wire.WillNotHelpUnchanged)
+}
+
+pub fn every_gemini_filter_finish_reason_is_content_filtered_test() {
+  use reason <- list.each([
+    "SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII",
+    "IMAGE_SAFETY", "IMAGE_PROHIBITED_CONTENT",
+  ])
+  let body =
+    "data: {\"candidates\":[{\"finishReason\":\""
+    <> reason
+    <> "\",\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"so\"}]}}]}\n\n"
+  let assert Error(failure) =
+    run_in(google.new("k") |> google.config, testing.events([body]))
+  failure.error |> should.equal(error.ContentFiltered(error.InOutput, reason))
+}
+
+pub fn every_gemini_block_reason_is_a_blocked_prompt_test() {
+  use reason <- list.each([
+    "SAFETY", "OTHER", "BLOCKLIST", "PROHIBITED_CONTENT", "IMAGE_SAFETY",
+  ])
+  let body =
+    "data: {\"promptFeedback\":{\"blockReason\":\"" <> reason <> "\"}}\n\n"
+  let assert Error(failure) =
+    run_in(google.new("k") |> google.config, testing.events([body]))
+  failure.error |> should.equal(error.ContentFiltered(error.InPrompt, reason))
+}
+
+pub fn a_lowered_reply_is_not_lowered_again_test() {
+  use #(provider, config) <- list.each(wires())
+  let once = testing.events_for(provider, testing.text("hi"))
+  testing.events_for(provider, once) |> should.equal(once)
+  testing.with_usage(once, message.Usage(1, 1, 2)) |> should.equal(once)
+  let assert Ok(llm_wire.Answer(text: "hi", ..)) = run_in(config, once)
+}
+
+pub fn exchange_lowers_a_scripted_reply_into_the_prepared_wire_test() {
+  use #(_, config) <- list.each(wires())
+  let assert Ok(llm_wire.Answer(text: "direct", ..)) =
+    run_in(config, testing.text("direct"))
+}
+
+pub fn accessors_read_what_a_server_sends_test() {
+  let reply = testing.text("hi")
+  testing.status(reply) |> should.equal(200)
+  testing.is_interrupted(reply) |> should.be_false
+  testing.is_interrupted(testing.interrupted(reply)) |> should.be_true
+  let limited = testing.rate_limited(message.OpenAI)
+  testing.status(limited) |> should.equal(429)
+  testing.is_interrupted(limited) |> should.be_false
+  let assert [body] = testing.chunks(limited)
+  testing.http_response(message.OpenAI, limited).body |> should.equal(body)
+  testing.chunks(testing.events(["a", "b"])) |> should.equal(["a", "b"])
 }
 
 pub fn response_failed_leaves_status_and_interrupted_replies_alone_test() {
-  let status = testing.Status(503, "busy")
+  let status = testing.http_status(message.Custom("scripted"), 503, "busy")
   testing.response_failed(status, "a", "b") |> should.equal(status)
 }
 

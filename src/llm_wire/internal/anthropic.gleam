@@ -810,10 +810,11 @@ fn handle_message_stop(
             ),
             final_usage,
           )
+        // Anthropic's streaming classifiers stopped the output.
         Some("refusal") ->
-          stream_types.StreamFinished(
-            stream_types.Refused(all_text),
-            final_usage,
+          stream_types.StreamFailed(
+            error.ContentFiltered(error.InOutput, "refusal"),
+            retry_evidence,
           )
         Some("end_turn") ->
           case all_calls {

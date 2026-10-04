@@ -112,7 +112,7 @@ pub fn tool_loop_appends_the_turn_and_results_test() {
     http_test_helpers.run_reply(
       prepared,
       testing.tool_calls("Looking", [
-        testing.ScriptedCall("call_1", "lookup", "{\"query\":\"x\"}"),
+        testing.tool_call("call_1", "lookup", "{\"query\":\"x\"}"),
       ]),
     )
   turn.provider |> should.equal(Some(message.Custom("scripted")))
@@ -144,8 +144,8 @@ pub fn reported_invalid_calls_carry_a_typed_reason_test() {
     http_test_helpers.run_reply(
       prepared,
       testing.tool_calls("", [
-        testing.ScriptedCall("a", "lookup", "{\"n\":\"one\"}"),
-        testing.ScriptedCall("b", "ghost", "{}"),
+        testing.tool_call("a", "lookup", "{\"n\":\"one\"}"),
+        testing.tool_call("b", "ghost", "{}"),
       ]),
     )
   let assert [
@@ -163,7 +163,7 @@ pub fn stream_reports_tool_argument_progress_test() {
     llm_wire.prepare(testing.config(), hello() |> llm_wire.with_tools([lookup]))
   let reply =
     testing.tool_calls("", [
-      testing.ScriptedCall("call_1", "lookup", "{\"query\":\"x\"}"),
+      testing.tool_call("call_1", "lookup", "{\"query\":\"x\"}"),
     ])
   use client <- http_test_helpers.with_script([
     testing.exchange(prepared, reply),
@@ -263,7 +263,7 @@ pub fn events_for_lowers_tool_calls_into_every_builtin_wire_test() {
     llm_wire.prepare(config, hello() |> llm_wire.with_tools([lookup]))
   let reply =
     testing.tool_calls("", [
-      testing.ScriptedCall("call_7", "lookup", "{\"query\":\"paris\"}"),
+      testing.tool_call("call_7", "lookup", "{\"query\":\"paris\"}"),
     ])
   let assert Ok(llm_wire.NeedsTools(turn:, ..)) =
     http_test_helpers.run_reply(prepared, testing.events_for(provider, reply))
@@ -281,15 +281,17 @@ pub fn events_for_lowers_tool_calls_into_every_builtin_wire_test() {
   let assert Ok(_) = llm_wire.prepare(config, next)
 }
 
-pub fn events_for_lowers_refusal_and_limit_test() {
+pub fn events_for_lowers_content_filter_and_limit_test() {
   use #(provider, config) <- list.each(builtin_configs())
   let assert Ok(prepared) = llm_wire.prepare(config, hello())
-  let assert Ok(llm_wire.Refused(reason:, ..)) =
+  let assert Error(llm_wire.Failure(
+    error: error.ContentFiltered(error.InOutput, _),
+    ..,
+  )) =
     http_test_helpers.run_reply(
       prepared,
-      testing.events_for(provider, testing.refusal("unsafe")),
+      testing.events_for(provider, testing.content_filtered("unsa")),
     )
-  string.contains(reason, "unsafe") |> should.be_true
   let assert Ok(llm_wire.OutputLimited(partial_text: "Once", ..)) =
     http_test_helpers.run_reply(
       prepared,
@@ -298,8 +300,11 @@ pub fn events_for_lowers_refusal_and_limit_test() {
 }
 
 pub fn events_for_keeps_status_and_custom_replies_test() {
-  testing.events_for(message.OpenAI, testing.Status(500, "x"))
-  |> should.equal(testing.Status(500, "x"))
+  testing.events_for(
+    message.OpenAI,
+    testing.http_status(message.Custom("scripted"), 500, "x"),
+  )
+  |> should.equal(testing.http_status(message.Custom("scripted"), 500, "x"))
   testing.events_for(message.Custom("x"), testing.text("a"))
   |> should.equal(testing.text("a"))
 }
@@ -363,7 +368,10 @@ pub fn status_failures_honor_retry_after_seconds_and_dates_test() {
 pub fn http_failures_carry_the_opaque_failure_and_kind_test() {
   let assert Ok(prepared) = llm_wire.prepare(testing.config(), hello())
   let assert Error(failure) =
-    http_test_helpers.run_reply(prepared, testing.Interrupted([]))
+    http_test_helpers.run_reply(
+      prepared,
+      testing.interrupted(testing.events([])),
+    )
   let assert error.Http(http_failure) = failure.error
   http_error.kind(http_failure) |> should.equal(http_error.Network)
   failure.sent |> should.equal(llm_wire.MaybeSent)

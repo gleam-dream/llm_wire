@@ -35,9 +35,9 @@ fn report(settings: llm_wire.Config) -> llm_wire.Config {
 /// One valid call, one undeclared tool, and one schema-invalid argument set.
 fn mixed_calls() -> List(testing.ScriptedCall) {
   [
-    testing.ScriptedCall("call_ok", "lookup", "{\"query\":\"gleam\"}"),
-    testing.ScriptedCall("call_unknown", "missing", "{}"),
-    testing.ScriptedCall("call_bad", "lookup", "{\"query\":42}"),
+    testing.tool_call("call_ok", "lookup", "{\"query\":\"gleam\"}"),
+    testing.tool_call("call_unknown", "missing", "{}"),
+    testing.tool_call("call_bad", "lookup", "{\"query\":42}"),
   ]
 }
 
@@ -59,7 +59,7 @@ pub fn strict_checks_are_the_default_for_unknown_tools_test() {
   let assert Error(failure) =
     http_test_helpers.run_reply(
       prepared,
-      testing.tool_calls("", [testing.ScriptedCall("call_1", "missing", "{}")]),
+      testing.tool_calls("", [testing.tool_call("call_1", "missing", "{}")]),
     )
   let assert error.Protocol(reason) = failure.error
   string.contains(reason, "admitted catalog") |> should.be_true
@@ -73,7 +73,7 @@ pub fn strict_checks_reject_schema_invalid_arguments_test() {
     http_test_helpers.run_reply(
       prepared,
       testing.tool_calls("", [
-        testing.ScriptedCall("call_1", "lookup", "{\"query\":42}"),
+        testing.tool_call("call_1", "lookup", "{\"query\":42}"),
       ]),
     )
   let assert error.Protocol(reason) = failure.error
@@ -131,7 +131,7 @@ pub fn valid_calls_report_no_issues_test() {
     http_test_helpers.run_reply(
       prepared,
       testing.tool_calls("", [
-        testing.ScriptedCall("call_1", "lookup", "{\"query\":\"gleam\"}"),
+        testing.tool_call("call_1", "lookup", "{\"query\":\"gleam\"}"),
       ]),
     )
   list.length(turn.calls) |> should.equal(1)
@@ -210,7 +210,7 @@ pub fn reporting_keeps_bounds_and_identity_fatal_test() {
     http_test_helpers.run_reply(
       oversized,
       testing.tool_calls("", [
-        testing.ScriptedCall("call_1", "lookup", "{\"query\":\"far too long\"}"),
+        testing.tool_call("call_1", "lookup", "{\"query\":\"far too long\"}"),
       ]),
     )
   let assert error.LimitExceeded(limit.ArgumentBytesPerCall, 16, _) =
@@ -219,15 +219,15 @@ pub fn reporting_keeps_bounds_and_identity_fatal_test() {
     http_test_helpers.run_reply(
       duplicate,
       testing.tool_calls("", [
-        testing.ScriptedCall("call_1", "lookup", "{}"),
-        testing.ScriptedCall("call_1", "lookup", "{}"),
+        testing.tool_call("call_1", "lookup", "{}"),
+        testing.tool_call("call_1", "lookup", "{}"),
       ]),
     )
   let assert error.Protocol(_) = failure.error
   let assert Error(failure) =
     http_test_helpers.run_reply(
       unnamed,
-      testing.tool_calls("", [testing.ScriptedCall("call_1", "look.up", "{}")]),
+      testing.tool_calls("", [testing.tool_call("call_1", "look.up", "{}")]),
     )
   let assert error.Protocol(reason) = failure.error
   string.contains(reason, "invalid tool name") |> should.be_true
@@ -282,7 +282,7 @@ pub fn built_in_providers_reject_invalid_calls_by_default_test() {
 }
 
 pub fn invalid_json_arguments_follow_the_selected_checks_test() {
-  let calls = [testing.ScriptedCall("call_1", "lookup", "{not valid")]
+  let calls = [testing.tool_call("call_1", "lookup", "{not valid")]
   let wires = [
     #(message.OpenAI, openai.new("sk-scripted") |> openai.config),
     #(message.Anthropic, anthropic.new("sk-scripted") |> anthropic.config),
@@ -333,15 +333,17 @@ fn wrapped(text: String) -> String {
 
 /// Gemini carries arguments as a JSON value; `testing.events_for` sends
 /// only objects, so this body sends a value that is not an object.
-fn google_body(calls: List(testing.ScriptedCall)) -> String {
+/// Each call is `#(id, name, arguments_json)`.
+fn google_body(calls: List(#(String, String, String))) -> String {
   let parts =
     list.map(calls, fn(c) {
+      let #(id, name, arguments_json) = c
       "{\"functionCall\":{\"name\":\""
-      <> c.name
+      <> name
       <> "\",\"id\":\""
-      <> c.id
+      <> id
       <> "\",\"args\":"
-      <> c.arguments_json
+      <> arguments_json
       <> "}}"
     })
   "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":["
@@ -350,8 +352,8 @@ fn google_body(calls: List(testing.ScriptedCall)) -> String {
 }
 
 fn replay_cases() -> List(ReplayCase) {
-  let valid = testing.ScriptedCall("call_ok", "lookup", "{\"query\":\"gleam\"}")
-  let cut = testing.ScriptedCall("call_bad", "lookup", truncated)
+  let valid = testing.tool_call("call_ok", "lookup", "{\"query\":\"gleam\"}")
+  let cut = testing.tool_call("call_bad", "lookup", truncated)
   let replies = fn(wire) {
     #(
       testing.events_for(wire, testing.tool_calls("", [valid, cut])),
@@ -383,10 +385,10 @@ fn replay_cases() -> List(ReplayCase) {
     ReplayCase(
       "google",
       google.new("sk-scripted") |> google.config,
-      testing.Events([
+      testing.events([
         google_body([
-          valid,
-          testing.ScriptedCall("call_bad", "lookup", google_bad),
+          #("call_ok", "lookup", "{\"query\":\"gleam\"}"),
+          #("call_bad", "lookup", google_bad),
         ]),
       ]),
       testing.events_for(message.Google, testing.text("ok")),

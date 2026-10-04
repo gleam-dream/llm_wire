@@ -142,7 +142,7 @@ fn final_text_config() -> llm_wire.Config {
 pub fn structured_parser_uses_admitted_text_bound_test() {
   let raw = "{\"answer\":7}"
   let raw_bytes = string.byte_size(raw)
-  let reply = testing.Events(["event: final\ndata: " <> raw <> "\n\n"])
+  let reply = testing.events(["event: final\ndata: " <> raw <> "\n\n"])
   let request =
     llm_wire.request("gpt-test", [llm_wire.user("answer")])
     |> llm_wire.with_output(

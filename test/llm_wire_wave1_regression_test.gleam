@@ -254,7 +254,7 @@ fn assert_openai_call_rejected(name: String, arguments: String) -> Nil {
       request,
     )
   let assert Error(llm_wire.Failure(error: error.Protocol(_), ..)) =
-    http_test_helpers.run_reply(prepared, testing.Events([body]))
+    http_test_helpers.run_reply(prepared, testing.events([body]))
   Nil
 }
 

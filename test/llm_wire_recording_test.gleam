@@ -41,7 +41,7 @@ fn replies() -> List(testing.Reply) {
   [
     testing.text("hello"),
     testing.tool_calls("Checking", [
-      testing.ScriptedCall("c1", "echo", "{\"text\":\"hello\"}"),
+      testing.tool_call("c1", "echo", "{\"text\":\"hello\"}"),
     ]),
     testing.text("echoed"),
     testing.text("{\"answer\":42}"),
@@ -51,7 +51,7 @@ fn replies() -> List(testing.Reply) {
 /// The body chunks of a successful scripted reply (`testing.http_reply` is
 /// private now; an `Events` reply is its chunks).
 fn reply_chunks(reply: testing.Reply) -> List(#(Int, BitArray)) {
-  let assert testing.Events(chunks) = reply
+  let chunks = testing.chunks(reply)
   list.map(chunks, fn(chunk) { #(0, bit_array.from_string(chunk)) })
 }
 

@@ -187,6 +187,16 @@ says who chose the wait. `ProviderDelay(duration)` is the provider's own
 without counting an attempt; LLM Wire does not cap it. `Backoff` means the
 provider named no delay and the caller's backoff applies.
 
+A provider's safety stop is a failure, `error.ContentFiltered(stage,
+reason)`, with the provider's own reason: OpenAI's `incomplete_details.reason`
+`"content_filter"`, Anthropic's `stop_reason` `"refusal"`, Gemini's
+`finishReason` (`"SAFETY"`, `"RECITATION"`, ...) or `promptFeedback.blockReason`.
+`advise` answers `WillNotHelpUnchanged`: the prompt must change. A model that
+declines in its own words (OpenAI's refusal content) is the outcome
+`llm_wire.Refused`. `error.kind(error)` classifies every error into a closed
+`Kind` (`Transport`, `ProviderError`, `ContentPolicy`, `UnusableResponse`,
+`OverLimit`, `Ended`) that gains no variants, for an exhaustive `case`.
+
 ## Own the HTTP client
 
 Start one `http_gun.Client` at application startup and pass it to `run` and
@@ -227,15 +237,18 @@ let script =
 let assert Ok(client) = http_testing.playback(script, http_config.default())
 ```
 
-`text`, `tool_calls`, `refusal`, `output_limited` and `with_usage` describe a
-success. To test code configured for a built-in provider, keep its
-configuration and lower the reply into that wire with
-`testing.events_for(message.OpenAI, reply)`. The failures a provider produces
-are replies too: `rate_limited`, `overloaded` and `http_status` write the
-error status and body of a built-in provider, `interrupted` cuts a reply off
-after its content, `stream_error` ends it with the provider's in-band error
-event, and `invalid_output` is a final text that no schema
-accepts. `with_retry_after` adds the header to an exchange:
+`text`, `tool_calls` (with `tool_call(id:, name:, arguments_json:)`),
+`refusal`, `output_limited` and `with_usage` describe a reply. A `Reply` is
+opaque. To test code configured for a built-in provider, keep its
+configuration: `exchange` lowers the reply into that provider's wire
+(`testing.events_for(message.OpenAI, reply)` does it for a fake server).
+The failures a provider produces are replies too: `rate_limited`,
+`overloaded` and `http_status` write the error status and body of a built-in
+provider, `interrupted` cuts a reply off after its content, `stream_error`
+ends it with the provider's in-band error event, `content_filtered` and
+`prompt_blocked` are the provider's safety stop, and `invalid_output` is a
+final text that no schema accepts. `events(chunks)` sends chunks as given,
+for a custom wire. `with_retry_after` adds the header to an exchange:
 
 ```gleam
 let limited =
@@ -244,7 +257,8 @@ let limited =
 ```
 
 A fake HTTP server serves a reply with `testing.http_response(provider,
-reply)`, a `gleam/http` response, without unwrapping `Events` or `Status`. To
+reply)`, a `gleam/http` response; one that sends an event per chunk reads
+`testing.status`, `testing.chunks` and `testing.is_interrupted`. To
 feed code that takes a `llm_wire.Failure`, build one with
 `testing.failure(provider, error)` instead of running a call. HTTP Gun's
 cassettes record and replay the same exchanges.

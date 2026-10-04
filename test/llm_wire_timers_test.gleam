@@ -23,8 +23,8 @@ fn ping() -> String {
 /// The Anthropic events of a text answer, split so that pings can be
 /// placed between the opening and the rest.
 fn anthropic_text(text: String) -> #(String, List(String)) {
-  let assert testing.Events([start, ..rest]) =
-    testing.events_for(message.Anthropic, testing.text(text))
+  let assert [start, ..rest] =
+    testing.chunks(testing.events_for(message.Anthropic, testing.text(text)))
   #(start, rest)
 }
 
@@ -74,8 +74,11 @@ pub fn pings_do_not_count_as_the_first_token_test() {
 }
 
 pub fn the_idle_gap_ends_a_stalled_stream_test() {
-  let assert testing.Events(events) =
-    testing.events_for(message.Anthropic, testing.text("partial"))
+  let events =
+    testing.chunks(testing.events_for(
+      message.Anthropic,
+      testing.text("partial"),
+    ))
   // Opening, block start and one delta, then silence.
   let assert [a, b, c, ..] = events
   let server = serve([#(0, a), #(0, b), #(0, c), #(800, ping())])
@@ -87,8 +90,8 @@ pub fn the_idle_gap_ends_a_stalled_stream_test() {
 }
 
 pub fn pings_reset_the_idle_gap_test() {
-  let assert testing.Events([a, b, c, ..rest]) =
-    testing.events_for(message.Anthropic, testing.text("steady"))
+  let assert [a, b, c, ..rest] =
+    testing.chunks(testing.events_for(message.Anthropic, testing.text("steady")))
   let server =
     serve(
       list.flatten([
@@ -145,8 +148,11 @@ fn tool_fixtures_lookup() {
 }
 
 pub fn the_whole_call_bounds_a_stream_that_keeps_pinging_test() {
-  let assert testing.Events([a, b, c, ..]) =
-    testing.events_for(message.Anthropic, testing.text("forever"))
+  let assert [a, b, c, ..] =
+    testing.chunks(testing.events_for(
+      message.Anthropic,
+      testing.text("forever"),
+    ))
   let server =
     serve([#(0, a), #(0, b), #(0, c), ..list.repeat(#(50, ping()), 20)])
   let assert Error(failure) =

@@ -184,49 +184,34 @@ pub fn google_tool_call_duplicate_id_fails_test() {
   }
 }
 
-pub fn google_safety_prompt_feedback_refused_test() {
+pub fn google_safety_prompt_feedback_is_a_blocked_prompt_test() {
   let reducer = google.new(limits.default())
 
   let chunk =
     "{\"promptFeedback\":{\"blockReason\":\"SAFETY\",\"safetyRatings\":[{\"category\":\"HARM_CATEGORY_HATE_SPEECH\",\"probability\":\"HIGH\"}]}}"
   let assert Ok(#(reducer, [])) = google.step(reducer, event(chunk))
 
-  google.terminal(reducer)
-  |> should.equal(
-    Some(stream_types.StreamFinished(
-      outcome: stream_types.Refused("Prompt blocked by safety policy: SAFETY"),
-      usage: None,
-    )),
-  )
+  let assert Some(stream_types.StreamFailed(error: problem, ..)) =
+    google.terminal(reducer)
+  problem |> should.equal(error.ContentFiltered(error.InPrompt, "SAFETY"))
 }
 
-pub fn google_finish_reason_refusal_test() {
+pub fn google_filter_finish_reasons_are_content_filtered_test() {
   let reasons = [
-    #("SAFETY", "Google refused generation with reason: SAFETY"),
-    #("RECITATION", "Google refused generation with reason: RECITATION"),
-    #("BLOCKLIST", "Google refused generation with reason: BLOCKLIST"),
-    #(
-      "PROHIBITED_CONTENT",
-      "Google refused generation with reason: PROHIBITED_CONTENT",
-    ),
-    #("SPII", "Google refused generation with reason: SPII"),
+    "SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII",
+    "IMAGE_SAFETY", "IMAGE_PROHIBITED_CONTENT",
   ]
 
-  list_for_each(reasons, fn(pair) {
-    let #(reason, expected_refusal) = pair
+  list_for_each(reasons, fn(reason) {
     let reducer = google.new(limits.default())
     let chunk =
       "{\"candidates\":[{\"finishReason\":\""
       <> reason
       <> "\",\"content\":{\"role\":\"model\",\"parts\":[]}}]}"
     let assert Ok(#(reducer, [])) = google.step(reducer, event(chunk))
-    google.terminal(reducer)
-    |> should.equal(
-      Some(stream_types.StreamFinished(
-        outcome: stream_types.Refused(expected_refusal),
-        usage: None,
-      )),
-    )
+    let assert Some(stream_types.StreamFailed(error: problem, ..)) =
+      google.terminal(reducer)
+    problem |> should.equal(error.ContentFiltered(error.InOutput, reason))
   })
 }
 
@@ -553,7 +538,7 @@ pub fn google_loopback_integration_caller_owned_tool_round_test() {
   fake_server.stop(server)
 }
 
-pub fn google_loopback_integration_refusal_test() {
+pub fn google_loopback_integration_blocked_prompt_test() {
   use owned_http <- http_test_helpers.with_client
   let assert Ok(server) = fake_server.start()
   process.spawn_unlinked(fn() {
@@ -577,10 +562,11 @@ pub fn google_loopback_integration_refusal_test() {
     llm_wire.request("gemini-2.5-flash", [message.User("harmful query")])
   let assert Ok(prepared) = llm_wire.prepare(config, request)
 
-  let assert Ok(llm_wire.Refused(reason:, ..)) =
-    llm_wire.run(owned_http, prepared)
+  let assert Error(failure) = llm_wire.run(owned_http, prepared)
 
-  reason |> should.equal("Prompt blocked by safety policy: SAFETY")
+  failure.error
+  |> should.equal(error.ContentFiltered(error.InPrompt, "SAFETY"))
+  failure.sent |> should.equal(llm_wire.Completed)
   fake_server.stop(server)
 }
 

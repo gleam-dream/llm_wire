@@ -1,10 +1,10 @@
 //// Scripted LLM replies for tests, offline through HTTP Gun's scripted
 //// client.
 ////
-//// Describe a reply with `text`, `tool_calls`, `refusal` or
-//// `output_limited`, pair it with a prepared call with `exchange`, and give
-//// the exchanges to an `http_gun/testing` client. The call then runs the
-//// ordinary `llm_wire.run` path:
+//// Describe a reply with `text`, `tool_calls`, `refusal`, `output_limited`,
+//// `content_filtered` or `prompt_blocked`, pair it with a prepared call with
+//// `exchange`, and give the exchanges to an `http_gun/testing` client. The
+//// call then runs the ordinary `llm_wire.run` path:
 ////
 //// ```gleam
 //// import http_gun/config as http_config
@@ -22,9 +22,10 @@
 //// ```
 ////
 //// `config()` selects a provider-neutral scripted wire. To test code that
-//// talks to a built-in provider, keep its configuration and lower the reply
-//// into that provider's wire with `events_for(message.OpenAI, reply)`,
-//// instead of writing the provider's server-sent events by hand.
+//// talks to a built-in provider, keep its configuration: `exchange` lowers
+//// the reply into the prepared provider's wire, so no test writes the
+//// provider's server-sent events by hand. `events(chunks)` sends chunks
+//// exactly as given, for a custom provider's wire.
 ////
 //// A provider's failures are scripted the same way. `rate_limited`,
 //// `overloaded` and `http_status` write the error status and body of a
@@ -39,8 +40,10 @@
 //// ```
 ////
 //// A fake HTTP server serves a reply without unwrapping it:
-//// `http_response(message.OpenAI, reply)` is a `gleam/http` response. To feed
-//// code that takes a `llm_wire.Failure`, build one with `failure` instead of
+//// `http_response(message.OpenAI, reply)` is a `gleam/http` response. A
+//// server that sends one chunk per event reads `status`, `chunks` and
+//// `is_interrupted` of `events_for(provider, reply)` instead. To feed code
+//// that takes a `llm_wire.Failure`, build one with `failure` instead of
 //// running a call.
 
 import gleam/bit_array
@@ -60,35 +63,62 @@ import llm_wire/error
 import llm_wire/internal/adapter
 import llm_wire/internal/api
 import llm_wire/internal/call
+import llm_wire/internal/config
 import llm_wire/internal/ids
 import llm_wire/message.{type Provider, type Usage}
 import llm_wire/provider
 
-/// One scripted HTTP exchange.
-pub type Reply {
-  /// A successful event stream delivered as these chunks, one per read,
-  /// followed by the end of the stream. Chunks may split events anywhere.
-  Events(chunks: List(String))
-  /// These chunks followed by a transport failure before the end.
-  Interrupted(chunks: List(String))
-  /// An HTTP status other than 200; the call fails with `error.Status`.
+/// One scripted HTTP reply: a stream of server-sent events, or an error
+/// status. Build it with `text`, `tool_calls`, `refusal`, `output_limited`,
+/// `content_filtered`, `prompt_blocked`, the failure builders or `events`;
+/// serve it with `exchange` or `http_response`.
+///
+/// A reply is in the provider-neutral scripted wire until `events_for`
+/// lowers it into a built-in provider's wire. A lowered reply, and one
+/// given as is with `events`, stays in its wire: `events_for` leaves it
+/// unchanged.
+pub opaque type Reply {
+  Stream(wire: Wire, chunks: List(String), ending: Ending)
   Status(code: Int, body: String)
 }
 
-/// A tool call the scripted provider returns. Its fields are wire values:
-/// the runtime admits them exactly as it admits a real provider's call.
-pub type ScriptedCall {
+type Wire {
+  /// The scripted wire, which `events_for` can lower.
+  Scripted
+  /// A provider's own wire.
+  Native
+}
+
+type Ending {
+  /// The stream ends normally after its chunks.
+  Ends
+  /// The connection drops after the chunks, before the end.
+  CutOff
+}
+
+/// A tool call the scripted provider returns. Build it with `tool_call`.
+pub opaque type ScriptedCall {
   ScriptedCall(id: String, name: String, arguments_json: String)
+}
+
+/// A tool call for `tool_calls`. Its fields are wire values: the runtime
+/// admits them exactly as it admits a real provider's call.
+pub fn tool_call(
+  id id: String,
+  name name: String,
+  arguments_json arguments_json: String,
+) -> ScriptedCall {
+  ScriptedCall(id:, name:, arguments_json:)
 }
 
 /// A final text answer. Non-empty text streams as one `TextDelta`.
 pub fn text(text: String) -> Reply {
-  Events(list.append(text_events(text), [end_event("complete", "")]))
+  scripted(list.append(text_events(text), [end_event("complete", "")]))
 }
 
 /// Tool calls, optionally after assistant text, awaiting results.
 pub fn tool_calls(text: String, calls: List(ScriptedCall)) -> Reply {
-  Events(
+  scripted(
     list.flatten([
       text_events(text),
       list.map(calls, call_event),
@@ -97,14 +127,40 @@ pub fn tool_calls(text: String, calls: List(ScriptedCall)) -> Reply {
   )
 }
 
-/// A refusal with its reason.
+/// The model declines in its own words; the call answers
+/// `llm_wire.Refused(reason:, ..)`. Only OpenAI's wire and the scripted wire
+/// carry a model's refusal: `events_for` panics for Anthropic and Google,
+/// whose only refusal on the wire is a safety stop (`content_filtered`).
 pub fn refusal(reason: String) -> Reply {
-  Events([end_event("refusal", reason)])
+  scripted([end_event("refusal", reason)])
 }
 
 /// Output cut off at the token limit after `partial_text`.
 pub fn output_limited(partial_text: String) -> Reply {
-  Events(list.append(text_events(partial_text), [end_event("length", "")]))
+  scripted(list.append(text_events(partial_text), [end_event("length", "")]))
+}
+
+/// The provider's content filter stops the output after `partial_text`.
+/// The call fails with `error.ContentFiltered(error.InOutput, reason)` and
+/// `sent: Completed`, where `reason` is the wire's own value: OpenAI's
+/// `response.incomplete` with `incomplete_details.reason`
+/// `"content_filter"`, Anthropic's `stop_reason` `"refusal"`, Gemini's
+/// `finishReason` `"SAFETY"`, and `"content_filter"` on the scripted wire.
+pub fn content_filtered(partial_text: String) -> Reply {
+  scripted(
+    list.append(text_events(partial_text), [
+      end_event("filtered", "content_filter"),
+    ]),
+  )
+}
+
+/// The provider's content filter blocks the prompt before generation. The
+/// call fails with `error.ContentFiltered(error.InPrompt, reason)`: Gemini's
+/// `promptFeedback.blockReason` `"SAFETY"`, and `"content_filter"` on the
+/// scripted wire. OpenAI and Anthropic reject such a prompt with an error
+/// status instead (`http_status`), so `events_for` panics for them.
+pub fn prompt_blocked() -> Reply {
+  scripted([end_event("blocked", "content_filter")])
 }
 
 /// A final text that is not valid JSON. A plain call answers with it; a
@@ -113,14 +169,55 @@ pub fn invalid_output() -> Reply {
   text("this is not valid structured output")
 }
 
+/// A successful stream of exactly these chunks, one per read, then the end
+/// of the stream. Chunks may split events anywhere. Use it for a wire the
+/// builders do not write, such as a custom provider's or a provider event
+/// with fields the builders leave out; `events_for` leaves it unchanged.
+pub fn events(chunks: List(String)) -> Reply {
+  Stream(Native, chunks, Ends)
+}
+
+fn scripted(chunks: List(String)) -> Reply {
+  Stream(Scripted, chunks, Ends)
+}
+
 /// The connection drops after the reply's content, before its end, so the
 /// call fails with an `error.Http` transport failure and `sent: MaybeSent`.
 /// Apply it before `events_for`, which then also drops the provider's
-/// terminal events. A `Status` reply is unchanged.
+/// terminal events. A reply from `events` keeps every chunk; a `Status`
+/// reply is unchanged.
 pub fn interrupted(reply: Reply) -> Reply {
   case reply {
-    Events(chunks) -> Interrupted(drop_end(chunks))
-    Interrupted(_) | Status(..) -> reply
+    Stream(Scripted, chunks, _) -> Stream(Scripted, drop_end(chunks), CutOff)
+    Stream(Native, chunks, _) -> Stream(Native, chunks, CutOff)
+    Status(..) -> reply
+  }
+}
+
+/// The HTTP status a server sends for `reply`: 200 for a stream.
+pub fn status(reply: Reply) -> Int {
+  case reply {
+    Stream(..) -> 200
+    Status(code, _) -> code
+  }
+}
+
+/// The body chunks a server sends for `reply`, in order: one per event for
+/// a stream (lower it first with `events_for` for a built-in provider), the
+/// whole body for an error status.
+pub fn chunks(reply: Reply) -> List(String) {
+  case reply {
+    Stream(_, chunks, _) -> chunks
+    Status(_, body) -> [body]
+  }
+}
+
+/// Whether a server must drop the connection after `chunks(reply)` instead
+/// of ending the response: true after `interrupted`.
+pub fn is_interrupted(reply: Reply) -> Bool {
+  case reply {
+    Stream(_, _, CutOff) -> True
+    Stream(_, _, Ends) | Status(..) -> False
   }
 }
 
@@ -151,8 +248,9 @@ pub fn overloaded(provider: Provider) -> Reply {
 }
 
 /// An error `status` whose body carries `message`, shaped as `provider`
-/// shapes its errors (a `Custom` provider gets the bare message). The call
-/// fails with `error.Status(status, ..)`. `Status` sends any body as is.
+/// shapes its errors (a `Custom` provider gets the bare message, so
+/// `http_status(message.Custom("scripted"), 503, "busy")` sends `busy` as
+/// is). The call fails with `error.Status(status, ..)`.
 pub fn http_status(provider: Provider, status: Int, message: String) -> Reply {
   Status(status, error_body(provider, status, message))
 }
@@ -211,8 +309,10 @@ pub fn failure(provider: Provider, error: error.Error) -> llm_wire.Failure {
           http_error.NotSent -> llm_wire.NotSent
           http_error.MaybeSent -> llm_wire.MaybeSent
         }
-      error.Status(..) | error.Provider(..) | error.InvalidOutput(..) ->
-        llm_wire.Completed
+      error.Status(..)
+      | error.Provider(..)
+      | error.InvalidOutput(..)
+      | error.ContentFiltered(..) -> llm_wire.Completed
       error.Protocol(_)
       | error.LimitExceeded(..)
       | error.DeadlineExceeded(_)
@@ -226,14 +326,14 @@ pub fn failure(provider: Provider, error: error.Error) -> llm_wire.Failure {
 }
 
 /// `reply` as `provider` would send it, for a fake HTTP server: a
-/// `gleam/http` response with the whole body in one string. Events get
-/// status 200 and `text/event-stream`; a `Status` reply keeps its status,
+/// `gleam/http` response with the whole body in one string. A stream gets
+/// status 200 and `text/event-stream`; an error status keeps its status,
 /// and its body is `application/json` when it starts with `{`, else
-/// `text/plain`. A server that must cut an interrupted reply off does so
-/// itself; here it is the chunks so far.
+/// `text/plain`. A server that must cut an interrupted reply off
+/// (`is_interrupted`) does so itself; here it is the chunks so far.
 pub fn http_response(provider: Provider, reply: Reply) -> HttpResponse(String) {
   case events_for(provider, reply) {
-    Events(chunks) | Interrupted(chunks) ->
+    Stream(_, chunks, _) ->
       response.new(200)
       |> response.set_header("content-type", "text/event-stream")
       |> response.set_body(string.concat(chunks))
@@ -344,9 +444,8 @@ fn google_status(status: Int) -> String {
 /// `error.status`) and `message`. The call fails with
 /// `error.Provider(Some(code), message)`, `sent: Completed` and the
 /// partial output. The result is already in `provider`'s wire, like
-/// `events_for`'s: pass it to `exchange` as is, not through `events_for`.
-/// Pass the reply before lowering; a `Status` or `Interrupted` reply is
-/// unchanged.
+/// `events_for`'s. Pass the reply before lowering; a lowered reply, one
+/// from `events` and a `Status` reply are unchanged.
 pub fn stream_error(
   provider: Provider,
   reply: Reply,
@@ -371,12 +470,15 @@ fn with_closing_event(
   closing: String,
 ) -> Reply {
   case reply {
-    Events(_) ->
-      case events_for(provider, interrupted(reply)) {
-        Interrupted(chunks) -> Events(list.append(chunks, [closing]))
-        other -> other
+    Stream(Scripted, _, _) -> {
+      let lowered = events_for(provider, interrupted(reply))
+      let wire = case provider {
+        message.Custom(_) -> Scripted
+        _ -> Native
       }
-    Interrupted(_) | Status(..) -> reply
+      Stream(wire, list.append(chunks(lowered), [closing]), Ends)
+    }
+    Stream(Native, _, _) | Status(..) -> reply
   }
 }
 
@@ -476,7 +578,8 @@ fn google_code(status: String) -> Int {
   }
 }
 
-/// Report `usage` with the reply. A `Status` reply is unchanged.
+/// Report `usage` with the reply. Apply it before `events_for`; a lowered
+/// reply, one from `events` and a `Status` reply are unchanged.
 pub fn with_usage(reply: Reply, usage: Usage) -> Reply {
   let event =
     sse_event(
@@ -488,21 +591,24 @@ pub fn with_usage(reply: Reply, usage: Usage) -> Reply {
       ]),
     )
   case reply {
-    Events(chunks) -> Events([event, ..chunks])
-    Interrupted(chunks) -> Interrupted([event, ..chunks])
-    Status(..) -> reply
+    Stream(Scripted, chunks, ending) ->
+      Stream(Scripted, [event, ..chunks], ending)
+    Stream(Native, _, _) | Status(..) -> reply
   }
 }
 
-/// One finite HTTP Gun exchange answering `prepared` with `reply`.
+/// One finite HTTP Gun exchange answering `prepared` with `reply`, lowered
+/// into the wire of `prepared`'s provider as `events_for` lowers it.
 /// Recorded requests drop HTTP Gun's credential headers.
 pub fn exchange(
   prepared: llm_wire.Prepared(o),
   reply: Reply,
 ) -> http_testing.Exchange {
+  let provider =
+    adapter.provider(config.adapter(call.prepared_config(prepared)))
   http_testing.exchange(
     api.http_request(call.prepared_call(prepared)),
-    http_reply(reply),
+    http_reply(events_for(provider, reply)),
   )
 }
 
@@ -524,22 +630,18 @@ pub fn config() -> llm_wire.Config {
 }
 
 fn http_reply(reply: Reply) -> http_testing.Reply {
-  let #(status, chunks, ending) = case reply {
-    Events(chunks) -> #(200, chunks, http_testing.Finished([]))
-    Interrupted(chunks) -> #(
-      200,
-      chunks,
+  let ending = case is_interrupted(reply) {
+    True ->
       http_testing.Aborted(http_error.new(
         http_error.RequestFailed(http_error.PeerClosed),
         http_error.MaybeSent,
-      )),
-    )
-    Status(code, text) -> #(code, [text], http_testing.Finished([]))
+      ))
+    False -> http_testing.Finished([])
   }
   http_testing.Respond(
-    response.new(status)
+    response.new(status(reply))
       |> response.set_header("content-type", "text/event-stream")
-      |> response.set_body(list.map(chunks, bit_array.from_string)),
+      |> response.set_body(list.map(chunks(reply), bit_array.from_string)),
     ending,
   )
 }
@@ -734,6 +836,16 @@ fn step(
           Ok(adapter.ToolCalls(turn.text, calls, None, None, turn.usage))
         "refusal", [] -> Ok(adapter.Refusal(reason, turn.usage))
         "length", _ -> Ok(adapter.OutputLimited(turn.text, calls, turn.usage))
+        "filtered", _ ->
+          Ok(adapter.Failed(
+            error.ContentFiltered(error.InOutput, reason),
+            turn.usage,
+          ))
+        "blocked", [] ->
+          Ok(adapter.Failed(
+            error.ContentFiltered(error.InPrompt, reason),
+            turn.usage,
+          ))
         _, _ ->
           Error(error.Protocol(
             "Scripted end does not match its calls: "
@@ -804,20 +916,21 @@ type Script {
 }
 
 /// Lower a scripted reply into the server-sent events of a built-in
-/// provider's wire, so a test keeps the provider's real configuration. Each
-/// event becomes one chunk. `Status` replies and `Custom` providers are
-/// returned unchanged.
+/// provider's wire, for a fake server that serves a provider's real
+/// configuration (`exchange` lowers by itself). Each event becomes one
+/// chunk. A reply already in a wire (lowered, or from `events`), a `Status`
+/// reply and a `Custom` provider leave it unchanged.
 ///
 /// The provider's reducer shapes some values: Gemini re-encodes call
 /// arguments, which must be a JSON object (other text is sent as
-/// `{"unparsed_arguments": text}`), and reports a refusal as
-/// `"Prompt blocked by safety policy: " <> reason`; Anthropic always
-/// reports usage.
+/// `{"unparsed_arguments": text}`); Anthropic always reports usage.
+/// `refusal` panics on Anthropic and Google and `prompt_blocked` on OpenAI
+/// and Anthropic, whose wires do not carry them.
 pub fn events_for(provider: Provider, reply: Reply) -> Reply {
   case reply, provider {
-    Status(..), _ | _, message.Custom(_) -> reply
-    Events(chunks), _ -> Events(lower(provider, chunks))
-    Interrupted(chunks), _ -> Interrupted(lower(provider, chunks))
+    Status(..), _ | Stream(Native, _, _), _ | _, message.Custom(_) -> reply
+    Stream(Scripted, chunks, ending), _ ->
+      Stream(Native, lower(provider, chunks), ending)
   }
 }
 
@@ -934,19 +1047,34 @@ fn openai_events(script: Script) -> List(String) {
       ]
     })
     |> list.flatten
-  let status = case script.stop {
-    "length" -> "incomplete"
-    _ -> "completed"
+  // An incomplete response ends with `response.incomplete`, whose
+  // `incomplete_details.reason` names the limit or the content filter.
+  let #(name, status, incomplete) = case script.stop {
+    "length" -> #(
+      "response.incomplete",
+      "incomplete",
+      Some("max_output_tokens"),
+    )
+    "filtered" -> #("response.incomplete", "incomplete", Some("content_filter"))
+    "blocked" -> unsupported(message.OpenAI, "prompt_blocked")
+    _ -> #("response.completed", "completed", None)
   }
   let completed =
     event(
-      "response.completed",
+      name,
       json.object([
+        #("type", json.string(name)),
         #(
           "response",
           json.object([
             #("id", json.string("resp_scripted")),
             #("status", json.string(status)),
+            #(
+              "incomplete_details",
+              json.nullable(incomplete, fn(reason) {
+                json.object([#("reason", json.string(reason))])
+              }),
+            ),
             #("usage", json.nullable(script.usage, usage_json)),
           ]),
         ),
@@ -1014,7 +1142,8 @@ fn anthropic_events(script: Script) -> List(String) {
     None -> #(0, 0)
   }
   let text = case script.stop {
-    "refusal" -> script.reason
+    "refusal" -> unsupported(message.Anthropic, "refusal")
+    "blocked" -> unsupported(message.Anthropic, "prompt_blocked")
     _ -> script.text
   }
   let text_blocks = case text {
@@ -1064,7 +1193,7 @@ fn anthropic_events(script: Script) -> List(String) {
   let stop_reason = case script.stop {
     "tool_calls" -> "tool_use"
     "length" -> "max_tokens"
-    "refusal" -> "refusal"
+    "filtered" -> "refusal"
     _ -> "end_turn"
   }
   list.flatten([
@@ -1156,11 +1285,10 @@ fn google_events(script: Script) -> List(String) {
     None -> ""
   }
   case script.stop {
-    "refusal" -> [
+    "refusal" -> unsupported(message.Google, "refusal")
+    "blocked" -> [
       "data: {\"promptFeedback\":"
-      <> json.to_string(
-        json.object([#("blockReason", json.string(script.reason))]),
-      )
+      <> json.to_string(json.object([#("blockReason", json.string("SAFETY"))]))
       <> usage_field
       <> "}\n\n",
     ]
@@ -1182,6 +1310,7 @@ fn google_events(script: Script) -> List(String) {
         })
       let finish = case script.stop {
         "length" -> "MAX_TOKENS"
+        "filtered" -> "SAFETY"
         _ -> "STOP"
       }
       [
@@ -1194,6 +1323,16 @@ fn google_events(script: Script) -> List(String) {
         <> "}\n\n",
       ]
     }
+  }
+}
+
+fn unsupported(provider: Provider, builder: String) -> a {
+  panic as {
+    "llm_wire/testing: "
+    <> message.provider_name(provider)
+    <> "'s wire has no `"
+    <> builder
+    <> "`; see the builder's documentation"
   }
 }
 

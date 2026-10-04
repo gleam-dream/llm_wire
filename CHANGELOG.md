@@ -2,6 +2,36 @@
 
 ## Unreleased — initial release candidate
 
+### Changed in round 6
+
+[docs/migration-wave-5.md](docs/migration-wave-5.md#round-6) lists each item
+with every call site to change.
+
+- **Breaking:** `llm_wire/testing.Reply` and `ScriptedCall` are opaque. Build
+  replies with the builders, `events(chunks)` for chunks sent as given and
+  `tool_call(id:, name:, arguments_json:)` for a call; read them with
+  `status`, `chunks` and `is_interrupted`, or serve them with `exchange` and
+  `http_response`. `exchange` now lowers a scripted reply into the prepared
+  provider's wire, and `events_for` leaves a reply already in a wire
+  unchanged, so lowering twice is harmless.
+- **Breaking:** a provider's content filter is `error.ContentFiltered(stage,
+reason)`, not an outcome. OpenAI's `response.incomplete` with
+  `incomplete_details.reason: "content_filter"` was `OutputLimited`;
+  Anthropic's `stop_reason: "refusal"` and Gemini's filter `finishReason`
+  values and `promptFeedback.blockReason` were `Refused` with a prose reason.
+  `reason` is now the provider's own value, `stage` is `InPrompt` or
+  `InOutput`, `advise` answers `WillNotHelpUnchanged` and `sent` is
+  `Completed`. Gemini's `IMAGE_SAFETY` and `IMAGE_PROHIBITED_CONTENT` join
+  the filter reasons. An OpenAI incomplete reason other than
+  `max_output_tokens` and `content_filter` is `error.Provider(Some(reason),
+..)`. `Refused` remains for a model's own refusal (OpenAI refusal content,
+  custom providers).
+- `error.kind(error) -> Kind` and `error.kind_name(kind)`: a closed
+  classification of `Error` that gains no variants.
+- `testing.content_filtered(partial_text)` and `testing.prompt_blocked()`
+  script the safety stop on each wire. `testing.refusal` panics when lowered
+  to Anthropic or Google, whose wires carry no model refusal.
+
 ### Changed in wave 5
 
 [docs/migration-wave-5.md](docs/migration-wave-5.md) lists each item with
