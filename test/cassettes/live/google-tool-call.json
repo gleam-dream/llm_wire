@@ -24,20 +24,20 @@
           ["vary", "X-Origin"],
           ["vary", "Referer"],
           ["transfer-encoding", "chunked"],
-          ["date", "Sun, 04 Oct 2026 10:01:56 GMT"],
+          ["date", "Sun, 04 Oct 2026 12:49:02 GMT"],
           ["server", "scaffolding on HTTPServer2"],
           ["x-xss-protection", "0"],
           ["x-frame-options", "SAMEORIGIN"],
           ["x-content-type-options", "nosniff"],
-          ["server-timing", "gfet4t7; dur=1016"],
+          ["server-timing", "gfet4t7; dur=817"],
           ["alt-svc", "h3=\":443\"; ma=2592000,h3-29=\":443\"; ma=2592000"]
         ],
         "chunks": [
           {
-            "text": "data: {\"candidates\": [{\"content\": {\"parts\": [{\"functionCall\": {\"name\": \"get_weather\",\"args\": {\"city\": \"Paris\"},\"id\": \"call_1909514\"},\"thoughtSignature\": \"EqsCCqgCAWkUfROkjTt8AVqIh3kgi1tCDy3YkNjPQIo7+5kGosIvtsylSNLRS7532v5oEcgRT1l20vvKigV1EypPdBBuShE54IZVFJkJfpKQvTnyOJlmlMZYIScwwWn60AuPnOSkGpZxQiNi8CaXbbd2SdmAb/VabB2LRs4laVlvFy5ZJKSOW1DSCRgPbTPKrj13I5DqJ2LoKDGGv5cARK4/hEAfZNu0obDTr5P9eD68FiCt4n3Y5K4vvbPyl3FK79l/6XyEinlwC/id6ed7l/R9wXdpEqmmIcwnOcldE+qWDRRkakJovOh5jrdfcY8DxXz7Ccaoonm/aFhM9HDdNtE3BT39tytxT99ySs0uhIovcINrYC/JdOoFO4QCHOGSiz1LjKlslBPx739O1TY=\"}],\"role\": \"model\"},\"index\": 0}],\"usageMetadata\": {\"promptTokenCount\": 57,\"candidatesTokenCount\": 16,\"totalTokenCount\": 115,\"promptTokensDetails\": [{\"modality\": \"TEXT\",\"tokenCount\": 57}],\"thoughtsTokenCount\": 42,\"serviceTier\": \"standard\"},\"modelVersion\": \"gemini-3.8-flash\",\"responseId\": \"FCTCape2B4zOz7IP-9v80Ac\"}\r\n\r\n"
+            "text": "data: {\"candidates\": [{\"content\": {\"parts\": [{\"functionCall\": {\"name\": \"get_weather\",\"args\": {\"city\": \"Paris\"},\"id\": \"call_246980\"},\"thoughtSignature\": \"EqQCCqECAWkUfRNrtLcESRhNm+vQOriyuUncg5rE8SMpa85wdOJ3IPsSMmSlGtv+8cJQLqa9qyF9vkTjuYZf6kYaOQ1q9yPaFjL+l40xcNSGfoc2bIn67hsAZfRrlxqOQu31pFwNdzUcteWYdwQPCLe9gSjpaeHxc0CcDRPtY/rpMOBRftNCR1Uj4qbq+hBCSR+qbcpoaHWRVvTmb0eK+bsm1F+Dk2Hydjcg65ercTIkcqZ7z8WO5M5m+efPRqvC4anv6h1c7dz1V7+0LTxn9tPGs+8uphbL9e70nwjG3BEEqxivLZZ4zInPovop5XJljam8Lt+cO+hXoeCdNKyabHGhucSqiwoMqcic1SHhI2h2PoUjUD1ebhQym0LHjvuSj+Z1JfCiLg==\"}],\"role\": \"model\"},\"index\": 0}],\"usageMetadata\": {\"promptTokenCount\": 57,\"candidatesTokenCount\": 16,\"totalTokenCount\": 113,\"promptTokensDetails\": [{\"modality\": \"TEXT\",\"tokenCount\": 57}],\"thoughtsTokenCount\": 40,\"serviceTier\": \"standard\"},\"modelVersion\": \"gemini-3.8-flash\",\"responseId\": \"PUvCauzbM5e9qtsP06HTuAY\"}\r\n\r\n"
           },
           {
-            "text": "data: {\"candidates\": [{\"content\": {\"parts\": [{\"text\": \"\"}],\"role\": \"model\"},\"finishReason\": \"STOP\",\"index\": 0}],\"usageMetadata\": {\"promptTokenCount\": 57,\"candidatesTokenCount\": 16,\"totalTokenCount\": 115,\"promptTokensDetails\": [{\"modality\": \"TEXT\",\"tokenCount\": 57}],\"thoughtsTokenCount\": 42,\"serviceTier\": \"standard\"},\"modelVersion\": \"gemini-3.8-flash\",\"responseId\": \"FCTCape2B4zOz7IP-9v80Ac\"}\r\n\r\n"
+            "text": "data: {\"candidates\": [{\"content\": {\"parts\": [{\"text\": \"\"}],\"role\": \"model\"},\"finishReason\": \"STOP\",\"index\": 0}],\"usageMetadata\": {\"promptTokenCount\": 57,\"candidatesTokenCount\": 16,\"totalTokenCount\": 113,\"promptTokensDetails\": [{\"modality\": \"TEXT\",\"tokenCount\": 57}],\"thoughtsTokenCount\": 40,\"serviceTier\": \"standard\"},\"modelVersion\": \"gemini-3.8-flash\",\"responseId\": \"PUvCauzbM5e9qtsP06HTuAY\"}\r\n\r\n"
           }
         ],
         "ending": {
