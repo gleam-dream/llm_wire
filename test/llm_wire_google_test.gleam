@@ -378,13 +378,17 @@ pub fn google_structured_output_accepts_valid_schema_and_rejects_nullable_test()
       let body = llm_wire.request_json(prep)
       string.contains(body, "\"responseMimeType\":\"application/json\"")
       |> should.equal(True)
-      string.contains(body, "\"responseSchema\":{")
+      // The JSON Schema field: Gemini's OpenAPI `responseSchema` rejects
+      // `additionalProperties` (live, 2026-10-04).
+      string.contains(body, "\"responseJsonSchema\":{")
       |> should.equal(True)
+      string.contains(body, "\"responseSchema\"")
+      |> should.equal(False)
     }
     _ -> should.fail()
   }
 
-  // Nullable schema: Google Gemini responseSchema does not admit anyOf / nullables, must be rejected
+  // Nullable schema: still refused for Gemini (not verified live)
   let invalid_codec =
     tool_fixtures.one_field("maybe_note", codec.nullable(codec.string()))
   case

@@ -196,7 +196,7 @@ fn google_generation_config(
   let format_fields = case structured_format {
     Some(adapter.OutputFormat(_, schema_json)) -> [
       #("responseMimeType", json.string("application/json")),
-      #("responseSchema", schema_json),
+      #("responseJsonSchema", schema_json),
     ]
     None -> []
   }
