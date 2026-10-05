@@ -156,6 +156,8 @@ pub type Setting {
 pub type RequestProblem {
   /// Classification state must be text, an object or an array within JSON limits.
   InvalidClassificationContent(reason: String)
+  /// The classification wire cannot provide the requested question evidence.
+  ClassificationQuestionUnsupported(question_id: String)
   MaxTokensNotPositive
   TemperatureOutOfRange
   TopPOutOfRange
@@ -342,6 +344,8 @@ fn setting_name(setting: Setting) -> String {
 
 fn describe_problem(problem: RequestProblem) -> String {
   case problem {
+    ClassificationQuestionUnsupported(id) ->
+      "classification question is unsupported by this provider: " <> id
     InvalidClassificationContent(reason) ->
       "invalid classification content: " <> reason
     MaxTokensNotPositive -> "max_tokens must be positive"

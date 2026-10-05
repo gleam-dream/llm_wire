@@ -24,13 +24,19 @@ fn request() -> classify.Request(question.Noul) {
 fn post(
   config: support.Config,
 ) -> Result(classify.Outcome(question.Noul), llm_wire.Failure) {
-  let prepared = classify.prepare(config.settings, request()) |> should.be_ok
+  let prepared =
+    classify.prepare(classify.typesafe(), config.settings, request())
+    |> should.be_ok
   classify.run(config.http, prepared)
 }
 
 pub fn credentials_and_endpoints_are_checked_locally_test() {
   list.each(["", "\r\nsecret", "secret\u{0}"], fn(key) {
-    classify.prepare(classify.typesafe(fn() { key }), request())
+    classify.prepare(
+      classify.typesafe(),
+      classify.config(fn() { key }),
+      request(),
+    )
     |> should.be_error
   })
   list.each(
@@ -43,6 +49,7 @@ pub fn credentials_and_endpoints_are_checked_locally_test() {
     ],
     fn(url) {
       classify.prepare(
+        classify.typesafe(),
         support.settings() |> classify.with_endpoint(url),
         request(),
       )

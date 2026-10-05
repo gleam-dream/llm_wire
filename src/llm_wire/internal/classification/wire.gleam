@@ -139,6 +139,7 @@ pub fn keys(fields: List(#(String, a))) -> List(String) {
 
 pub fn same_keys(fields: List(#(String, a)), expected: List(String)) -> Bool {
   list.length(fields) == list.length(expected)
+  && list.length(list.unique(keys(fields))) == list.length(expected)
   && list.all(fields, fn(field) { list.contains(expected, field.0) })
 }
 

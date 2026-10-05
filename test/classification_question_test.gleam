@@ -1,8 +1,11 @@
 import gleam/list
 import gleam/option.{None}
+import gleam/result
 import gleeunit/should
 import json/blueprint/value
 import llm_wire/classify/question
+import llm_wire/internal/classification/typesafe
+import llm_wire/internal/classification/wire
 
 type Decision {
   Approve
@@ -33,7 +36,7 @@ pub fn typed_batch_preserves_boolean_choice_and_rubric_evidence_test() {
     json(
       "{\"correct\":{\"type\":\"noul\",\"noul\":0.8},\"decision\":{\"type\":\"choice\",\"choice\":\"approve\",\"probabilities\":{\"revise\":0.2,\"approve\":0.8},\"confidence\":0.7},\"quality\":{\"type\":\"score\",\"score\":1.8,\"probabilities\":{\"0\":0.0,\"1\":0.2,\"2\":0.8},\"legend\":{\"0\":\"incorrect\",\"1\":\"partial\",\"2\":\"correct\"},\"confidence\":0.7}}",
     )
-  let assert Ok(#(yes, #(decision, rating))) = question.decode(batch, answers)
+  let assert Ok(#(yes, #(decision, rating))) = decode(batch, answers)
   yes.yes |> should.equal(0.8)
   decision.selected |> should.equal(Approve)
   decision.label |> should.equal("approve")
@@ -82,18 +85,18 @@ pub fn a_probability_is_checked_before_float_rounding_and_underflow_test() {
   list.each(
     ["1.00000000000000001", "-0.00000000000000001", "1e-500", "2", "\"0.8\""],
     fn(raw) {
-      question.decode(
+      decode(
         batch,
         json("{\"answer\":{\"type\":\"noul\",\"noul\":" <> raw <> "}}"),
       )
       |> should.be_error
     },
   )
-  question.decode(batch, json("{\"answer\":{\"type\":\"noul\",\"noul\":1}}"))
+  decode(batch, json("{\"answer\":{\"type\":\"noul\",\"noul\":1}}"))
   |> should.be_ok
   |> fn(answer) { answer.yes }
   |> should.equal(1.0)
-  question.decode(batch, json("{\"answer\":{\"type\":\"noul\",\"noul\":0}}"))
+  decode(batch, json("{\"answer\":{\"type\":\"noul\",\"noul\":0}}"))
   |> should.be_ok
   |> fn(answer) { answer.yes }
   |> should.equal(0.0)
@@ -116,12 +119,12 @@ pub fn unknown_incomplete_and_inconsistent_choice_evidence_is_rejected_test() {
       "{\"type\":\"choice\",\"choice\":\"approve\",\"probabilities\":{\"approve\":0.8,\"revise\":0.2},\"confidence\":1.1}",
     ],
     fn(answer) {
-      question.decode(batch, json("{\"decision\":" <> answer <> "}"))
+      decode(batch, json("{\"decision\":" <> answer <> "}"))
       |> should.be_error
     },
   )
-  question.decode(batch, json("{}")) |> should.be_error
-  question.decode(
+  decode(batch, json("{}")) |> should.be_error
+  decode(
     batch,
     value.Object([#("decision", value.Null), #("decision", value.Null)]),
   )
@@ -143,8 +146,14 @@ pub fn a_score_cannot_change_the_rubric_or_disagree_with_its_distribution_test()
       "{\"type\":\"score\",\"score\":3,\"probabilities\":{\"0\":0,\"1\":0,\"2\":1},\"legend\":{\"0\":\"low\",\"1\":\"middle\",\"2\":\"high\"},\"confidence\":1}",
     ],
     fn(answer) {
-      question.decode(batch, json("{\"rating\":" <> answer <> "}"))
+      decode(batch, json("{\"rating\":" <> answer <> "}"))
       |> should.be_error
     },
   )
+}
+
+fn decode(batch: question.Batch(a), raw: value.Value) -> Result(a, wire.Error) {
+  use candidates <- result.try(typesafe.decode_answers(raw))
+  question.decode(batch, candidates)
+  |> result.map_error(fn(e) { wire.InvalidValue(question.describe_error(e)) })
 }

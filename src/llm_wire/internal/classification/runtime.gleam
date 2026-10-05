@@ -1,7 +1,8 @@
 import gleam/bit_array
 import gleam/http
 import gleam/http/request as http_request
-import gleam/option.{None, Some}
+import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import gleam/time/duration
@@ -13,6 +14,7 @@ import http_gun/error as http_error
 import json/blueprint/codec
 import json/blueprint/value.{type Value}
 import llm_wire
+import llm_wire/classify/protocol
 import llm_wire/classify/question
 import llm_wire/error
 import llm_wire/internal/classification/batch
@@ -26,22 +28,33 @@ import llm_wire/telemetry
 
 pub opaque type Wire {
   Wire(
-    validate: fn() -> Result(Nil, error.PrepareError),
     provider: message.Provider,
     endpoint: String,
-    headers: fn() -> List(#(String, String)),
-    encode: fn(String, Value, Value) -> Result(String, error.PrepareError),
+    request_bytes: Int,
+    response_bytes: Int,
+    encode: fn(String, Value, List(#(String, protocol.QuestionView))) ->
+      Result(String, error.PrepareError),
     decode: fn(String) -> Result(Decoded, error.Error),
   )
 }
 
 pub type Decoded {
-  Decoded(model: String, answers: Value, usage: message.Usage)
+  Decoded(
+    model: String,
+    answers: List(#(String, protocol.Answer)),
+    usage: Option(message.Usage),
+  )
+}
+
+type Auth {
+  ApiKey(reveal: fn() -> String)
+  Headers(reveal: fn() -> List(#(String, String)))
 }
 
 pub opaque type Config {
   Config(
-    wire: Wire,
+    auth: Auth,
+    endpoint: Option(String),
     timeout: llm_wire.Bound,
     request_bytes: Int,
     response_bytes: Int,
@@ -54,6 +67,7 @@ pub opaque type Request(a) {
 
 pub opaque type Prepared(a) {
   Prepared(
+    wire: Wire,
     config: Config,
     request: Request(a),
     body: String,
@@ -66,7 +80,7 @@ pub type Outcome(a) {
     answer: a,
     requested_model: String,
     resolved_model: String,
-    usage: message.Usage,
+    usage: Option(message.Usage),
     request_json: String,
     response_json: String,
     state: Value,
@@ -76,26 +90,47 @@ pub type Outcome(a) {
 pub fn wire(
   provider: message.Provider,
   endpoint: String,
-  headers: fn() -> List(#(String, String)),
-  encode: fn(String, Value, Value) -> Result(String, error.PrepareError),
+  encode: fn(String, Value, List(#(String, protocol.QuestionView))) ->
+    Result(String, error.PrepareError),
   decode: fn(String) -> Result(Decoded, error.Error),
 ) -> Wire {
   Wire(
-    validate: fn() { Ok(Nil) },
     provider:,
     endpoint:,
-    headers:,
+    request_bytes: 1_048_576,
+    response_bytes: 1_048_576,
     encode:,
     decode:,
   )
 }
 
-pub fn config(wire: Wire) -> Config {
-  Config(wire, llm_wire.After(duration.seconds(600)), 1_048_576, 1_048_576)
+pub fn config(reveal: fn() -> String) -> Config {
+  Config(
+    ApiKey(reveal),
+    None,
+    llm_wire.After(duration.seconds(600)),
+    1_048_576,
+    1_048_576,
+  )
+}
+
+pub fn with_headers(
+  config: Config,
+  headers: fn() -> List(#(String, String)),
+) -> Config {
+  Config(..config, auth: Headers(headers))
 }
 
 pub fn with_endpoint(config: Config, endpoint: String) -> Config {
-  Config(..config, wire: Wire(..config.wire, endpoint:))
+  Config(..config, endpoint: Some(endpoint))
+}
+
+pub fn with_receipt_request_limit(wire: Wire, bytes: Int) -> Wire {
+  Wire(..wire, request_bytes: bytes)
+}
+
+pub fn with_receipt_response_limit(wire: Wire, bytes: Int) -> Wire {
+  Wire(..wire, response_bytes: bytes)
 }
 
 pub fn with_timeout(config: Config, timeout: llm_wire.Bound) -> Config {
@@ -119,11 +154,22 @@ pub fn request(
 }
 
 pub fn prepare(
+  wire: Wire,
   config: Config,
   request: Request(a),
 ) -> Result(Prepared(a), error.PrepareError) {
-  use Nil <- result.try(config.wire.validate())
-  use Nil <- result.try(validate_endpoint(config.wire.endpoint))
+  use Nil <- result.try(compatible_limit(
+    config.request_bytes,
+    wire.request_bytes,
+    limit.RequestBytes,
+  ))
+  use Nil <- result.try(compatible_limit(
+    config.response_bytes,
+    wire.response_bytes,
+    limit.ResponseBodyBytes,
+  ))
+  let endpoint = option.unwrap(config.endpoint, wire.endpoint)
+  use Nil <- result.try(validate_endpoint(endpoint))
   use Nil <- result.try(case string.trim(request.model) {
     "" -> Error(error.InvalidSetting(error.Model, "must be nonempty"))
     _ -> Ok(Nil)
@@ -140,30 +186,29 @@ pub fn prepare(
       }
     _ -> Ok(Nil)
   })
-  use Nil <- result.try(
-    case config.request_bytes > 0 && config.response_bytes > 0 {
-      True -> Ok(Nil)
-      False ->
-        Error(error.InvalidSetting(
-          error.LimitSetting(limit.ResponseBodyBytes),
-          "limits must be positive",
-        ))
-    },
-  )
   use http <- result.try(
-    http_request.to(config.wire.endpoint)
+    http_request.to(endpoint)
     |> result.replace_error(error.InvalidSetting(
       error.Endpoint,
       "invalid HTTP endpoint",
     )),
   )
-  use body <- result.try(config.wire.encode(
+  use body <- result.try(wire.encode(
     request.model,
     request.state,
     question.definitions(request.questions),
   ))
   use Nil <- result.try(check_request_size(body, config.request_bytes))
-  Ok(Prepared(config, request, body, http_request.set_body(http, Nil)))
+  use _ <- result.try(
+    json_wire.parse(body)
+    |> result.map_error(fn(problem) {
+      error.InvalidRequest(
+        error.InvalidClassificationContent(json_wire.describe_error(problem)),
+      )
+    }),
+  )
+  use Nil <- result.try(validate_auth(config.auth))
+  Ok(Prepared(wire, config, request, body, http_request.set_body(http, Nil)))
 }
 
 fn check_request_size(
@@ -202,7 +247,7 @@ pub fn http_request(prepared: Prepared(a)) -> http_request.Request(BitArray) {
     |> http_request.set_header("accept", "application/json")
     |> http_request.set_header("accept-encoding", "identity")
     |> http_request.set_body(bit_array.from_string(prepared.body))
-  list_headers(request, prepared.config.wire.headers())
+  list_headers(request, headers(prepared.config.auth))
 }
 
 fn list_headers(
@@ -225,7 +270,7 @@ pub fn run(
     observe.Context(
       observe.new_call_id(),
       http_gun.correlation(client),
-      message.provider_name(config.wire.provider),
+      message.provider_name(prepared.wire.provider),
     )
   observe.emit(context, telemetry.Started, telemetry.Accepted)
   let client = case config.timeout {
@@ -279,7 +324,7 @@ pub fn run(
         ))
     })
     use decoded <- result.try(
-      config.wire.decode(body)
+      decode_body(prepared.wire.decode, body)
       |> result.map_error(failure_for(prepared, _, llm_wire.Completed)),
     )
     use answer <- result.map(
@@ -315,19 +360,19 @@ fn failure_for(
   error: error.Error,
   sent: llm_wire.Sent,
 ) -> llm_wire.Failure {
-  llm_wire.Failure(error, sent, False, prepared.config.wire.provider, None)
+  llm_wire.Failure(error, sent, False, prepared.wire.provider, None)
 }
 
 /// Retained evidence is reconstructed without credentials or I/O. Capture
 /// only the wire's pure projection functions, never its header closure.
 pub fn receipt_codec(
-  config: Config,
+  wire: Wire,
   questions: question.Batch(a),
 ) -> codec.Codec(Outcome(a)) {
-  let encode_request = config.wire.encode
-  let decode_response = config.wire.decode
-  let request_bytes = config.request_bytes
-  let response_bytes = config.response_bytes
+  let encode_request = wire.encode
+  let decode_response = wire.decode
+  let request_bytes = wire.request_bytes
+  let response_bytes = wire.response_bytes
   let restore = fn(model, state, request, response) {
     use Nil <- result.try(
       check_request_size(request, request_bytes)
@@ -352,7 +397,8 @@ pub fn receipt_codec(
       "saved classifier questions differ from the deployed batch",
     ))
     use decoded <- result.try(
-      decode_response(response) |> result.map_error(json_wire.ResponseFailed),
+      decode_body(decode_response, response)
+      |> result.map_error(json_wire.ResponseFailed),
     )
     use answer <- result.map(
       question.decode(questions, decoded.answers)
@@ -440,7 +486,7 @@ pub fn receipt_codec(
       batch.placeholder(questions),
       "",
       "",
-      message.Usage(0, 0, 0),
+      None,
       "",
       "",
       value.Null,
@@ -448,11 +494,81 @@ pub fn receipt_codec(
   )
 }
 
-pub fn with_validation(
-  wire: Wire,
-  validate: fn() -> Result(Nil, error.PrepareError),
-) -> Wire {
-  Wire(..wire, validate:)
+fn compatible_limit(
+  live: Int,
+  receipt: Int,
+  kind: limit.Limit,
+) -> Result(Nil, error.PrepareError) {
+  case live > 0 && receipt > 0 && live <= receipt {
+    True -> Ok(Nil)
+    False ->
+      Error(error.InvalidSetting(
+        error.LimitSetting(kind),
+        "live and receipt limits must be positive; live limit must not exceed the fixed receipt limit",
+      ))
+  }
+}
+
+fn validate_auth(auth: Auth) -> Result(Nil, error.PrepareError) {
+  case auth {
+    Headers(_) -> Ok(Nil)
+    ApiKey(reveal) -> {
+      let key = reveal()
+      case
+        key != ""
+        && list.all(string.to_utf_codepoints(key), fn(c) {
+          let n = string.utf_codepoint_to_int(c)
+          n > 32 && n < 127
+        })
+      {
+        True -> Ok(Nil)
+        False ->
+          Error(error.InvalidSetting(
+            error.ApiKey,
+            "must be nonempty visible ASCII",
+          ))
+      }
+    }
+  }
+}
+
+fn headers(auth: Auth) -> List(#(String, String)) {
+  case auth {
+    Headers(reveal) -> reveal()
+    ApiKey(reveal) -> [#("authorization", "Bearer " <> reveal())]
+  }
+}
+
+fn decode_body(
+  decode: fn(String) -> Result(Decoded, error.Error),
+  body: String,
+) -> Result(Decoded, error.Error) {
+  use _ <- result.try(
+    json_wire.parse(body)
+    |> result.map_error(fn(problem) {
+      error.Protocol(json_wire.describe_error(problem))
+    }),
+  )
+  decode(body) |> result.try(admit_decoded)
+}
+
+fn admit_decoded(decoded: Decoded) -> Result(Decoded, error.Error) {
+  use Nil <- result.try(case decoded.usage {
+    None -> Ok(Nil)
+    Some(usage) ->
+      case
+        usage.input_tokens >= 0
+        && usage.output_tokens >= 0
+        && usage.total_tokens >= 0
+      {
+        True -> Ok(Nil)
+        False -> Error(error.Protocol("negative classifier token usage"))
+      }
+  })
+  case string.trim(decoded.model) == "" {
+    True -> Error(error.Protocol("empty classifier response model"))
+    False -> Ok(decoded)
+  }
 }
 
 fn validate_endpoint(url: String) -> Result(Nil, error.PrepareError) {

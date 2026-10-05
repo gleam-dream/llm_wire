@@ -8,6 +8,7 @@
 import gleam/option.{type Option}
 import gleam/result
 import json/blueprint/value.{type Value}
+import llm_wire/classify/protocol
 import llm_wire/internal/classification/questions as internal
 import llm_wire/internal/classification/wire
 
@@ -121,11 +122,14 @@ pub fn check_combine(
 }
 
 /// Provider-neutral question vocabulary; a wire may project it differently.
-pub fn definitions(batch: Batch(a)) -> Value {
+pub fn definitions(batch: Batch(a)) -> List(#(String, protocol.QuestionView)) {
   internal.definitions(batch)
 }
 
-pub fn decode(batch: Batch(a), answers: Value) -> Result(a, Error) {
+pub fn decode(
+  batch: Batch(a),
+  answers: List(#(String, protocol.Answer)),
+) -> Result(a, Error) {
   internal.decode(batch, answers) |> result.map_error(Problem(InvalidAnswer, _))
 }
 
