@@ -278,7 +278,7 @@ pub fn recorded_cassettes_do_not_store_the_key_test() {
       })
     })
   let destination =
-    "/private/tmp/llm-wire-redaction-"
+    "/tmp/llm-wire-redaction-"
     <> int.to_string(int.absolute_value(unique_integer()))
     <> ".json"
   let assert Ok(recorded) =

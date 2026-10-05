@@ -110,7 +110,7 @@ pub fn malformed_and_incompatible_cassettes_fail_explicitly_test() {
   cassette.parse("{\"http_gun\":99,\"exchanges\":[]}", 100)
   |> should.equal(Error(cassette.UnsupportedVersion(99)))
   cassette.parse("{\"version\":1,\"exchanges\":[]}", 100) |> should.be_error
-  cassette.load("/private/tmp/llm-wire-fixture-does-not-exist", 100)
+  cassette.load("/tmp/llm-wire-fixture-does-not-exist", 100)
   |> should.equal(Error(cassette.Missing))
 }
 
@@ -219,7 +219,7 @@ pub fn required_schema_fields_and_tags_are_checked_test() {
 }
 
 pub fn invalid_utf8_file_is_a_typed_failure_test() {
-  let path = "/private/tmp/llm-wire-invalid-utf8-fixture"
+  let path = "/tmp/llm-wire-invalid-utf8-fixture"
   let assert Ok(Nil) = simplifile.write_bits(path, <<255, 0>>)
   cassette.load(path, 2) |> should.equal(Error(cassette.Corrupt))
   let assert Ok(Nil) = simplifile.delete(path)

@@ -30,7 +30,7 @@ fn system_time() -> Int
 /// `unique_integer` restarts with each VM, so a run that panicked before
 /// cleanup would otherwise leave a destination the next run collides with.
 fn path() -> String {
-  "/private/tmp/llm-wire-http-recording-"
+  "/tmp/llm-wire-http-recording-"
   <> int.to_string(system_time())
   <> "-"
   <> int.to_string(unique_integer())
