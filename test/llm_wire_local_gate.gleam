@@ -202,6 +202,12 @@ pub fn main() -> Nil {
     |> http_config.with_max_connections_per_origin(1)
     |> http_config.with_max_open_bodies(2048)
     |> http_config.with_max_queued_requests(2048)
+    // The fixture advertises 8 streams and one remains occupied. A burst
+    // of 1000 therefore needs 143 admission waves. At a 40 ms loopback ACK
+    // cadence it cannot fit the ordinary 5 s pool timeout. Give this load
+    // fixture an explicit bounded queue budget; production defaults and
+    // timeout tests remain unchanged.
+    |> http_config.with_pool_timeout(duration.seconds(30))
   let assert Ok(client) = http_gun.start(policy)
   let small = prepared(endpoint, "/small.sse")
   let long = prepared(endpoint, "/long.sse")

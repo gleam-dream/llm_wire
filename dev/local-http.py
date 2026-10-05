@@ -79,6 +79,7 @@ def main():
         rows = [json.loads(line) for line in consumer.stdout.splitlines() if line.startswith('{"scenario"')]
         receipt = {"command": "python3 dev/local-http.py", "peer_max_streams": 8,
                    "client_connections": 1, "client_active": 2048, "client_waiting": 2048,
+                   "pool_timeout_seconds": 30,
                    "slow_stream_bytes": 2097152, "sampling_interval_ms": 10,
                    "log_prefix_limit": 262144, "log_sha256": digest.hexdigest(),
                    "request_connection_ids": sorted(connections), **counts, "results": rows,
