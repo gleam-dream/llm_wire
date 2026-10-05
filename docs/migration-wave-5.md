@@ -564,3 +564,26 @@ Cassette, recording and redaction fixtures use `/tmp` rather than the
 macOS-specific `/private/tmp`. This does not change public APIs, cassette
 bytes or application migration. The existing portability edits are committed
 separately from classification.
+
+### Round 9 follow-up: configured classification byte limits
+
+Previously, increasing `with_request_limit` or `with_response_limit` above
+1 MiB still encountered a second, fixed parser byte limit. The configured
+allowance now governs request preparation and HTTP response collection;
+TypeSafe validation retains its independent depth, element and number limits.
+
+```gleam
+// Before: this prepared call still rejected a valid state larger than 1 MiB.
+// After: it accepts an encoded request up to 2 MiB.
+let config = classify.typesafe(reveal)
+  |> classify.with_request_limit(2 * 1024 * 1024)
+  |> classify.with_response_limit(2 * 1024 * 1024)
+```
+
+`classify.receipt_codec(config, questions)` now applies those request and
+response limits to its embedded protocol evidence on encode and decode.
+Keep the original allowances when reopening a larger receipt. Both stored
+formats remain readable; their shapes are unchanged. The storage reader
+separately bounds the enclosing record, which also contains escaped JSON and
+state. The HTTP client retains its own transport limits; callers may need to
+raise those independently. No public signature changes.

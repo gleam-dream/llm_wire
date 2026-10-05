@@ -193,6 +193,12 @@ concentration evidence, **not** a probability that the answer is correct.
 | Questions                          | 256          | fixed                                                             |
 | Choice alternatives / score levels | 2–255 / 2–10 | fixed                                                             |
 
+The byte settings govern the encoded request and collected response. TypeSafe
+JSON validation retains Blueprint's default structural limits (nesting 64,
+262,144 values and bounded number tokens); raising bytes does not raise these
+limits. The HTTP client's own request, buffering and collection limits remain
+independent and can impose a smaller allowance.
+
 `prepare` returns `error.PrepareError`; `run` returns the existing
 `llm_wire.Failure`, so `error.kind`, `describe_failure` and `advise` apply.
 The HTTP client's correlation joins HTTP Gun and llm_wire telemetry. The
@@ -204,7 +210,12 @@ No call retries or follows redirects. Keys enter through a reveal closure.
 usage and exact protocol evidence. It captures only the wire's pure encoder
 and decoder, never the credential closure or HTTP client, and rejects changed
 question meanings and forged native answers. Wire callbacks must be pure and
-must not capture credentials. Existing classifier receipts remain readable.
+must not capture credentials. The codec applies the configuration's request
+and response byte limits to the embedded protocol evidence on both encode and
+decode, including legacy receipts. Use the original allowances when reopening
+larger receipts. The storage reader separately bounds the enclosing record;
+JSON escaping and the stored state can make that record larger than either
+protocol body. Existing classifier receipt formats remain readable.
 
 Tests use opaque `testing.classification_response` builders and
 `testing.classification_exchange`, which works with HTTP Gun cassettes.

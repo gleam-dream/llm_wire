@@ -4,6 +4,10 @@
 
 ### Round 9
 
+- Classification request and response byte setters now raise the effective
+  JSON allowance without changing structural parser limits. Receipt codecs
+  apply the same configured byte limits to current and legacy evidence.
+
 - Added provider-neutral `classify` and `classify/question`, with TypeSafe
   System One as the first wire, reveal-closure credentials, typed failures,
   bounded HTTP calls, correlated telemetry, opaque testing builders and
