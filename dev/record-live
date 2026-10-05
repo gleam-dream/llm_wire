@@ -13,6 +13,10 @@ if [ -f .env.local ]; then
   set +a
 fi
 mkdir -p test/cassettes/live
-gleam run -m llm_wire_live_record -- "$@"
+if [ "${1:-}" = typesafe-classification ]; then
+  gleam run -m classification_live_record
+else
+  gleam run -m llm_wire_live_record -- "$@"
+fi
 # The gate checks formatting, cassettes included.
 if command -v treefmt >/dev/null 2>&1; then treefmt test/cassettes/live; fi

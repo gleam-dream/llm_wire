@@ -22,6 +22,7 @@ for module in $(find src -name '*.gleam' -not -path '*/internal/*'); do
   fi
 done
 gleam test
+python3 -B -m unittest discover -s test/support/classifier -p "*_test.py"
 if [ "$profile" = full ]; then
   sh test/external_package_boundary.sh
   python3 dev/local-http.py

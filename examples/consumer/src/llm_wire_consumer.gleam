@@ -3,6 +3,7 @@
 //// advice and a custom adapter. `main` runs every flow offline against
 //// scripted HTTP Gun clients; nothing here contacts a provider.
 
+import classification_consumer
 import gleam/erlang/process
 import gleam/int
 import gleam/json
@@ -376,6 +377,7 @@ fn prepared(
 }
 
 pub fn main() -> Nil {
+  classification_consumer.main()
   // The common path, against OpenAI's own wire lowered from a script.
   let config = openai_config("sk-example")
   let reply = testing.events_for(message.OpenAI, testing.text("Hello!"))

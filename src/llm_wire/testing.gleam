@@ -59,10 +59,12 @@ import gleam/time/duration.{type Duration}
 import http_gun/error as http_error
 import http_gun/testing as http_testing
 import llm_wire
+import llm_wire/classify
 import llm_wire/error
 import llm_wire/internal/adapter
 import llm_wire/internal/api
 import llm_wire/internal/call
+import llm_wire/internal/classification/runtime as classification
 import llm_wire/internal/config
 import llm_wire/internal/ids
 import llm_wire/message.{type Provider, type Usage}
@@ -1342,4 +1344,49 @@ fn arguments_object(raw: String) -> String {
     Error(_) ->
       json.to_string(json.object([#("unparsed_arguments", json.string(raw))]))
   }
+}
+
+/// A finite classification reply. Builders keep future fixture fields private.
+pub opaque type ClassificationReply {
+  ClassificationReply(
+    status: Int,
+    body: String,
+    headers: List(#(String, String)),
+  )
+}
+
+/// A raw provider response for classification protocol and malformed-wire tests.
+pub fn classification_response(body: String) -> ClassificationReply {
+  ClassificationReply(200, body, [#("content-type", "application/json")])
+}
+
+pub fn with_classification_status(
+  reply: ClassificationReply,
+  status: Int,
+) -> ClassificationReply {
+  ClassificationReply(..reply, status:)
+}
+
+pub fn with_classification_header(
+  reply: ClassificationReply,
+  name: String,
+  value: String,
+) -> ClassificationReply {
+  ClassificationReply(..reply, headers: [#(name, value), ..reply.headers])
+}
+
+/// Uses HTTP Gun's credential-redacting exchange builder and cassette schema.
+pub fn classification_exchange(
+  prepared: classify.Prepared(a),
+  reply: ClassificationReply,
+) -> http_testing.Exchange {
+  http_testing.exchange(
+    classification.http_request(prepared),
+    http_testing.Respond(
+      response.Response(reply.status, reply.headers, [
+        bit_array.from_string(reply.body),
+      ]),
+      http_testing.Finished([]),
+    ),
+  )
 }

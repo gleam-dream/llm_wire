@@ -154,6 +154,8 @@ pub type Setting {
 
 /// What is wrong with a request.
 pub type RequestProblem {
+  /// Classification state must be text, an object or an array within JSON limits.
+  InvalidClassificationContent(reason: String)
   MaxTokensNotPositive
   TemperatureOutOfRange
   TopPOutOfRange
@@ -340,6 +342,8 @@ fn setting_name(setting: Setting) -> String {
 
 fn describe_problem(problem: RequestProblem) -> String {
   case problem {
+    InvalidClassificationContent(reason) ->
+      "invalid classification content: " <> reason
     MaxTokensNotPositive -> "max_tokens must be positive"
     TemperatureOutOfRange -> "temperature must be between 0 and 2"
     TopPOutOfRange -> "top_p must be between 0 and 1"
