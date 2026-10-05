@@ -40,3 +40,10 @@ The twelve scripted exchanges of `flow` have identical replies deliberately.
 For distinct replies to identical concurrent requests, coordinate admission
 order explicitly. The example uses HTTP Gun's default configuration: each LLM
 call's own timeouts replace the client's request timeout.
+
+`classification_consumer` exercises `classify.typesafe()` with separate live
+settings, then an independent array-based provider using typed question views
+and answer candidates. It retains application-native labels in a heterogeneous
+batch, handles absent confidence and usage, configures custom headers and byte
+limits, checks invalid evidence, and round-trips durable receipts offline.
+The main consumer runs it as part of the full gate.

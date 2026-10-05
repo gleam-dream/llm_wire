@@ -4,6 +4,18 @@
 
 ### Round 9
 
+- Split classification `Wire` (pure protocol and fixed receipt bounds) from
+  live `Config` (credentials, endpoint, timeout and byte limits). Preparation
+  rejects live limits larger than receipt bounds before credential access.
+- Provider extensions receive typed question views and return typed untrusted
+  answer candidates. Shared admission checks evidence independently of each
+  provider's JSON format, including duplicate identifiers and labels.
+- Classification confidence and usage are optional measurements. TypeSafe's
+  mandatory fields stay mandatory; stored numeric confidence reads as `Some`.
+- Receipt decoding uses fixed pure projections and bounds, so fresh settings
+  and narrower live limits do not affect existing records. Custom headers
+  replace default Bearer authentication without revealing its unused key.
+
 - Classification request and response byte setters now raise the effective
   JSON allowance without changing structural parser limits. Receipt codecs
   apply the same configured byte limits to current and legacy evidence.

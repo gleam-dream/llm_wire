@@ -171,9 +171,10 @@ import llm_wire/classify
 import llm_wire/classify/question
 
 let questions = question.ask("correct", question.noul(value.String("Correct?"), None))
-let config = classify.typesafe(fn() { key })
+let wire = classify.typesafe()
+let config = classify.config(fn() { key })
 let request = classify.request("jev-latest", value.String("2 + 2 = 4"), questions)
-let assert Ok(prepared) = classify.prepare(config, request)
+let assert Ok(prepared) = classify.prepare(wire, config, request)
 let assert Ok(outcome) = classify.run(http, prepared)
 // outcome.answer.yes is the yes probability.
 ```
@@ -184,14 +185,19 @@ distribution. `score` retains the rubric, distribution and weighted position.
 the corresponding `check_*` functions validate runtime definitions with typed
 `question.Error` (`error_kind`, `describe_error`). Confidence is provider
 concentration evidence, **not** a probability that the answer is correct.
+`Choice.confidence` and `Score.confidence` are `Option(Float)`: absence is
+`None`, while TypeSafe's required confidence remains checked. Full distributions
+are always required. `Outcome.usage` is `Option(message.Usage)`; missing usage
+is unknown, not zero.
 
-| Classification bound               | Default      | Setter                                                            |
-| ---------------------------------- | ------------ | ----------------------------------------------------------------- |
-| Whole request                      | 600 seconds  | `classify.with_timeout`, `After(Duration)` or explicit `Infinity` |
-| Request JSON                       | 1 MiB        | `classify.with_request_limit`                                     |
-| Response JSON                      | 1 MiB        | `classify.with_response_limit`                                    |
-| Questions                          | 256          | fixed                                                             |
-| Choice alternatives / score levels | 2–255 / 2–10 | fixed                                                             |
+| Classification bound               | Default      | Setter                                                                 |
+| ---------------------------------- | ------------ | ---------------------------------------------------------------------- |
+| Whole request                      | 600 seconds  | `classify.with_timeout`, `After(Duration)` or explicit `Infinity`      |
+| Request JSON                       | 1 MiB        | `classify.with_request_limit`                                          |
+| Response JSON                      | 1 MiB        | `classify.with_response_limit`                                         |
+| Receipt request / response JSON    | 1 MiB each   | `with_receipt_request_limit` / `with_receipt_response_limit` on `Wire` |
+| Questions                          | 256          | fixed                                                                  |
+| Choice alternatives / score levels | 2–255 / 2–10 | fixed                                                                  |
 
 The byte settings govern the encoded request and collected response. TypeSafe
 JSON validation retains Blueprint's default structural limits (nesting 64,
@@ -206,16 +212,35 @@ classification timeout replaces the HTTP view's default request timeout;
 connection, TLS, destination and header policy remain the client's.
 No call retries or follows redirects. Keys enter through a reveal closure.
 
-`classify.receipt_codec(config, questions)` retains native answers, models,
-usage and exact protocol evidence. It captures only the wire's pure encoder
-and decoder, never the credential closure or HTTP client, and rejects changed
-question meanings and forged native answers. Wire callbacks must be pure and
-must not capture credentials. The codec applies the configuration's request
-and response byte limits to the embedded protocol evidence on both encode and
-decode, including legacy receipts. Use the original allowances when reopening
-larger receipts. The storage reader separately bounds the enclosing record;
-JSON escaping and the stored state can make that record larger than either
-protocol body. Existing classifier receipt formats remain readable.
+`classify.typesafe()` returns a pure `Wire`. `classify.config(reveal)` returns
+live settings with no wire selection. `prepare(wire, config, request)` binds
+them for one call. `with_headers(config, reveal_headers)` replaces the default
+Bearer authentication; the unused API-key closure is never called. Settings,
+wires and prepared calls do not expose credentials when printed.
+
+`classify.receipt_codec(wire, questions)` retains native answers, models,
+usage and exact protocol evidence. It captures pure encoding and decoding and
+the wire's fixed receipt bounds, never live configuration or an HTTP client.
+Decoding reconstructs the request and rejects changed questions and forged
+native answers. Provider callbacks must be pure and must not capture credentials.
+
+Live byte limits must be positive and no greater than the corresponding fixed
+receipt bounds. Preparation rejects incompatible settings before credential
+access or network work; it never reduces a configured limit. To admit evidence
+larger than 1 MiB, raise both the wire's receipt bound and the live bound.
+Lowering live limits later leaves stored evidence readable under the original
+wire. Keep the protocol and receipt bounds fixed for a stored operation version.
+The storage reader independently bounds the enclosing record, including JSON
+escaping and stored state. Current and legacy receipt tags remain readable.
+
+An extension's encoder receives `List(#(String, protocol.QuestionView))`.
+Its decoder returns `classify.decoded(model, candidates, usage)`, where typed
+`protocol.Answer` candidates contain wire labels and measurements. Neither
+requires TypeSafe JSON. Shared admission checks exact question identifiers,
+answer kinds, complete distributions, native numeric bounds, selected maxima,
+rubric correspondence and weighted scores. The wire validates its own mandatory
+fields and exact JSON-number precision before native Float conversion. Shared
+JSON structural and numeric-token limits also apply before custom decoders.
 
 Tests use opaque `testing.classification_response` builders and
 `testing.classification_exchange`, which works with HTTP Gun cassettes.

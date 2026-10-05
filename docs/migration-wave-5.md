@@ -587,3 +587,89 @@ formats remain readable; their shapes are unchanged. The storage reader
 separately bounds the enclosing record, which also contains escaped JSON and
 state. The HTTP client retains its own transport limits; callers may need to
 raise those independently. No public signature changes.
+
+### Round 9 follow-up: pure protocols and typed classification evidence
+
+`typesafe(reveal) -> Config` becomes `typesafe() -> Wire` plus
+`config(reveal) -> Config`. `prepare(config, request)` becomes
+`prepare(wire, config, request)`. The common call is:
+
+```gleam
+let wire = classify.typesafe()
+let settings = classify.config(reveal)
+let request = classify.request(model, state, questions)
+let assert Ok(prepared) = classify.prepare(wire, settings, request)
+let assert Ok(answer) = classify.run(http, prepared)
+```
+
+`receipt_codec(config, questions)` becomes `receipt_codec(wire, questions)`.
+`with_request_limit` and `with_response_limit` still set live limits.
+`with_receipt_request_limit` and `with_receipt_response_limit` set durable
+bounds on the pure wire, each 1 MiB by default. Raising live limits now requires
+matching receipt capacity explicitly:
+
+```gleam
+let wire = classify.typesafe()
+  |> classify.with_receipt_request_limit(2 * 1024 * 1024)
+  |> classify.with_receipt_response_limit(2 * 1024 * 1024)
+let settings = classify.config(reveal)
+  |> classify.with_request_limit(2 * 1024 * 1024)
+  |> classify.with_response_limit(2 * 1024 * 1024)
+let saved = classify.receipt_codec(wire, questions)
+```
+
+Preparation returns `InvalidSetting(LimitSetting(..), ..)` if either live
+limit exceeds the corresponding receipt bound, before any credential access
+or network work. Live bounds below or equal to the durable bounds remain valid.
+Do not change a stored operation version's protocol or durable allowance;
+current and legacy receipt tags remain unchanged. Narrower live settings do
+not affect receipt decoding. TypeSafe parsing retains numeric precision,
+depth and value-count limits when byte allowances increase.
+
+Fabric classification definitions now retain the pure wire. Their post-policy
+request callback constructs fresh live settings from context, including after
+approval or recovery. The decision and writing consumers keep their existing
+operation versions while migrating equivalent TypeSafe wiring.
+
+`wire(provider, endpoint, headers, encode, decode)` becomes
+`wire(provider, endpoint, encode, decode)`. Move the header closure onto live
+settings with `with_headers(config, headers)`, which replaces Bearer auth and
+never reveals the inactive API key. Pure callbacks must not capture secrets.
+
+`question.definitions(batch)` now returns typed
+`List(#(String, protocol.QuestionView))`, replacing TypeSafe-shaped JSON.
+`question.decode(batch, answers)` now accepts
+`List(#(String, protocol.Answer))`. A wire maps `YesProbability`, `Choice` and
+`Score` views into its own protocol, and returns `Yes`, `Selected` and `Rated`
+candidates. `decoded(model, answers, usage)` takes these candidates and optional
+usage. Shared admission retains native application values and rejects invalid
+identifiers, kinds, distributions, labels, selected maxima, rubric changes and
+weighted-score disagreement. The external consumer demonstrates an array-based
+protocol with no TypeSafe JSON intermediary and a heterogeneous batch.
+
+`Choice.confidence: Float` and `Score.confidence: Float` become
+`Option(Float)`. `Outcome.usage: Usage` becomes `Option(Usage)`. Replace direct
+measurement access with explicit absence handling:
+
+```gleam
+case answer.answer.confidence {
+  Some(confidence) -> use_concentration(confidence)
+  None -> decide_without_concentration()
+}
+case answer.usage {
+  Some(usage) -> record_tokens(usage)
+  None -> record_unknown_usage()
+}
+```
+
+Absence never means zero or a fabricated confidence. Malformed evidence remains
+an error; TypeSafe still requires confidence and usage. Existing TypeSafe
+receipts restore numeric confidence and usage as `Some` values. The package's
+live recorder and offline cassettes, external consumer, and Fabric decision
+and writing consumers must migrate to these signatures together.
+
+A partial classification wire now reports
+`InvalidRequest(ClassificationQuestionUnsupported(question_id))` when it cannot
+supply a requested kind of evidence. Its encoder returns this typed preparation
+failure before credentials or transport; the external array-based wire demonstrates
+this for rubric scores while supporting choice and yes-probability questions.
