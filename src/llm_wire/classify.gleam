@@ -98,6 +98,9 @@ pub fn run(
 
 /// A durable receipt codec captures only pure wire projections. It reads the
 /// original bridge receipts as well as the provider-neutral receipt format.
+/// The configuration's request and response byte limits also bound the saved
+/// protocol evidence on encode and decode. The storage reader separately owns
+/// the limit for the enclosing record, including escaping and stored state.
 pub fn receipt_codec(
   config: Config,
   questions: question.Batch(a),

@@ -162,16 +162,35 @@ pub fn prepare(
     request.state,
     question.definitions(request.questions),
   ))
-  use Nil <- result.try(case string.byte_size(body) > config.request_bytes {
+  use Nil <- result.try(check_request_size(body, config.request_bytes))
+  Ok(Prepared(config, request, body, http_request.set_body(http, Nil)))
+}
+
+fn check_request_size(
+  body: String,
+  bytes: Int,
+) -> Result(Nil, error.PrepareError) {
+  case string.byte_size(body) > bytes {
     True ->
       Error(error.RequestTooLarge(
         limit.RequestBytes,
-        config.request_bytes,
+        bytes,
         string.byte_size(body),
       ))
     False -> Ok(Nil)
-  })
-  Ok(Prepared(config, request, body, http_request.set_body(http, Nil)))
+  }
+}
+
+fn check_response_size(body: String, bytes: Int) -> Result(Nil, error.Error) {
+  case string.byte_size(body) > bytes {
+    True ->
+      Error(error.LimitExceeded(
+        limit.ResponseBodyBytes,
+        bytes,
+        string.byte_size(body),
+      ))
+    False -> Ok(Nil)
+  }
 }
 
 /// Only the transport and redacting fixture builder reveal headers.
@@ -307,9 +326,23 @@ pub fn receipt_codec(
 ) -> codec.Codec(Outcome(a)) {
   let encode_request = config.wire.encode
   let decode_response = config.wire.decode
+  let request_bytes = config.request_bytes
+  let response_bytes = config.response_bytes
   let restore = fn(model, state, request, response) {
+    use Nil <- result.try(
+      check_request_size(request, request_bytes)
+      |> result.map_error(json_wire.PreparationFailed),
+    )
+    use Nil <- result.try(
+      check_response_size(response, response_bytes)
+      |> result.map_error(json_wire.ResponseFailed),
+    )
     use expected <- result.try(
       encode_request(model, state, question.definitions(questions))
+      |> result.map_error(json_wire.PreparationFailed),
+    )
+    use Nil <- result.try(
+      check_request_size(expected, request_bytes)
       |> result.map_error(json_wire.PreparationFailed),
     )
     use sent <- result.try(json_wire.parse(request))
@@ -382,6 +415,10 @@ pub fn receipt_codec(
           value.String(request),
           value.String(response),
         ]) -> {
+          use Nil <- result.try(
+            check_request_size(request, request_bytes)
+            |> result.map_error(json_wire.PreparationFailed),
+          )
           use fields <- result.try(
             json_wire.parse(request) |> result.try(json_wire.object),
           )

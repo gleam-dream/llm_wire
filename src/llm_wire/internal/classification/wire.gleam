@@ -29,7 +29,13 @@ pub fn describe_error(problem: Error) -> String {
 }
 
 pub fn parse(raw: String) -> Result(Value, Error) {
-  value.parse(raw, value.default_limits())
+  // Byte admission belongs to preparation, HTTP collection and receipt
+  // restoration. This parse checks an already materialized string without
+  // imposing a second byte cap; structural and numeric limits stay bounded.
+  value.parse(
+    raw,
+    value.default_limits() |> value.with_max_bytes(string.byte_size(raw)),
+  )
   |> result.map_error(InvalidJson)
 }
 
