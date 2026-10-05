@@ -9,6 +9,7 @@ import gleam/option.{type Option}
 import gleam/result
 import json/blueprint/value.{type Value}
 import llm_wire/internal/classification/questions as internal
+import llm_wire/internal/classification/wire
 
 pub type Noul =
   internal.Noul
@@ -33,7 +34,7 @@ pub type Batch(a) =
 
 /// One failure boundary for runtime definitions and answer admission.
 pub opaque type Error {
-  Problem(kind: ErrorKind, detail: String)
+  Problem(kind: ErrorKind, detail: wire.Error)
 }
 
 pub type ErrorKind {
@@ -46,7 +47,7 @@ pub fn error_kind(error: Error) -> ErrorKind {
 }
 
 pub fn describe_error(error: Error) -> String {
-  error.detail
+  wire.describe_error(error.detail)
 }
 
 pub fn alternative(

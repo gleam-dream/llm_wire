@@ -42,7 +42,9 @@ fn encode(
   use state <- result.map(
     wire.content(state)
     |> result.map_error(fn(detail) {
-      error.InvalidRequest(error.InvalidClassificationContent(detail))
+      error.InvalidRequest(
+        error.InvalidClassificationContent(wire.describe_error(detail)),
+      )
     }),
   )
   value.to_string(
@@ -55,10 +57,13 @@ fn encode(
 }
 
 fn decode(raw: String) -> Result(runtime.Decoded, error.Error) {
-  decode_response(raw) |> result.map_error(error.Protocol)
+  decode_response(raw)
+  |> result.map_error(fn(problem) {
+    error.Protocol(wire.describe_error(problem))
+  })
 }
 
-fn decode_response(raw: String) -> Result(runtime.Decoded, String) {
+fn decode_response(raw: String) -> Result(runtime.Decoded, wire.Error) {
   use fields <- result.try(wire.parse(raw) |> result.try(wire.object))
   use model <- result.try(
     wire.required(fields, "model") |> result.try(wire.text),

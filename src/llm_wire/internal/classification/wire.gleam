@@ -6,68 +6,90 @@ import gleam/string
 import json/blueprint/codec
 import json/blueprint/number
 import json/blueprint/value.{type Value}
+import llm_wire/error
 
-pub fn parse(raw: String) -> Result(Value, String) {
-  value.parse(raw, value.default_limits())
-  |> result.map_error(fn(_) { "invalid or unbounded classifier JSON" })
+/// Internal validation retains typed causes until a public boundary renders
+/// a safe description. No decoder or question builder uses string errors.
+pub type Error {
+  InvalidJson(value.ParseError)
+  MissingField(String)
+  InvalidValue(String)
+  PreparationFailed(error.PrepareError)
+  ResponseFailed(error.Error)
 }
 
-pub fn content(raw: Value) -> Result(Value, String) {
-  use value <- result.try(parse(value.to_string(raw)))
-  case value {
-    value.String(_) | value.Object(_) | value.Array(_) -> Ok(value)
-    _ -> Error("classifier content must be text, an object or an array")
+pub fn describe_error(problem: Error) -> String {
+  case problem {
+    InvalidJson(_) -> "invalid or unbounded classifier JSON"
+    MissingField(key) -> "missing classifier field: " <> key
+    InvalidValue(detail) -> detail
+    PreparationFailed(problem) -> error.describe_prepare_error(problem)
+    ResponseFailed(problem) -> error.describe(problem)
   }
 }
 
-pub fn object(raw: Value) -> Result(List(#(String, Value)), String) {
+pub fn parse(raw: String) -> Result(Value, Error) {
+  value.parse(raw, value.default_limits())
+  |> result.map_error(InvalidJson)
+}
+
+pub fn content(raw: Value) -> Result(Value, Error) {
+  use value <- result.try(parse(value.to_string(raw)))
+  case value {
+    value.String(_) | value.Object(_) | value.Array(_) -> Ok(value)
+    _ ->
+      Error(InvalidValue(
+        "classifier content must be text, an object or an array",
+      ))
+  }
+}
+
+pub fn object(raw: Value) -> Result(List(#(String, Value)), Error) {
   case raw {
     value.Object(fields) ->
       value.object(fields)
       |> result.map(fn(_) { fields })
-      |> result.map_error(fn(_) { "duplicate classifier object key" })
-    _ -> Error("expected classifier object")
+      |> result.map_error(fn(_) {
+        InvalidValue("duplicate classifier object key")
+      })
+    _ -> Error(InvalidValue("expected classifier object"))
   }
 }
 
 pub fn required(
   fields: List(#(String, Value)),
   key: String,
-) -> Result(Value, String) {
+) -> Result(Value, Error) {
   list.key_find(fields, key)
-  |> result.map_error(fn(_) { "missing classifier field: " <> key })
+  |> result.map_error(fn(_) { MissingField(key) })
 }
 
-pub fn text(raw: Value) -> Result(String, String) {
+pub fn text(raw: Value) -> Result(String, Error) {
   case raw {
     value.String(text) ->
       require(string.trim(text) != "", "expected nonempty classifier text")
       |> result.map(fn(_) { text })
-    _ -> Error("expected nonempty classifier text")
+    _ -> Error(InvalidValue("expected nonempty classifier text"))
   }
 }
 
-pub fn integer(raw: Value) -> Result(Int, String) {
+pub fn integer(raw: Value) -> Result(Int, Error) {
   codec.decode(codec.int(), raw)
-  |> result.map_error(fn(_) { "expected classifier integer" })
+  |> result.map_error(fn(_) { InvalidValue("expected classifier integer") })
 }
 
-pub fn between(
-  raw: Value,
-  minimum: Int,
-  maximum: Int,
-) -> Result(Float, String) {
+pub fn between(raw: Value, minimum: Int, maximum: Int) -> Result(Float, Error) {
   use n <- result.try(case raw {
     value.Number(n) -> Ok(n)
-    _ -> Error("expected classifier number")
+    _ -> Error(InvalidValue("expected classifier number"))
   })
   use low <- result.try(
     number.from_int(minimum)
-    |> result.map_error(fn(_) { "invalid numeric lower bound" }),
+    |> result.map_error(fn(_) { InvalidValue("invalid numeric lower bound") }),
   )
   use high <- result.try(
     number.from_int(maximum)
-    |> result.map_error(fn(_) { "invalid numeric upper bound" }),
+    |> result.map_error(fn(_) { InvalidValue("invalid numeric upper bound") }),
   )
   use Nil <- result.try(require(
     number.compare(n, low) != order.Lt && number.compare(n, high) != order.Gt,
@@ -81,7 +103,7 @@ pub fn between(
   use projected <- result.try(
     float.parse(native_text)
     |> result.map_error(fn(_) {
-      "classifier number cannot be represented natively"
+      InvalidValue("classifier number cannot be represented natively")
     }),
   )
   use Nil <- result.map(require(
@@ -98,10 +120,10 @@ fn decimal(text: String) -> String {
   }
 }
 
-pub fn require(condition: Bool, error: String) -> Result(Nil, String) {
+pub fn require(condition: Bool, error: String) -> Result(Nil, Error) {
   case condition {
     True -> Ok(Nil)
-    False -> Error(error)
+    False -> Error(InvalidValue(error))
   }
 }
 

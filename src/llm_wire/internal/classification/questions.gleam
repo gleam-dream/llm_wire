@@ -1,4 +1,4 @@
-//// Typed TypeSafe questions, independent of chat and graph scheduling.
+//// Typed classification questions, independent of providers and graph scheduling.
 
 import gleam/float
 import gleam/int
@@ -53,7 +53,7 @@ pub type Batch(a) =
 pub fn noul(
   instructions: Value,
   criteria: Option(#(Value, Value)),
-) -> Result(Question(Noul), String) {
+) -> Result(Question(Noul), wire.Error) {
   use instructions <- result.try(wire.content(instructions))
   use criteria <- result.try(case criteria {
     None -> Ok([])
@@ -83,7 +83,7 @@ pub fn noul(
 pub fn choice(
   instructions: Value,
   alternatives: List(Alternative(a)),
-) -> Result(Question(Choice(a)), String) {
+) -> Result(Question(Choice(a)), wire.Error) {
   use instructions <- result.try(wire.content(instructions))
   use Nil <- result.try(wire.require(
     list.length(alternatives) >= 2 && list.length(alternatives) <= 255,
@@ -104,13 +104,13 @@ pub fn choice(
   )
   use _ <- result.try(
     value.object(criteria)
-    |> result.map_error(fn(_) { "duplicate Choice label" }),
+    |> result.map_error(fn(_) { wire.InvalidValue("duplicate Choice label") }),
   )
   let labels =
     list.map(alternatives, fn(option) { #(option.label, option.value) })
   use first <- result.try(
     list.first(alternatives)
-    |> result.replace_error("a Choice requires 2–255 options"),
+    |> result.replace_error(wire.InvalidValue("a Choice requires 2–255 options")),
   )
   Ok(internal.question(
     value.Object([
@@ -125,12 +125,16 @@ pub fn choice(
       )
       use selected_value <- result.try(
         list.key_find(labels, selected)
-        |> result.map_error(fn(_) { "unknown selected Choice label" }),
+        |> result.map_error(fn(_) {
+          wire.InvalidValue("unknown selected Choice label")
+        }),
       )
       use probabilities <- result.try(distribution(fields, wire.keys(labels)))
       use selected_probability <- result.try(
         list.key_find(probabilities, selected)
-        |> result.map_error(fn(_) { "missing selected Choice probability" }),
+        |> result.map_error(fn(_) {
+          wire.InvalidValue("missing selected Choice probability")
+        }),
       )
       use Nil <- result.try(wire.require(
         list.all(probabilities, fn(p) {
@@ -146,7 +150,9 @@ pub fn choice(
         list.try_map(labels, fn(label) {
           use probability <- result.map(
             list.key_find(probabilities, label.0)
-            |> result.map_error(fn(_) { "missing Choice probability" }),
+            |> result.map_error(fn(_) {
+              wire.InvalidValue("missing Choice probability")
+            }),
           )
           Probability(label.0, label.1, probability)
         }),
@@ -161,7 +167,7 @@ pub fn choice(
 pub fn score(
   instructions: Value,
   levels: List(Value),
-) -> Result(Question(Score), String) {
+) -> Result(Question(Score), wire.Error) {
   use instructions <- result.try(wire.content(instructions))
   use Nil <- result.try(wire.require(
     list.length(levels) >= 2 && list.length(levels) <= 10,
@@ -211,7 +217,7 @@ pub fn score(
   ))
 }
 
-pub fn ask(id: String, question: Question(a)) -> Result(Batch(a), String) {
+pub fn ask(id: String, question: Question(a)) -> Result(Batch(a), wire.Error) {
   use Nil <- result.map(wire.require(
     string.trim(id) != "",
     "empty classifier question ID",
@@ -228,7 +234,7 @@ pub fn ask(id: String, question: Question(a)) -> Result(Batch(a), String) {
 pub fn combine(
   left: Batch(a),
   right: Batch(b),
-) -> Result(Batch(#(a, b)), String) {
+) -> Result(Batch(#(a, b)), wire.Error) {
   let entries =
     list.append(internal.definitions(left), internal.definitions(right))
   use Nil <- result.try(wire.require(
@@ -237,7 +243,9 @@ pub fn combine(
   ))
   use _ <- result.try(
     value.object(entries)
-    |> result.map_error(fn(_) { "duplicate classifier question ID" }),
+    |> result.map_error(fn(_) {
+      wire.InvalidValue("duplicate classifier question ID")
+    }),
   )
   let decode_left = internal.decode(left)
   let decode_right = internal.decode(right)
@@ -258,7 +266,7 @@ pub fn definitions(batch: Batch(a)) -> Value {
   value.Object(internal.definitions(batch))
 }
 
-pub fn decode(batch: Batch(a), answers: Value) -> Result(a, String) {
+pub fn decode(batch: Batch(a), answers: Value) -> Result(a, wire.Error) {
   use fields <- result.try(wire.object(answers))
   use Nil <- result.try(wire.require(
     wire.same_keys(fields, wire.keys(internal.definitions(batch))),
@@ -270,7 +278,7 @@ pub fn decode(batch: Batch(a), answers: Value) -> Result(a, String) {
 fn answer_fields(
   raw: Value,
   kind: String,
-) -> Result(List(#(String, Value)), String) {
+) -> Result(List(#(String, Value)), wire.Error) {
   use fields <- result.try(wire.object(raw))
   use actual <- result.try(wire.required(fields, "type"))
   use Nil <- result.map(wire.require(
@@ -283,7 +291,7 @@ fn answer_fields(
 fn distribution(
   fields: List(#(String, Value)),
   labels: List(String),
-) -> Result(List(#(String, Float)), String) {
+) -> Result(List(#(String, Float)), wire.Error) {
   use raw <- result.try(wire.required(fields, "probabilities"))
   use fields <- result.try(wire.object(raw))
   use Nil <- result.try(wire.require(

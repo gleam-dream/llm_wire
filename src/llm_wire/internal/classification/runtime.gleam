@@ -310,7 +310,7 @@ pub fn receipt_codec(
   let restore = fn(model, state, request, response) {
     use expected <- result.try(
       encode_request(model, state, question.definitions(questions))
-      |> result.map_error(error.describe_prepare_error),
+      |> result.map_error(json_wire.PreparationFailed),
     )
     use sent <- result.try(json_wire.parse(request))
     use expected <- result.try(json_wire.parse(expected))
@@ -319,11 +319,13 @@ pub fn receipt_codec(
       "saved classifier questions differ from the deployed batch",
     ))
     use decoded <- result.try(
-      decode_response(response) |> result.map_error(error.describe),
+      decode_response(response) |> result.map_error(json_wire.ResponseFailed),
     )
     use answer <- result.map(
       question.decode(questions, decoded.answers)
-      |> result.map_error(question.describe_error),
+      |> result.map_error(fn(problem) {
+        json_wire.InvalidValue(question.describe_error(problem))
+      }),
     )
     Outcome(
       answer,
@@ -344,14 +346,18 @@ pub fn receipt_codec(
           receipt.request_json,
           receipt.response_json,
         )
-        |> result.map_error(codec.encode_failure),
+        |> result.map_error(fn(problem) {
+          codec.encode_failure(json_wire.describe_error(problem))
+        }),
       )
       use Nil <- result.map(
         json_wire.require(
           reconstructed == receipt,
           "native classifier receipt differs from its protocol evidence",
         )
-        |> result.map_error(codec.encode_failure),
+        |> result.map_error(fn(problem) {
+          codec.encode_failure(json_wire.describe_error(problem))
+        }),
       )
       value.Array([
         value.String("llm.classification.receipt.v1"),
@@ -385,9 +391,12 @@ pub fn receipt_codec(
           use state <- result.try(json_wire.required(fields, "state"))
           restore(model, state, request, response)
         }
-        _ -> Error("invalid classifier receipt format")
+        _ -> Error(json_wire.InvalidValue("invalid classifier receipt format"))
       }
-      decoded |> result.map_error(codec.decode_failure)
+      decoded
+      |> result.map_error(fn(problem) {
+        codec.decode_failure(json_wire.describe_error(problem))
+      })
     },
     schema: None,
     placeholder: Outcome(
