@@ -2,6 +2,20 @@
 
 ## Unreleased — initial release candidate
 
+-
+
++### Round 9 +
++- Added provider-neutral `classify` and `classify/question`, with TypeSafe
+
+- System One as the first wire, reveal-closure credentials, typed failures,
+- bounded HTTP calls, correlated telemetry, opaque testing builders and
+- durable receipt codecs. The external consumer also exercises a second wire.
+  +- One live TypeSafe call on 5 October 2026 resolved `jev-latest` to
+- `jev-1.13.0`; its redacted cassette replays offline. Credential scans passed.
+  +- Preserved the former bridge's question validation and transport behaviour;
+- existing receipt evidence remains readable. See the Round 9 migration notes.
+-
+
 ### Changed in round 7
 
 [docs/migration-wave-5.md](docs/migration-wave-5.md#round-7) records the live

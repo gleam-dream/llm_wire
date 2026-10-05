@@ -157,6 +157,61 @@ nullable, optional field, number range, pair and `codec.value()` on the same
 day with `gemini-3.8-flash`; the replies replay offline from
 `test/cassettes/live/`.
 
+## Classification
+
+`llm_wire/classify` is a separate request family for non-generative decisions.
+TypeSafe System One is its first wire; `classify.wire` supplies another wire's
+pure projection and decoder while the family retains transport, bounds,
+typed failures, telemetry and receipt validation.
+
+```gleam
+import gleam/option.{None}
+import json/blueprint/value
+import llm_wire/classify
+import llm_wire/classify/question
+
+let questions = question.ask("correct", question.noul(value.String("Correct?"), None))
+let config = classify.typesafe(fn() { key })
+let request = classify.request("jev-latest", value.String("2 + 2 = 4"), questions)
+let assert Ok(prepared) = classify.prepare(config, request)
+let assert Ok(outcome) = classify.run(http, prepared)
+// outcome.answer.yes is the yes probability.
+```
+
+`choice` maps string labels to application-native values and retains the full
+distribution. `score` retains the rubric, distribution and weighted position.
+`ask` and `combine` build heterogeneous batches. Source definitions are total;
+the corresponding `check_*` functions validate runtime definitions with typed
+`question.Error` (`error_kind`, `describe_error`). Confidence is provider
+concentration evidence, **not** a probability that the answer is correct.
+
+| Classification bound               | Default      | Setter                                                            |
+| ---------------------------------- | ------------ | ----------------------------------------------------------------- |
+| Whole request                      | 600 seconds  | `classify.with_timeout`, `After(Duration)` or explicit `Infinity` |
+| Request JSON                       | 1 MiB        | `classify.with_request_limit`                                     |
+| Response JSON                      | 1 MiB        | `classify.with_response_limit`                                    |
+| Questions                          | 256          | fixed                                                             |
+| Choice alternatives / score levels | 2–255 / 2–10 | fixed                                                             |
+
+`prepare` returns `error.PrepareError`; `run` returns the existing
+`llm_wire.Failure`, so `error.kind`, `describe_failure` and `advise` apply.
+The HTTP client's correlation joins HTTP Gun and llm_wire telemetry. The
+classification timeout replaces the HTTP view's default request timeout;
+connection, TLS, destination and header policy remain the client's.
+No call retries or follows redirects. Keys enter through a reveal closure.
+
+`classify.receipt_codec(config, questions)` retains native answers, models,
+usage and exact protocol evidence. It captures only the wire's pure encoder
+and decoder, never the credential closure or HTTP client, and rejects changed
+question meanings and forged native answers. Wire callbacks must be pure and
+must not capture credentials. Existing classifier receipts remain readable.
+
+Tests use opaque `testing.classification_response` builders and
+`testing.classification_exchange`, which works with HTTP Gun cassettes.
+The separate consumer exercises caller types, failure handling, bounds and a
+second wire. `dev/record-live typesafe-classification` makes one opt-in live
+call; the normal gate only replays its redacted cassette.
+
 ## Streaming
 
 ```gleam
