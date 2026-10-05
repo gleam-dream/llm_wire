@@ -557,3 +557,10 @@ store; the compatibility test opens it offline. Keep application operation
 identities and versions unchanged when only migrating this wiring.
 The decision and writing consumers migrate together and keep their native
 business routes, rubric evidence, approval and recovery semantics.
+
+### Round 9 test portability
+
+Cassette, recording and redaction fixtures use `/tmp` rather than the
+macOS-specific `/private/tmp`. This does not change public APIs, cassette
+bytes or application migration. The existing portability edits are committed
+separately from classification.
