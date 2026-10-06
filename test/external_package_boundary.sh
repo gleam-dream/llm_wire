@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-package_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+package_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT HUP INT TERM
 
@@ -304,8 +304,8 @@ pub fn restores_turn(
   json.parse(stored, message.turn_replay_decoder(text, calls))
 }
 EOF
-(cd "$positive" && gleam check --target erlang)
-(cd "$package_root/examples/consumer" && gleam run)
+(cd "$positive" && gleam check --target erlang && gleam build --target erlang --warnings-as-errors)
+(cd "$package_root/examples/consumer" && gleam build --warnings-as-errors && gleam run)
 
 negative="$scratch/negative"
 make_consumer "$negative"

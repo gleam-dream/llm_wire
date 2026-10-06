@@ -61,7 +61,13 @@ nix develop -c python3 dev/local-http.py
 
 The current [harness](../dev/local-http.py), [consumer](../test/llm_wire_local_gate.gleam)
 and [VM sampler](../test/llm_wire_measure_ffi.erl) are executable inputs. The
-harness writes `docs/evidence/http-gun/local-http.json` and a bounded server-log
-prefix; preserve the retained receipt before collecting a new run. The current
-source and host can produce different numbers. No benchmark was rerun for this
-documentation change.
+harness writes a fresh ignored `build/local-http/` directory. Select a new
+location with `--output PATH` or `LLM_WIRE_HTTP_OUTPUT`; reusing a directory fails.
+The receipt retains current source/sibling revisions and dirty flags, lockfile
+hashes, runtime and OS/architecture versions, raw consumer output and a bounded
+server-log prefix. Historical receipts remain unchanged.
+
+The full CI gate runs this finite workload on pushes, PRs and manual runs. Its
+weekly schedule also retains current observations. Acceptance checks semantic
+results, one H2 connection and cancellation isolation; timing has no speed
+ceiling. Current source and host can produce different numbers from the table.

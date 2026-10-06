@@ -54,10 +54,25 @@
           settings.global.excludes = [
             "**/*.pdf"
             ".render/**"
+            "**/.render/**"
+            "build/**"
+            "test/fixtures/**"
+            "test/cassettes/**"
+            "test/oracle/**"
+            "docs/evidence/**"
           ];
           programs.gleam.enable = true;
           programs.nixfmt.enable = true;
           programs.prettier.enable = true;
+          programs.ruff-format.enable = true;
+          programs.erlfmt.enable = true;
+          programs.shfmt.enable = true;
+          settings.formatter.shfmt.includes = [
+            "*.sh"
+            "dev/gate"
+            "dev/check-native"
+            "dev/record-live"
+          ];
         };
       in
       {
@@ -74,6 +89,10 @@
             python3
             nghttp2
             ripgrep
+            actionlint
+            shellcheck
+            ruff
+            findutils
             treefmtEval.config.build.wrapper
           ];
         };

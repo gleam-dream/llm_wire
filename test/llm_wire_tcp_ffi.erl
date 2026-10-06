@@ -14,7 +14,8 @@ listen(Port) ->
     case gen_tcp:listen(Port, [binary, {active, false}, {reuseaddr, true}, {ip, {127, 0, 0, 1}}]) of
         {ok, ListenSocket} ->
             case inet:port(ListenSocket) of
-                {ok, AssignedPort} -> {ok, {ListenSocket, AssignedPort}};
+                {ok, AssignedPort} ->
+                    {ok, {ListenSocket, AssignedPort}};
                 {error, Reason} ->
                     gen_tcp:close(ListenSocket),
                     {error, atom_to_binary(Reason, utf8)}

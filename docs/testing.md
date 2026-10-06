@@ -7,23 +7,28 @@
 ```sh
 nix develop -c sh dev/gate fast
 nix develop -c sh dev/gate full
-nix fmt
+nix fmt -- PATH...
 nix flake check
 ```
 
-| Check                                       | Fast | Full        | What it establishes                                     |
-| ------------------------------------------- | ---- | ----------- | ------------------------------------------------------- |
-| Tree/Gleam formatting                       | yes  | yes         | Declared formatting                                     |
-| Gleam check/build with warnings as errors   | yes  | clean build | Public types and compiler checks                        |
-| Erlang test bridges with warnings as errors | yes  | yes         | Test FFI compilation                                    |
-| Production boundary/public module-doc audit | yes  | yes         | Named forbidden paths and documentation presence        |
-| Gleam and classifier Python tests           | yes  | yes         | Named semantic, local H1/TLS and server cases           |
-| External positive/negative consumers        | no   | yes         | Public adoption and intended opacity errors             |
-| Local nghttpd H2/concurrency harness        | no   | yes         | Finite local trust, isolation and resource observations |
-| Git diff whitespace                         | yes  | yes         | Patch whitespace                                        |
+| Check                                               | Fast | Full        | What it establishes                                     |
+| --------------------------------------------------- | ---- | ----------- | ------------------------------------------------------- |
+| Tree/Gleam formatting                               | yes  | yes         | Declared formatting                                     |
+| Gleam check/build with warnings as errors           | yes  | clean build | Public types and compiler checks                        |
+| Authored Erlang bridges with warnings as errors     | yes  | yes         | Independent native FFI compilation                      |
+| Production boundary/public module-doc audit         | yes  | yes         | Named forbidden paths and documentation presence        |
+| Gleam and classifier Python tests                   | yes  | yes         | Named semantic, local H1/TLS and server cases           |
+| External positive/negative consumers                | no   | yes         | Public adoption and intended opacity errors             |
+| Local nghttpd H2/concurrency harness                | no   | yes         | Finite local trust, isolation and resource observations |
+| Workflow/shell/Python lint and gate counterexamples | yes  | yes         | Authored tooling and failed evidence rejection          |
+| Git diff whitespace                                 | yes  | yes         | Patch whitespace                                        |
 
 - `test/external_package_boundary.sh` uses the checked-in consumer dependency closure with absolute local paths. Negative fixtures use `compile-package --no-beam` against a positive compiled control, so missing dependencies do not impersonate intended type errors.
 - `dev/local-http.py` starts controlled verified-TLS/H2 fixtures. It measures finite simultaneous demand and sibling cancellation; it does not establish provider throughput, universal parser allocation or a soak guarantee.
+- CI runs the full gate on every push, PR, manual run and weekly schedule. The final `CI` job rejects failed, cancelled or skipped mandatory jobs. Weekly runs retain current finite HTTP observations without a latency ceiling. Compiler flags reject warnings; runtime fault reports remain runtime evidence.
+- `sibling-revisions.txt` pins each path dependency. Private Sinal/HTTP Gun checkouts use a read-only GitHub App (`SIBLINGS_APP_CLIENT_ID` variable and `SIBLINGS_APP_PRIVATE_KEY` secret) or optional `SIBLINGS_READ_TOKEN`; credential persistence is disabled and fork PRs fail explicitly before private access.
+- The canonical formatting check runs against a copied Nix tree. Frozen request fixtures, cassettes, oracle provenance, historical evidence and generated output are excluded from automatic formatting. Static checks never execute `dev/record-live` or read its credential source.
+- Current H2 receipts go to a fresh ignored `build/local-http/` directory, or an explicit `--output PATH` / `LLM_WIRE_HTTP_OUTPUT`. CI uploads its curated receipt directory, bounded server prefix, consumer output and source/sibling/toolchain provenance even on failures. Existing output directories are refused.
 - Raw adoption receipts remain under `docs/evidence/http-gun/`. [ADR-0002](adr/0002-http-resource-authority.md) identifies the historical runtime/source revisions and limits; [oracle guidance](../test/oracle/README.md) identifies selected upstream cases.
 
 ## Offline consumers
