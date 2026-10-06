@@ -1,4 +1,4 @@
-//// Wave 4 facade: one execution family, typed failures, retry advice,
+//// Public generation API: one execution family, typed failures, retry advice,
 //// conversation codecs, built-in wire fakes and telemetry correlation.
 
 import gleam/bit_array

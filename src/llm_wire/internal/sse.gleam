@@ -185,25 +185,20 @@ type LineExtract {
 
 fn find_line_terminator(buffer: BitArray, offset: Int) -> LineExtract {
   case buffer {
-    // Check for \r\n
     <<prefix:bytes-size(offset), 13, 10, rest:bits>> -> LineFound(prefix, rest)
 
-    // Check for \r alone, but only if not at end of buffer
     <<prefix:bytes-size(offset), 13, rest:bits>> ->
       case bit_array.byte_size(rest) == 0 {
-        // Trailing \r might be the first byte of \r\n across chunks! Leave in buffer.
+        // Keep a trailing CR until the next chunk can distinguish CR from CRLF.
         True -> EndOfBuffer(buffer)
         False -> LineFound(prefix, rest)
       }
 
-    // Check for \n alone
     <<prefix:bytes-size(offset), 10, rest:bits>> -> LineFound(prefix, rest)
 
-    // Advance 1 byte
     <<_:bytes-size(offset), _:size(8), _:bits>> ->
       find_line_terminator(buffer, offset + 1)
 
-    // Reached end of buffer without line terminator
     _ -> EndOfBuffer(buffer)
   }
 }
@@ -213,7 +208,6 @@ fn process_line(
   line: String,
 ) -> Result(#(Framer, Option(ServerSentEvent)), error.Error) {
   case line {
-    // Blank line indicates event boundary
     "" -> {
       case framer.data_lines {
         [] ->
@@ -261,10 +255,8 @@ fn process_line(
       }
     }
 
-    // Comment line
     ":" <> _ -> Ok(#(framer, None))
 
-    // Field line
     _ -> {
       let #(field, value) = parse_field(line)
       case field {

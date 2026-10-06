@@ -274,8 +274,7 @@ pub fn openai_text_stream_test() {
 }
 
 pub fn openai_interleaved_tool_calls_test() {
-  // The reducer no longer takes the tool list (`new_with_tools` is gone):
-  // the runtime admits calls against tools at the terminal.
+  // The runtime admits calls against declared tools at the terminal.
   let reducer = openai.new(limits.default())
 
   // Add tool call 1: item_1, index 0, call_id "call_weather_1"
@@ -288,7 +287,7 @@ pub fn openai_interleaved_tool_calls_test() {
     )
   let assert Ok(#(reducer, _)) = openai.step(reducer, ev1)
 
-  // Add tool call 2: item_2, index 1, call_id "call_weather_2" (same tool name!)
+  // Two calls to the same tool have distinct routing and application ids.
   let ev2 =
     sse.ServerSentEvent(
       event: Some("response.output_item.added"),
@@ -298,7 +297,7 @@ pub fn openai_interleaved_tool_calls_test() {
     )
   let assert Ok(#(reducer, _)) = openai.step(reducer, ev2)
 
-  // Interleaved argument deltas: chunk for call 2 first!
+  // Call 2 receives arguments first; terminal calls must retain start order.
   let ev3 =
     sse.ServerSentEvent(
       event: Some("response.function_call_arguments.delta"),
@@ -307,7 +306,7 @@ pub fn openai_interleaved_tool_calls_test() {
       retry: None,
     )
   let assert Ok(#(reducer, p3)) = openai.step(reducer, ev3)
-  // Wave 4 reports argument text as progress, attributed to its own call.
+  // Argument progress uses the application call id, not the item routing id.
   p3
   |> should.equal([
     message.ToolArgumentsDelta("call_weather_2", "{\"city\": \"Paris\"}"),
@@ -336,7 +335,6 @@ pub fn openai_interleaved_tool_calls_test() {
       retry: None,
     )
   let assert Ok(#(reducer, p5)) = openai.step(reducer, ev5)
-  // Call ids and tool names are plain strings now.
   let expected_call_id1 = "call_weather_1"
   let expected_tool_name = "get_weather"
   p5 |> should.equal([])

@@ -80,15 +80,14 @@ pub fn google_text_streaming_and_stop_completion_test() {
 }
 
 pub fn google_tool_call_buffering_and_completion_test() {
-  // `new_with_tools` is gone: the runtime admits calls at the terminal.
+  // The runtime admits calls against declared tools at the terminal.
   let reducer = google.new(limits.default())
 
   // Tool call chunk with ID
   let chunk1 =
     "{\"responseId\":\"resp_tools\",\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"name\":\"calc\",\"args\":{\"x\":42},\"id\":\"call_calc_1\"}}]}}]}"
   let assert Ok(#(reducer, progress1)) = google.step(reducer, event(chunk1))
-  // Crucial: no executable tool calls emitted in progress! Wave 4 reports
-  // the whole argument text as `ToolArgumentsDelta` progress instead.
+  // Argument text is progress; executable calls stay private until terminal.
   progress1
   |> should.equal([message.ToolArgumentsDelta("call_calc_1", "{\"x\":42}")])
 
@@ -128,13 +127,13 @@ pub fn google_tool_call_buffering_and_completion_test() {
 }
 
 pub fn google_tool_call_without_id_synthesizes_deterministic_id_test() {
-  // `new_with_tools` is gone: the runtime admits calls at the terminal.
+  // The runtime admits calls against declared tools at the terminal.
   let reducer = google.new(limits.default())
 
   // Legacy Gemini chunk without 'id' field in functionCall
   let chunk1 =
     "{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"name\":\"calc\",\"args\":{\"x\":99}}}]}}]}"
-  // Wave 4 reports the arguments as progress under the synthesized id.
+  // Argument progress uses the synthesized application call id.
   let assert Ok(#(reducer, [message.ToolArgumentsDelta("call_0", "{\"x\":99}")])) =
     google.step(reducer, event(chunk1))
 
@@ -171,7 +170,7 @@ pub fn google_tool_call_without_id_synthesizes_deterministic_id_test() {
 }
 
 pub fn google_tool_call_duplicate_id_fails_test() {
-  // `new_with_tools` is gone: the runtime admits calls at the terminal.
+  // The runtime admits calls against declared tools at the terminal.
   let reducer = google.new(limits.default())
 
   let chunk =
@@ -339,7 +338,6 @@ pub fn google_function_declaration_uses_json_schema_profile_and_stop_limit_test(
       llm_wire.request("gemini-3.8-flash", [message.User("shape")]),
       ["1", "2", "3", "4", "5", "6"],
     )
-  // The typed problem replaces the "at most 5" message.
   llm_wire.prepare(config, six_stops)
   |> should.equal(Error(error.InvalidRequest(error.TooManyStopSequences(5))))
 
@@ -660,7 +658,7 @@ fn list_for_each(items: List(a), f: fn(a) -> Nil) -> Nil {
 }
 
 pub fn google_gemini_thought_signature_is_preserved_in_assistant_data_test() {
-  // `new_with_tools` is gone: the runtime admits calls at the terminal.
+  // The runtime admits calls against declared tools at the terminal.
   let reducer = google.new(limits.default())
   let payload =
     "{\"candidates\":[{\"finishReason\":\"STOP\",\"content\":{\"parts\":[{\"functionCall\":{\"name\":\"calc\",\"id\":\"call_1\",\"args\":{\"x\":1}},\"thoughtSignature\":\"opaque\"}]}}]}"
@@ -693,7 +691,7 @@ pub fn google_gemini_thought_signature_is_preserved_in_assistant_data_test() {
 }
 
 pub fn google_signed_non_tool_parts_are_retained_in_order_test() {
-  // `new_with_tools` is gone: the runtime admits calls at the terminal.
+  // The runtime admits calls against declared tools at the terminal.
   let reducer = google.new(limits.default())
   let payload =
     "{\"candidates\":[{\"finishReason\":\"STOP\",\"content\":{\"parts\":[{\"text\":\"thinking\",\"thoughtSignature\":\"text-sig\"},{\"functionCall\":{\"name\":\"calc\",\"id\":\"call_1\",\"args\":{\"x\":1}},\"thoughtSignature\":\"call-sig\"}]}}]}"
@@ -728,7 +726,7 @@ pub fn google_malformed_thought_signature_is_a_typed_protocol_error_test() {
 }
 
 pub fn google_tool_call_outside_the_name_grammar_is_a_protocol_error_test() {
-  // `new_with_tools` is gone: the runtime admits calls at the terminal.
+  // The runtime admits calls against declared tools at the terminal.
   let reducer = google.new(limits.default())
   let chunk =
     "{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"name\":\"default_api.calc\",\"args\":{\"x\":1},\"id\":\"call_dot\"}}]}}]}"

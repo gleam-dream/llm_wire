@@ -121,8 +121,7 @@ pub fn anthropic_text_stream_test() {
 }
 
 pub fn anthropic_tool_use_stream_test() {
-  // The reducer no longer takes the tool list (`new_with_tools` is gone):
-  // the runtime admits calls against tools at the terminal.
+  // The runtime admits calls against declared tools at the terminal.
   let reducer = anthropic.new(limits.default())
 
   // message_start
@@ -154,7 +153,7 @@ pub fn anthropic_tool_use_stream_test() {
       retry: None,
     )
   let assert Ok(#(reducer, p3)) = anthropic.step(reducer, ev3)
-  // Wave 4 reports argument text as progress; the call stays private.
+  // Argument text is progress; executable calls stay private until terminal.
   p3
   |> should.equal([message.ToolArgumentsDelta("toolu_123", "{\"symbol\": ")])
 
@@ -179,7 +178,6 @@ pub fn anthropic_tool_use_stream_test() {
       retry: None,
     )
   let assert Ok(#(reducer, p5)) = anthropic.step(reducer, ev5)
-  // Call ids and tool names are plain strings now.
   let expected_call_id = "toolu_123"
   let expected_tool_name = "get_stock_price"
   p5 |> should.equal([])
@@ -257,7 +255,7 @@ pub fn anthropic_server_tool_test() {
       retry: None,
     )
   let assert Ok(#(_reducer, progress)) = anthropic.step(reducer, ev3)
-  // Server tool MUST NOT be emitted as application tool call!
+  // A server tool must not be emitted as an application tool call.
   progress |> should.equal([])
 }
 
@@ -369,7 +367,7 @@ pub fn anthropic_cumulative_usage_replacement_test() {
     )),
   ])
 
-  // delta 2: output_tokens: 25 (cumulative snapshot replaces 10, NOT added!)
+  // Cumulative usage replaces the prior count; it must not be added to it.
   let ev3 =
     sse.ServerSentEvent(
       event: Some("message_delta"),

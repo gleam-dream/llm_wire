@@ -74,7 +74,6 @@ pub fn owner_copied_handles_and_close_test() {
     )
   let stream2 = stream1
 
-  // `close` no longer returns a `Result`: it is always answered.
   owner.close(stream1) |> should.equal(stream_types.ConsumerClosed)
   owner.close(stream2) |> should.equal(stream_types.AlreadyTerminal)
   owner.next(stream2, Some(1000))
@@ -164,8 +163,7 @@ fn wait_for_conflict(stream: owner.Stream, attempts: Int) -> Bool {
   }
 }
 
-/// The old idle deadline ran from the start; that span is now the
-/// first-token timer, which fires when no progress arrives at all.
+/// The first-token timer ends the call when no semantic progress arrives.
 pub fn owner_first_token_deadline_test() {
   let timeouts = owner_provider_helper.timeouts(Some(10_000), Some(50), None)
   let assert Ok(stream) =
@@ -401,8 +399,8 @@ pub fn owner_argument_disconnect_never_emits_partial_tool_call_test() {
       False,
     ),
   )
-  // Progress may precede the failure (usage and, new in wave 4, the
-  // tool-argument delta), but never a completed partial tool call.
+  // Usage and argument progress may precede failure; a partial tool call must
+  // never be returned as a completed call.
   let assert Ok(failed) = read_to_terminal(stream)
   let assert stream_types.StreamFailed(error.Http(failure), _) = failed
   http_error.reason(failure)

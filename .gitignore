@@ -4,3 +4,5 @@ erl_crash.dump
 .direnv/
 .env.local
 .env*.local
+.render/
+**/.render/

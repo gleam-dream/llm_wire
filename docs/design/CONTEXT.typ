@@ -1,0 +1,15 @@
+#let terms = (
+  (slug: "term-prepared-generation", title: [Prepared generation], body: [One admitted and encoded generation request with its provider, settings and output decoder. It is a reusable value rather than an executing operation.]),
+  (slug: "term-stream-owner", title: [Stream owner], body: [The authoritative process holding one generation execution's framing, reduction, delivery and terminal state. Copied stream handles name the same owner.]),
+  (slug: "term-semantic-progress", title: [Semantic progress], body: [Accepted text, refusal, reasoning or tool-argument output from a generation response. Usage reports and extension notifications are not semantic progress.]),
+  (slug: "term-assistant-turn", title: [Assistant turn], body: [One response's text, application tool calls, provider identity and message-local replay data. It contains no conversation history or execution capability.]),
+  (slug: "term-replay-data", title: [Replay data], body: [Provider-owned response data required to encode that assistant turn in a later caller-supplied conversation. It is not a durable execution checkpoint.]),
+  (slug: "term-tool-call-issue", title: [Tool call issue], body: [An undeclared tool name or invalid argument value reported beside a complete tool-request turn under the reporting policy. It does not establish permission to execute that call.]),
+  (slug: "term-send-evidence", title: [Send evidence], body: [The conservative classification NotSent, MaybeSent or Completed attached to a failed interaction. It describes observed reachability and completion rather than effect rollback or replay safety.]),
+  (slug: "term-provider-delay", title: [Provider delay], body: [The provider's readable Retry-After duration, distinguished from caller-selected backoff. It has no package-imposed maximum.]),
+  (slug: "term-classification-wire", title: [Classification wire], body: [A pure provider protocol projection with its identity, default endpoint and fixed receipt evidence bounds. Its lifetime is independent of live execution settings.]),
+  (slug: "term-question-batch", title: [Question batch], body: [Named classification questions retaining application-native values and a decoder for their combined answer. Heterogeneous batches combine their native answers as tuples.]),
+  (slug: "term-answer-candidate", title: [Answer candidate], body: [An untrusted provider-neutral yes probability, selected choice or rated rubric emitted by a classification wire. Shared admission determines whether it matches the authored questions.]),
+  (slug: "term-classification-receipt", title: [Classification receipt], body: [The requested model, state and original request and response evidence from which a native classification outcome is reconstructed. Its codec captures a pure wire and questions rather than live credentials.]),
+  (slug: "term-concentration-evidence", title: [Concentration evidence], body: [An optional provider-reported confidence measurement of the answer distribution. It is not the probability that the answer is correct.]),
+)

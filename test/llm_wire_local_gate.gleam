@@ -217,7 +217,6 @@ pub fn main() -> Nil {
   let assert Ok(llm_wire.Progress(_)) = llm_wire.next(slow)
   let assert Ok(sibling) = llm_wire.stream(client, long)
   let assert Ok(llm_wire.Progress(_)) = llm_wire.next(sibling)
-  // `close` answers `Closed` directly; it no longer returns a `Result`.
   let assert llm_wire.Closed = llm_wire.close(slow)
   let assert Ok(llm_wire.Answer(text:, ..)) = llm_wire.collect(sibling)
   let assert 2_097_152 = string.byte_size(text)

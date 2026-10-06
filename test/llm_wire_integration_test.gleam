@@ -68,9 +68,8 @@ fn serve_raw(server: fake_server.FakeServer, raw: String) -> Nil {
   Nil
 }
 
-/// LLM Wire no longer checks host strings: a plaintext endpoint to any host
-/// prepares, and HTTP Gun's destination policy refuses it at execution when
-/// the host resolves to a non-loopback address, before anything is sent.
+/// Preparation admits plaintext host names. HTTP Gun refuses resolved
+/// non-loopback addresses before sending.
 pub fn api_rejects_remote_plaintext_before_transport_test() {
   let config =
     openai.new("sk-never-send")
@@ -133,7 +132,7 @@ pub fn caller_owned_assistant_turn_requires_exact_local_result_coverage_test() {
   |> should.equal(Some("resp_1"))
   let assert [call] = turn.calls
 
-  // Each coverage problem is now a typed preparation error.
+  // Missing, duplicate and unknown result ids fail preparation.
   llm_wire.prepare(
     config,
     conversation_fixture.append_results(request, turn, []),
@@ -339,7 +338,6 @@ pub fn real_http_anthropic_streaming_test() {
     ])
 
   let #(progress, outcome) = read_all(stream, [])
-  // Wave 4 also reports the tool-argument delta as progress.
   list.contains(progress, message.ToolArgumentsDelta("call_99", "{\"x\": 42}"))
   |> should.be_true
   let assert Ok(usage) =
@@ -390,7 +388,6 @@ pub fn real_http_error_response_test() {
 
   let res = client.open_openai_stream(owned_http, server.port, fn(c) { c }, [])
 
-  // The retry hint is now a `Duration`.
   let assert Error(failure) = opening_failure(res)
   failure.error
   |> should.equal(error.Status(
@@ -419,8 +416,7 @@ pub fn buffered_http_status_failure_records_response_bytes_test() {
     )
   let assert Error(failure) = llm_wire.run(owned_http, prepared)
   let assert error.Status(429, "busy", _) = failure.error
-  // The old evidence (may have reached the provider, response bytes seen)
-  // is now `Completed`: the provider finished a response with this status.
+  // Completed means the provider finished its response, including an error status.
   failure.sent |> should.equal(llm_wire.Completed)
   fake_server.stop(server)
 }
@@ -556,8 +552,7 @@ pub fn real_http_disconnect_mid_stream_test() {
   let assert Ok(llm_wire.Progress(message.TextDelta(..))) =
     llm_wire.next(stream)
 
-  // The next read is the unexpected-EOF failure. Response bytes are no
-  // longer reported apart from `sent`; semantic progress is `partial_output`.
+  // Unexpected EOF retains uncertain send evidence and accepted semantic progress.
   let assert Ok(llm_wire.Done(Error(failure))) = llm_wire.next(stream)
   let assert error.Protocol(_) = failure.error
   failure.partial_output |> should.be_true
@@ -625,8 +620,7 @@ pub fn gun_tls_stream_with_pinned_ca_test() {
   process.send_exit(server)
 }
 
-/// TLS trust is the HTTP Gun client's setting now, not a per-call mode: the
-/// pinned CA is trusted, so only the host name can fail verification.
+/// The client trusts the pinned CA; this fixture fails host-name verification.
 pub fn gun_tls_rejects_hostname_mismatch_test() {
   use owned_http <- http_test_helpers.with_settings(
     pinned_ca_settings()
