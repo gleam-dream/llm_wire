@@ -22,14 +22,6 @@ jobs:
         with:
           path: llm_wire
           persist-credentials: false
-      - name: Require trusted private dependency access
-        env:
-          FORK: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
-        run: |
-          if [[ "$FORK" == true ]]; then
-            echo '::error::Fork PRs cannot access private dependencies; run this gate in a trusted branch.'
-            exit 1
-          fi
       - name: Read immutable sibling revisions
         id: revisions
         working-directory: llm_wire
@@ -39,23 +31,6 @@ jobs:
             [[ "$revision" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid $package revision" >&2; exit 1; }
             echo "$package=$revision" >> "$GITHUB_OUTPUT"
           done
-      - name: Read private siblings through GitHub App
-        if: vars.SIBLINGS_APP_CLIENT_ID != ''
-        id: sibling-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          client-id: ${{ vars.SIBLINGS_APP_CLIENT_ID }}
-          private-key: ${{ secrets.SIBLINGS_APP_PRIVATE_KEY }}
-          owner: gleam-dream
-          repositories: |
-            sinal
-            http_gun
-          permission-contents: read
-      - name: Require private checkout credential
-        env:
-          SIBLING_TOKEN: ${{ steps.sibling-token.outputs.token || secrets.SIBLINGS_READ_TOKEN }}
-        run: |
-          [[ -n "$SIBLING_TOKEN" ]] || { echo '::error::Configure the read-only sibling App or SIBLINGS_READ_TOKEN.'; exit 1; }
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: lostbean/json_blueprint
@@ -67,14 +42,12 @@ jobs:
           repository: gleam-dream/sinal
           ref: ${{ steps.revisions.outputs.sinal }}
           path: sinal
-          token: ${{ steps.sibling-token.outputs.token || secrets.SIBLINGS_READ_TOKEN }}
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: gleam-dream/http_gun
           ref: ${{ steps.revisions.outputs.http_gun }}
           path: http_gun
-          token: ${{ steps.sibling-token.outputs.token || secrets.SIBLINGS_READ_TOKEN }}
           persist-credentials: false
       - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
       - name: Complete full gate
