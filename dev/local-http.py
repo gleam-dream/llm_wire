@@ -40,6 +40,20 @@ def provenance(output):
         return subprocess.check_output(args, cwd=cwd, text=True, timeout=10).strip()
 
     def revision(directory):
+        checkout = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=directory,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        # Downstream qualification also runs exported source copies. A parent
+        # checkout must not be attributed to the copied package.
+        if (
+            checkout.returncode
+            or Path(checkout.stdout.strip()).resolve() != directory.resolve()
+        ):
+            return {"commit": None, "dirty": None}
         return {
             "commit": command("git", "rev-parse", "HEAD", cwd=directory),
             "dirty": bool(command("git", "status", "--porcelain", cwd=directory)),

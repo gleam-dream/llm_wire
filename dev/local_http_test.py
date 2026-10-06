@@ -97,3 +97,44 @@ class LocalEvidenceTests(unittest.TestCase):
                 )
                 if not accepted:
                     self.assertIn("unused", result.stdout + result.stderr)
+
+    def test_unversioned_consumer_copy_retains_provenance(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            root = workspace / "llm_wire"
+            root.mkdir()
+            for name in ("json_blueprint", "sinal", "http_gun"):
+                (workspace / name).mkdir()
+            for name in (
+                "flake.lock",
+                "manifest.toml",
+                "examples/consumer/manifest.toml",
+            ):
+                lock = root / name
+                lock.parent.mkdir(parents=True, exist_ok=True)
+                lock.write_text("fixture lock")
+            output = workspace / "evidence"
+            output.mkdir()
+            original = subprocess.check_output
+
+            def version_command(*arguments, **keywords):
+                if arguments[0][0] == "git":
+                    return original(*arguments, **keywords)
+                return "fixture version"
+
+            with (
+                patch.object(local_http, "ROOT", root),
+                patch.object(
+                    local_http.subprocess, "check_output", side_effect=version_command
+                ),
+            ):
+                local_http.provenance(output)
+            receipt = local_http.json.loads((output / "provenance.json").read_text())
+            self.assertEqual(receipt["source"], {"commit": None, "dirty": None})
+            self.assertTrue(
+                all(
+                    value == {"commit": None, "dirty": None}
+                    for value in receipt["siblings"].values()
+                )
+            )
+            self.assertEqual(len(receipt["lockfiles"]), 3)
