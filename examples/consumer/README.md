@@ -18,7 +18,8 @@ uses of the API fail with the intended compiler errors.
    `llm_wire.tool_result` per call, and prepare the next request;
 4. streaming with `llm_wire.stream` and `llm_wire.next` until `Done`;
 5. retry decisions with `llm_wire.advise`: LLM Wire never retries, so the
-   application waits the advised delay and runs the same prepared call again;
+   application bounds attempts and uses one monotonic deadline for calls and
+   waits; an unaffordable provider delay returns the original failure;
 6. a custom adapter built with `llm_wire/provider`, whose key lives only in
    its header closure.
 
@@ -40,6 +41,31 @@ The twelve scripted exchanges of `flow` have identical replies deliberately.
 For distinct replies to identical concurrent requests, coordinate admission
 order explicitly. The example uses HTTP Gun's default configuration: each LLM
 call's own timeouts replace the client's request timeout.
+
+`run_with_retries` admits positive attempts and a total budget of
+1–4,294,967,295 whole milliseconds (the BEAM receive timeout range). Fallback
+backoff cannot be negative. It uses public `stream`, `next_within` and `close`
+because a prepared call already captures its original timeouts. The same
+deadline survives retries and progress events; provider delays are never
+shortened to fit. Attempt exhaustion and unaffordable waits preserve the
+original `Failure` in `ProviderFailure`.
+
+`RetryDeadlineReached` means local work was stopped; it does not prove that the
+provider cancelled or avoided charging tokens. Startup retains its runtime
+bound; this helper does not preempt synchronous custom callbacks.
+Read-timeout arbitration can take up
+to five additional seconds, and close allows up to five seconds before killing
+the owner. The budget bounds admitted execution and waiting, not an exact
+return-time ceiling including cleanup. The helper owns each stream; the caller
+continues to own the shared HTTP client.
+
+`retry_checks` uses strict offline playback to check excessive provider delays,
+cumulative waiting, attempt exhaustion, affordable retry and invalid policy.
+`test/retry_deadline.py` runs `retry_deadline_checks` against a temporary loopback
+HTTP server: an infinite-timeout call is closed at the application deadline,
+and time spent in a failed call prevents an unaffordable fallback retry. The
+fixture checks request counts, HTTP closure and released body/queue counters.
+These checks run in the external-package boundary command above.
 
 `classification_consumer` exercises `classify.typesafe()` with separate live
 settings, then an independent array-based provider using typed question views

@@ -21,9 +21,6 @@
     pending-entry(title: "Deliver bounded inline transcription", kind: "build", since: "2026-10-09", adr: [#adr(9)])[
       Implement the accepted inline transcription contract and qualify the public API with an independent consumer. Retain this entry until owner implementation acceptance.
     ],
-    pending-entry(title: "Bound waiting in the retry teaching example", kind: "build", adr: [#adr(7)])[
-      The public retry helper sleeps an uncapped ProviderDelay despite the contract requiring caller-owned waiting bounds. A finite attempt count does not bound that sleep. Correcting executable example behavior requires a separate change; a caller should refuse a requested wait exceeding its remaining budget rather than retry earlier than requested.
-    ],
     pending-entry(title: "Resolve stream read authority", kind: "ruling", adr: [#adr(7)])[
       The public Stream documentation permits only the creating process to read. The owner accepts reads from other processes while allowing one pending read and retaining creator-owned lifetime. Neither side is newly approved by this capture; settle which read authority the public contract promises.
     ],
@@ -335,6 +332,14 @@
       #when[It requests retry advice.]
       #then[It receives a prospect and provider delay or caller-backoff choice.]
       #then[No wait, new request or tool effect occurs.]
+    ]
+    #behavior(title: "The retry consumer bounds active work and waiting", area: "Retry consumer", level: "interface")[
+      #given[The caller supplies a prepared interaction, finite total duration, maximum attempts and fallback delay.]
+      #when[The consumer executes its retry loop.]
+      #then[The consumer admits positive attempts and a total budget of 1 through 4,294,967,295 whole milliseconds, within the BEAM receive timeout range. Invalid budgets or negative fallback fail locally without starting a call.]
+      #then[One monotonic deadline accounts for calls and waits. Each stream read uses the remaining duration; expiry closes the owned stream and returns an application deadline error without claiming provider rollback.]
+      #then[A provider delay or fallback that cannot fit before the deadline returns the original typed provider failure without shortening the wait or starting another call.]
+      #then[The supplied client remains caller-owned. Startup, read-timeout arbitration and cleanup retain their own runtime bounds. Synchronous extension callbacks are not preempted; the budget does not promise an exact return-time ceiling. #adr(9) records this boundary.]
     ]
   ])
 

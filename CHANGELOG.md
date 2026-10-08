@@ -3,7 +3,7 @@
 ## Unreleased
 
 - Inline Google audio transcription adds typed admission and settings, pure preparation, completed text and common failure evidence. It uses the caller's HTTP view unchanged and introduces no retries, persistence or agent runtime.
-
+- The retry teaching consumer bounds attempts, calls and waiting with one application deadline, preserves failures when provider delays cannot fit, and closes active streams on expiry. Separate offline and local HTTP regressions cover the policy; core retry ownership remains unchanged.
 - Initial 0.1.0 candidate for Gleam on Erlang/OTP; no published release history is claimed.
 - One generic generation family supports text and application-native structured output through OpenAI Responses, Anthropic Messages, Google GenerateContent and public custom adapters.
 - Pure preparation validates settings, schemas, conversations and byte limits before execution. Typed outcomes distinguish answers, complete tool requests, partial output and model refusal; content filtering remains a typed failure.

@@ -38,7 +38,7 @@ nix flake check
 - Its transcription consumer exercises common preparation, custom endpoint/model/language/mode, native result records and status failures. Native transcription tests cover admission, output, borrowed limits/deadlines/cancellation, client reuse, JSON depth and credential-free correlated observations. Negative compiler fixtures preserve opaque Audio, Config and Prepared values.
 - HTTP Gun owns scripts, current binary cassettes, strict playback, recording and publication. Missing, corrupt, incompatible, mismatched or exhausted playback never falls back to a network; a mismatch does not consume the expected exchange.
 - Semantic `llm_wire/testing` replies lower through the real provider reducer. Raw event builders support malformed/fragmented/custom protocols; high-level final-answer substitution alone is not provider reduction evidence.
-- The retry helper currently sleeps an uncapped provider delay. [ADR-0007](adr/0007-preserve-observed-contract-gaps.md) records that open example behavior; bound caller waiting before adapting it for production.
+- The retry consumer tests excessive provider delay, cumulative waiting, attempt exhaustion and invalid policy through strict playback. A loopback HTTP fixture verifies that active-call time consumes the same deadline, expiry closes the stream and no unaffordable retry starts. [ADR-0009](adr/0009-bound-the-retry-consumer.md) records the application deadline and separate cleanup bounds. No live provider or extension-callback preemption claim follows from these checks.
 
 ## Opt-in commercial-provider recording
 

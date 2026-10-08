@@ -15,6 +15,7 @@ import gleam/time/duration.{type Duration}
 import http_gun
 import http_gun/cassette
 import http_gun/config as http_config
+import http_gun/deadline
 import http_gun/testing as http_testing
 import json/blueprint/codec
 import llm_wire
@@ -187,30 +188,105 @@ fn read(
 
 // --- retry advice ------------------------------------------------------------
 
-/// Run, and run again while `advise` says another attempt may help, waiting
-/// the provider's `Retry-After` or, when it named none, `fallback`. LLM Wire
-/// never retries itself.
+pub type RetryError {
+  /// Attempts must be positive; budget is 1..4_294_967_295 whole milliseconds
+  /// (the BEAM receive timeout range); fallback cannot be negative.
+  InvalidRetryBudget
+  ProviderFailure(llm_wire.Failure)
+  /// Local work was stopped. The provider may still have received the call.
+  RetryDeadlineReached
+  StreamReadFailed(llm_wire.ReadError)
+}
+
+/// Bound calls and waits with one monotonic deadline and an attempt limit.
+/// An unaffordable delay returns the original failure, never an early retry.
+/// Expiry closes the owned stream; the shared client stays caller-owned.
+/// Runtime startup, read cancellation and cleanup have their own bounds.
 pub fn run_with_retries(
   client: http_gun.Client,
   prepared: llm_wire.Prepared(o),
   attempts: Int,
   fallback: Duration,
-) -> Result(llm_wire.Outcome(o), llm_wire.Failure) {
-  case llm_wire.run(client, prepared) {
-    Error(failure) if attempts > 1 ->
+  budget: Duration,
+) -> Result(llm_wire.Outcome(o), RetryError) {
+  let milliseconds = duration.to_milliseconds(budget)
+  case
+    attempts > 0
+    && milliseconds > 0
+    && milliseconds <= 4_294_967_295
+    && duration.to_seconds_and_nanoseconds(fallback).0 >= 0
+  {
+    False -> Error(InvalidRetryBudget)
+    True -> retry(client, prepared, attempts, fallback, deadline.after(budget))
+  }
+}
+
+fn retry(
+  client: http_gun.Client,
+  prepared: llm_wire.Prepared(o),
+  attempts: Int,
+  fallback: Duration,
+  budget: deadline.Deadline,
+) -> Result(llm_wire.Outcome(o), RetryError) {
+  let result = case duration.to_milliseconds(deadline.remaining(budget)) > 0 {
+    False -> Error(RetryDeadlineReached)
+    True ->
+      case llm_wire.stream(client, prepared) {
+        Error(failure) -> Error(ProviderFailure(failure))
+        Ok(stream) -> collect_before(stream, budget)
+      }
+  }
+  case result {
+    Error(ProviderFailure(failure)) if attempts > 1 ->
       case llm_wire.advise(failure) {
         llm_wire.RetryAdvice(prospect: llm_wire.MayHelp, delay:) -> {
-          process.sleep(
+          let wait =
             duration.to_milliseconds(case delay {
               llm_wire.ProviderDelay(wait) -> wait
               llm_wire.Backoff -> fallback
-            }),
-          )
-          run_with_retries(client, prepared, attempts - 1, fallback)
+            })
+          case wait < duration.to_milliseconds(deadline.remaining(budget)) {
+            False -> Error(ProviderFailure(failure))
+            True -> {
+              process.sleep(wait)
+              // Scheduling may consume the remaining time after waking.
+              case duration.to_milliseconds(deadline.remaining(budget)) > 0 {
+                False -> Error(ProviderFailure(failure))
+                True -> retry(client, prepared, attempts - 1, fallback, budget)
+              }
+            }
+          }
         }
-        _ -> Error(failure)
+        _ -> Error(ProviderFailure(failure))
       }
-    outcome -> outcome
+    result -> result
+  }
+}
+
+fn collect_before(
+  stream: llm_wire.Stream(o),
+  budget: deadline.Deadline,
+) -> Result(llm_wire.Outcome(o), RetryError) {
+  let remaining = deadline.remaining(budget)
+  case duration.to_milliseconds(remaining) > 0 {
+    False -> {
+      let _ = llm_wire.close(stream)
+      Error(RetryDeadlineReached)
+    }
+    True ->
+      case llm_wire.next_within(stream, remaining) {
+        Ok(llm_wire.Progress(_)) -> collect_before(stream, budget)
+        Ok(llm_wire.Done(Ok(outcome))) -> Ok(outcome)
+        Ok(llm_wire.Done(Error(failure))) -> Error(ProviderFailure(failure))
+        Error(llm_wire.TimedOut) -> {
+          let _ = llm_wire.close(stream)
+          Error(RetryDeadlineReached)
+        }
+        Error(error) -> {
+          let _ = llm_wire.close(stream)
+          Error(StreamReadFailed(error))
+        }
+      }
   }
 }
 
@@ -460,7 +536,13 @@ pub fn main() -> Nil {
         testing.events_for(message.OpenAI, testing.text("back")),
       ),
     ])
-    run_with_retries(client, story, 3, duration.milliseconds(10))
+    run_with_retries(
+      client,
+      story,
+      3,
+      duration.milliseconds(10),
+      duration.seconds(5),
+    )
   }
 
   // A custom adapter through `llm_wire/provider`.
