@@ -349,3 +349,50 @@ carries content or credentials. Set the correlation once, on the HTTP Gun
 view you run the call on: `llm_wire.run(http_gun.with_correlation(client, c),
 prepared)`. LLM Wire copies it into its own events, and HTTP Gun's events for
 the request carry the same value under the same key.
+
+## Inline audio transcription
+
+`llm_wire/transcribe` performs one Google Interactions request. It is independent
+of generation, classification and any agent runtime. The caller chooses the
+model, owns HTTP Gun and receives a native String:
+
+```gleam
+import llm_wire/transcribe
+
+let assert Ok(audio) =
+  transcribe.audio(recording, "audio/webm", max_bytes: 8_388_608)
+let settings =
+  transcribe.Settings("gemini-3.5-transcribe", ["pt-BR"], transcribe.Verbatim)
+let assert Ok(prepared) =
+  transcribe.prepare(transcribe.google(api_key), settings, audio)
+let result = transcribe.run(client, prepared)
+```
+
+For automatic language detection and verbatim mode, use `transcribe.settings(model)`.
+A settings record update selects `Smart`, other language hints or a model. The
+Google transcription configuration supports a complete HTTPS operation URL with
+`with_endpoint` and a positive encoded JSON allowance with `with_request_limit`
+(default 16 MiB). Keys are validated during preparation and remain hidden during
+ordinary configuration/prepared-value inspection. `request_json` excludes headers
+but contains the recording; treat that body as sensitive.
+
+The input constructor bounds raw bytes before Base64 encoding and admits the
+provider's documented audio MIME strings. It does not decode or certify the
+recording. Preparation bounds encoded JSON after allocation. A supplied HTTP Gun
+view owns response limits, timeout, absolute deadline, cancellation, TLS and
+allowed destinations; `run` uses it unchanged. Truncated data never succeeds.
+The prepared value can be reused, but each call starts a new attempt. Neither
+Wire nor `store: false` provides application deduplication or a durable receipt.
+
+`AudioError` identifies raw input refusals, and `error.PrepareError` identifies
+invalid preparation. Execution returns common `llm_wire.Failure`: HTTP failures
+preserve underlying send evidence, status failures preserve Retry-After, and
+unusable completed responses are protocol failures. Only completed, well-formed,
+nonempty model text returns; incomplete responses never become partial success.
+The caller decides whether to retain text or attempt the provider again.
+
+The [separate consumer](../examples/consumer/src/transcription_consumer.gleam)
+exercises the public API with a native note record, custom settings and endpoint,
+and an explicit second attempt after a status failure. No provider calls run in
+normal tests. Uploads, diarization, timestamps, streaming and general interaction
+resources are outside this operation. See [ADR 0009](adr/0009-bounded-inline-transcription.md).

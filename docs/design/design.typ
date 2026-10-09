@@ -18,6 +18,9 @@
   ])
 
   #pending-ledger(
+    pending-entry(title: "Deliver bounded inline transcription", kind: "build", since: "2026-10-09", adr: [#adr(9)])[
+      Implement the accepted inline transcription contract and qualify the public API with an independent consumer. Retain this entry until owner implementation acceptance.
+    ],
     pending-entry(title: "Bound waiting in the retry teaching example", kind: "build", adr: [#adr(7)])[
       The public retry helper sleeps an uncapped ProviderDelay despite the contract requiring caller-owned waiting bounds. A finite attempt count does not bound that sleep. Correcting executable example behavior requires a separate change; a caller should refuse a requested wait exceeding its remaining budget rather than retry earlier than requested.
     ],
@@ -28,7 +31,7 @@
       Retain sequential/parallel tool mode, tool choice, richer native options, optional injected model capabilities, provider-hosted tool outcomes, richer response blocks and typed extension payloads. Current native options cover credentials/account/version fields; adding a request field requires a complete custom adapter. Establish concrete advanced consumers before choosing narrow provider options or an admitted request extension.
     ],
     pending-entry(title: "Specify advanced interaction lifecycles", kind: "ruling", adr: [#adr(6)])[
-      Retain audio/video, embeddings, realtime/WebSockets, provider batch/background work, interrupted-stream resumption and optional remote cancellation acknowledgement as extension or later-consumer scope. These need distinct protocol, state, ownership and compatibility contracts; they are not current generation guarantees.
+      Beyond the bounded inline transcription specified below, retain richer audio/video, embeddings, realtime/WebSockets, provider batch/background work, interrupted-stream resumption and optional remote cancellation acknowledgement as extension or later-consumer scope. These need distinct protocol, state, ownership and compatibility contracts; they are not current generation guarantees.
     ],
     pending-entry(title: "Establish upstream allocation guarantees", kind: "verify", adr: [#adr(2)])[
       Package byte and queue bounds do not prove a strict pre-allocation bound for complete HTTP header blocks in Gun/Cowlib, native JSON allocation or arbitrary custom reducer state. HTTP parser hardening requires dependency evidence or a transport decision; no second parser or universal memory guarantee is introduced.
@@ -38,13 +41,14 @@
     ],
   )
 
-  #section(title: "System at a glance", lead: "Generation and classification retain their own models behind one independent wire library.", visual: diagram(
+  #section(title: "System at a glance", lead: "Generation, classification and transcription retain distinct models within one library.", visual: diagram(
     altitude: "L1", viewpoint: "context-ownership", title: "Authorities around one provider interaction",
     groups: ((id: "wire", label: "LLM Wire", kind: "bounded-context", tint: "blue"), (id: "external", label: "External authorities", kind: "domain", tint: "slate")),
     nodes: (
       (id: "app", label: "Application / Fabric", sub: "history, policy, effects", kind: "external-system", group: "external"),
       (id: "generation", label: "Generation", sub: "admission and semantic stream", kind: "component", group: "wire", tint: "blue"),
       (id: "classification", label: "Classification", sub: "questions and evidence", kind: "component", group: "wire", tint: "blue"),
+      (id: "transcription", label: "Transcription", sub: "inline audio to text", kind: "component", group: "wire", tint: "blue"),
       (id: "http", label: "HTTP Gun", sub: "HTTP resource authority", kind: "external-system", group: "external"),
       (id: "provider", label: "Remote provider", sub: "remote work authority", kind: "external-system", group: "external"),
       (id: "blueprint", label: "Blueprint", sub: "schema and exact JSON values", kind: "external-system", group: "external"),
@@ -55,16 +59,19 @@
       (from: "app", to: "classification", relation: "call", label: "prepared classification"),
       (from: "generation", to: "http", relation: "call", label: "owned response scope"),
       (from: "classification", to: "http", relation: "call", label: "bounded buffered send"),
+      (from: "app", to: "transcription", relation: "call", label: "prepared transcription"),
+      (from: "transcription", to: "http", relation: "call", label: "borrowed buffered send"),
+      (from: "transcription", to: "sinal", relation: "pubsub", label: "lifecycle facts"),
       (from: "http", to: "provider", relation: "dataflow", label: "request / response"),
       (from: "generation", to: "blueprint", relation: "dependency", label: "schema admission"),
       (from: "classification", to: "blueprint", relation: "dependency", label: "numeric evidence"),
       (from: "generation", to: "sinal", relation: "pubsub", label: "lifecycle facts"),
       (from: "classification", to: "sinal", relation: "pubsub", label: "lifecycle facts"),
     ),
-    caption: [The application supplies its HTTP client to either family. No runtime dependency on Fabric, Saga, Relay or Grind exists.],
+    caption: [The application supplies its HTTP client to each family. No runtime dependency on Fabric, Saga, Relay or Grind exists.],
   ), body: [
     #points(
-      [Generation owns request admission, configured provider encoding, semantic SSE reduction, streaming delivery and normalized outcomes. Classification owns authored questions, candidate validation and pure durable evidence decoding.],
+      [Generation owns request admission, configured provider encoding, semantic SSE reduction, streaming delivery and normalized outcomes. Classification owns authored questions, candidate validation and pure durable evidence decoding. Transcription owns inline audio admission and terminal text decoding through the same caller-owned HTTP authority.],
       [The whole model follows: request values are prepared without execution; generation creates a #term("term-stream-owner"); terminal response values return to the caller. A #term("term-classification-receipt") reconstructs classification values without restarting an operation.],
       [Gleam on Erlang/OTP is the execution platform. The JavaScript target is unsupported. The dependency boundaries and separation from agent state follow #adr(1) and #adr(2).],
     )
@@ -74,6 +81,7 @@
       [Provider interpretation], [Routing blocks, progress, terminal, replay data], [OpenAI, Anthropic, Google, public custom adapter],
       [Execution ownership], [Stream owner, queue, credit, timers, send evidence], [HTTP worker, SSE framer, delivery, terminal cleanup],
       [Classification], [Wire, live Config, Batch(a), candidates, Outcome(a)], [Questions, protocol adapter, transport, receipt codec],
+      [Transcription], [Audio, Settings, Config, Prepared, nonempty text], [Admission, inline protocol, borrowed buffered exchange],
       [Verification], [Semantic replies, HTTP exchanges, cassettes], [Offline consumers, local protocol/ownership fixtures, opt-in recording],
     ))
   ])
@@ -406,12 +414,49 @@
     ]
   ])
 
+  #section(title: "Transcription", lead: "One inline audio request returns completed text while the caller keeps transport and recovery policy.", body: [
+    #answers(title: "Inline transcription", responsibility: [Admit inline bytes, encode one Google Interactions request and return completed nonempty text.], interface: [transcribe.audio validates bytes and MIME under the caller's raw byte allowance; settings(model) defaults to automatic language detection and Verbatim. google(key) creates Config, with_endpoint and with_request_limit configure it, prepare returns opaque Prepared, request_json exposes only its body, and run(client, prepared) returns String or the common Failure.], interactions: [The application supplies model, language hints, mode and its existing HTTP Gun client. It may place the returned String in its own record or a later generation request.], invariants: [Preparation performs no I/O. Encoded headers remain behind a closure. Execution neither retries nor changes the client's policy or lifetime.], failure: [AudioError distinguishes invalid bytes, unsupported MIME, invalid allowance and excess raw bytes. Preparation returns PrepareError. Executed failure retains provider and conservative send evidence.])
+    #entity(id: "transcription-audio", title: "Inline audio", description: [Nonempty byte-aligned audio declared by the caller.], kind: "value-object", owner: "transcription admission", lifecycle: "immutable", domain: "transcription")[
+      #attribute(name: "Bytes and MIME", type: "BitArray and admitted MIME String", provenance: "authored")[The constructor bounds raw bytes before Base64 encoding. It admits the provider's documented WAV, MP3, AIFF, AAC, OGG, FLAC, MPEG, M4A, L16, Opus, ALAW, MULAW and WebM MIME strings. It does not inspect codecs, duration or acoustic validity.]
+      #attribute(name: "Allowance", type: "positive byte count", provenance: "authored")[The caller owns allocation of the original input. Admission cannot retroactively bound that allocation.]
+    ]
+    #entity(id: "prepared-transcription", title: "Prepared transcription", description: [One admitted encoded inline request, reusable only by explicit caller choice.], kind: "value-object", owner: "transcription admission", lifecycle: "immutable", domain: "transcription")[
+      #attribute(name: "Input and settings", type: "encoded request body and endpoint", provenance: "derived")[Settings keeps a required nonempty model, language-code strings and Verbatim or Smart. Empty language hints mean provider autodetection; provider/model compatibility is checked remotely. The request sets store to false.]
+      #attribute(name: "Credentials", type: "inspection-safe header closure", provenance: "derived")[Preparation validates and captures a nonempty visible-ASCII API key. Changing credentials requires preparing again. request_json contains audio data and is sensitive even though it excludes credentials.]
+      #relates(cardinality: "1 : 0..n")[A prepared value can be executed repeatedly. It is not an idempotency receipt or a durable execution record.]
+    ]
+    #points(
+      [The default endpoint is the Google HTTPS Interactions endpoint. Overrides are complete HTTPS URLs with a nonempty host/path and no userinfo, query, fragment or controls. Client destination/TLS policy still applies. Request JSON is limited after encoding, by default to 16 MiB; with_request_limit changes that positive allowance. Raw admission, encoded admission and HTTP response bounds protect different allocations.],
+      [run borrows the client unchanged: response byte/overflow bounds, absolute deadline, timeout, cancellation, trust and destinations remain the caller's. A truncated buffered result is always refused. This family adds no first-token timer, SSE owner or universal memory guarantee. JSON depth is checked before decoding; synchronous encoding/decoding has no independent preemption.],
+      [Only a completed response with well-formed model-output text produces a nonempty trimmed String. Text fragments retain order; reasoning and other typed content are excluded. Malformed text refuses the whole result; incomplete, empty, invalid UTF-8 or invalid JSON are protocol failures.],
+      [A non-success response retains status and Retry-After with no response body. A transport failure preserves the HTTP failure and NotSent or MaybeSent; a complete unusable response has Completed evidence. Truncation has MaybeSent evidence and never yields partial text. Failure.partial_output is false because this operation emits no progress.],
+      [Started, buffered RequestSent, Terminal and Cleanup observations reuse the package event and caller correlation. They contain no audio, key or transcript. Cleanup describes local transport, not remote cancellation.],
+      [File upload, remote resource management, diarization, timestamps, custom vocabulary, streaming audio, persistence, duplicate protection and retry are outside this contract. These remain caller or explicitly deferred capabilities. #adr(9) explains the separate family.],
+    )
+    #behavior(title: "Invalid audio or configuration is refused before execution", area: "Transcription admission", level: "interface")[
+      #given[Audio is empty, misaligned, oversized or has an unsupported MIME, or its preparation has invalid credentials, request settings or encoded allowance.]
+      #when[The caller constructs the audio or prepares it.]
+      #then[A typed refusal identifies the input boundary and no execution starts.]
+    ]
+    #behavior(title: "Only completed usable transcription becomes text", area: "Transcription result", level: "interface")[
+      #given[A prepared inline transcription receives a completed provider response.]
+      #when[The response is interpreted.]
+      #then[Well-formed model text returns as one ordered trimmed nonempty String; unusable or incomplete evidence returns a typed failure.]
+    ]
+    #behavior(title: "Transcription preserves caller transport authority", area: "Transcription execution", level: "boundary")[
+      #given[The caller executes a prepared transcription through its configured transport view.]
+      #when[The request succeeds, fails, is cancelled, exceeds a bound or returns truncated data.]
+      #then[One attempt preserves that view's restrictions, closes its response and leaves the shared client usable.]
+      #then[Truncated data is refused and no automatic retry or remote rollback is claimed.]
+    ]
+  ])
+
   #section(title: "Observability and verification", lead: "Tests exercise real reducer paths while observations report bounded lifecycle facts.", body: [
     #subsection(title: "Observation contract")[
       #answers(title: "LLM observation", responsibility: [Report execution facts without transferring authority to observers.], interface: [telemetry.event() is Sinal's llm_wire/observation event; Metadata holds call, correlation, stage, provider and outcome.], interactions: [The execution copies correlation from the supplied HTTP Gun view so HTTP/LLM events join once.], invariants: [A retry gets a fresh call id. Content, credentials, arguments and status bodies are absent from telemetry.], failure: [Observation does not replace terminal state or authorize retry. Synchronous observer runtime behavior belongs to Sinal and the embedding application.])
       #points(
         [Stages are Started, RequestSent, FirstProgress, Terminal, Cancelled, Deadline and Cleanup. RequestSent marks arrival of the response head with http_response_started, not an exact network submission timestamp. Classification's buffered path emits that stage after send returns.],
-        [Generation emits semantic owner facts; classification emits Started, buffered response, Terminal and Cleanup. prepare emits nothing. End-to-end latency measurement surrounds execution rather than subtracting a fabricated send timestamp.],
+        [Generation emits semantic owner facts; classification and transcription emit Started, buffered response, Terminal and Cleanup. prepare emits nothing. End-to-end latency measurement surrounds execution rather than subtracting a fabricated send timestamp.],
       )
     ]
     #subsection(title: "Testing and extension ports")[
@@ -432,7 +477,7 @@
       [Content and reasoning], [input images; semantic text/refusal/reasoning deltas; text terminal], [richer ordered blocks, reasoning metadata and audio/video without erasing protocol meaning],
       [Tool modes and hosted tools], [application tool batch admission; hosted activity conservatively observed internally], [sequential/parallel policy and distinct already-executed provider-hosted outcomes],
       [Model metadata], [explicit model string; provider may reject it remotely], [optional injected known/unknown capability descriptions and separately owned catalog freshness],
-      [Interaction lifecycle], [one HTTP/SSE generation or buffered classification; local close only], [realtime, batch/background, embeddings, resumption and acknowledged remote cancellation need separate contracts],
+      [Interaction lifecycle], [one HTTP/SSE generation, buffered classification or inline transcription; local close only], [realtime, batch/background, embeddings, resumption and acknowledged remote cancellation need separate contracts],
       [Durability], [message/replay data codecs and pure classification receipts], [application-owned versioning/recovery; no wire checkpoint, hidden history or one-time handle claim],
     ))
     #points([Extensions retain the shared admission, capacity, correlation and cleanup boundary where that boundary applies. A new protocol with a different lifetime must state its limits instead of inheriting SSE guarantees by name. The pending rulings and #adr(6) preserve the full source scope without claiming unbuilt support.])

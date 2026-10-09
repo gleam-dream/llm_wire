@@ -16,7 +16,7 @@ spec.loader.exec_module(local_http)
 class LocalEvidenceTests(unittest.TestCase):
     def test_output_is_fresh_and_outside_historical_receipts(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             with patch.object(local_http, "ROOT", root):
                 output = local_http.output_directory()
                 self.assertTrue(output.is_relative_to(root / "build"))

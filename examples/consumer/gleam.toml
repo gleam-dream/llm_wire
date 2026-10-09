@@ -4,6 +4,7 @@ target = "erlang"
 gleam = ">= 1.18.0"
 
 [dependencies]
+gleam_http = ">= 4.4.0 and < 5.0.0"
 llm_wire = { path = "../.." }
 http_gun = { path = "../../../http_gun" }
 json_blueprint = { path = "../../../json_blueprint" }

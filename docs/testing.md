@@ -35,6 +35,7 @@ nix flake check
 ## Offline consumers
 
 - [The separate consumer](../examples/consumer/README.md) exercises text, native structured output, tool rounds, streaming, custom provider, client supervision and script/cassette modes through public imports. Its classification consumer uses both TypeSafe and an independent array envelope.
+- Its transcription consumer exercises common preparation, custom endpoint/model/language/mode, native result records and status failures. Native transcription tests cover admission, output, borrowed limits/deadlines/cancellation, client reuse, JSON depth and credential-free correlated observations. Negative compiler fixtures preserve opaque Audio, Config and Prepared values.
 - HTTP Gun owns scripts, current binary cassettes, strict playback, recording and publication. Missing, corrupt, incompatible, mismatched or exhausted playback never falls back to a network; a mismatch does not consume the expected exchange.
 - Semantic `llm_wire/testing` replies lower through the real provider reducer. Raw event builders support malformed/fragmented/custom protocols; high-level final-answer substitution alone is not provider reduction evidence.
 - The retry helper currently sleeps an uncapped provider delay. [ADR-0007](adr/0007-preserve-observed-contract-gaps.md) records that open example behavior; bound caller waiting before adapting it for production.

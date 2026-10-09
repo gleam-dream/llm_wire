@@ -410,4 +410,19 @@ EOF
   expect_rejected "removed_$removed" 'Unknown module' "llm_wire/$removed" allowed
 done
 
+for opaque in Audio Prepared Config; do
+  cat >"$negative/src/consumer.gleam" <<EOF
+import llm_wire/transcribe
+pub fn fabricate() { transcribe.$opaque("arbitrary") }
+EOF
+  expect_rejected "transcription_$opaque" 'Unknown module value' \
+    "transcribe.$opaque is a type constructor"
+done
+
+cat >"$negative/src/consumer.gleam" <<'EOF'
+import llm_wire/transcribe
+pub fn credentials(call: transcribe.Prepared) { call.request }
+EOF
+expect_rejected transcription_credentials 'Unknown record field' 'request'
+
 printf '%s\n' 'Public wave 4 consumer works; opacity, raw-request, credential, and removed API boundaries hold.'

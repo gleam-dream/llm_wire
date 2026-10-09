@@ -24,6 +24,7 @@ import llm_wire/openai
 import llm_wire/provider
 import llm_wire/testing
 import llm_wire/tool
+import transcription_consumer
 
 // --- the common path ---------------------------------------------------------
 
@@ -378,6 +379,7 @@ fn prepared(
 
 pub fn main() -> Nil {
   classification_consumer.main()
+  transcription_consumer.main()
   // The common path, against OpenAI's own wire lowered from a script.
   let config = openai_config("sk-example")
   let reply = testing.events_for(message.OpenAI, testing.text("Hello!"))

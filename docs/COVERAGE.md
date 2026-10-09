@@ -1,6 +1,6 @@
 # Design coverage
 
-- One bounded context owns independent typed provider interactions. Generation and classification are recursive units within that context; their models and lifecycles remain distinct.
+- One bounded context owns independent typed provider interactions. Generation, classification and transcription are recursive units within that context; their models and lifecycles remain distinct.
 - Each captured part records responsibility, interface, interactions, invariants and failure behavior in the linked section. Standard parts use conventional package infrastructure; evidence artifacts are preserved inputs rather than another design authority.
 
 | Verified system part                                                                                                                         | Status       | Native design or reason                                                                                                        |
@@ -12,6 +12,7 @@
 | `internal/{owner,http_client,sse,json_bounds,stream_types,limits}.gleam`, `src/llm_wire/limit.gleam`                                         | captured     | [Execution ownership](design/design.typ#execution-ownership)                                                                   |
 | `src/llm_wire/error.gleam`, `internal/retry_after.gleam`                                                                                     | captured     | [Failure and retry evidence](design/design.typ#failure-and-retry-evidence)                                                     |
 | `src/llm_wire/classify.gleam`, `classify/{question,protocol}.gleam`, `internal/classification/{questions,batch,wire,typesafe,runtime}.gleam` | captured     | [Classification](design/design.typ#classification)                                                                             |
+| `src/llm_wire/transcribe.gleam`, public transcription tests and consumer                                                                     | captured     | [Transcription](design/design.typ#transcription); accepted contract pending implementation                                     |
 | `src/llm_wire/telemetry.gleam`, `internal/observe.gleam`                                                                                     | captured     | [Observability and verification](design/design.typ#observability-and-verification)                                             |
 | `src/llm_wire/testing.gleam`, `examples/consumer/`, `test/external_package_boundary.sh`, `test/external_provider*`                           | captured     | [Observability and verification](design/design.typ#observability-and-verification)                                             |
 | `test/*_test.gleam`, support modules and test Erlang bridges                                                                                 | captured     | [Observability and verification](design/design.typ#observability-and-verification), exact retained oracle ledger               |
