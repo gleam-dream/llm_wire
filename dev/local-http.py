@@ -61,8 +61,8 @@ def provenance(output):
 
     receipt = {
         "source": revision(ROOT),
-        "siblings": {
-            name: revision(ROOT.parent / name)
+        "dependencies": {
+            name: revision(ROOT / "build/packages" / name)
             for name in ("json_blueprint", "sinal", "http_gun")
         },
         "lockfiles": {

@@ -19,10 +19,7 @@ gleam_stdlib = ">= 0.70.0 and < 2.0.0"
 gleam_json = ">= 3.0.0 and < 4.0.0"
 gleam_http = ">= 4.4.0 and < 5.0.0"
 gleam_time = ">= 1.11.0 and < 2.0.0"
-json_blueprint = { path = "$package_root/../json_blueprint" }
 llm_wire = { path = "$package_root" }
-http_gun = { path = "$package_root/../http_gun" }
-sinal = { path = "$package_root/../sinal" }
 EOF
   # Use the actual consumer's pinned dependency closure, with absolute local
   # paths in the temporary package. All added direct imports already belong to
@@ -35,6 +32,13 @@ import sys
 import tomllib
 
 seed, destination = map(Path, sys.argv[1:])
+config_path = destination / "gleam.toml"
+config = config_path.read_text()
+upstream = tomllib.loads((seed.parents[2] / "gleam.toml").read_text())["dependencies"]
+for name in ("json_blueprint", "http_gun", "sinal"):
+    fields = ", ".join(key + " = " + json.dumps(value) for key, value in upstream[name].items())
+    config += name + " = { " + fields + " }\n"
+config_path.write_text(config)
 packages = seed.read_text().split("[requirements]", 1)[0]
 packages = re.sub(
     r'path = "([^"]+)"',
@@ -47,7 +51,7 @@ for name, value in sorted(dependencies.items()):
     if isinstance(value, str):
         requirements.append(name + " = { version = " + json.dumps(value) + " }")
     else:
-        requirements.append(name + " = { path = " + json.dumps(value["path"]) + " }")
+        requirements.append(name + " = { " + ", ".join(key + " = " + json.dumps(item) for key, item in value.items()) + " }")
 (destination / "manifest.toml").write_text(packages + "[requirements]\n" + "\n".join(requirements) + "\n")
 PY
 }

@@ -104,7 +104,7 @@ class LocalEvidenceTests(unittest.TestCase):
             root = workspace / "llm_wire"
             root.mkdir()
             for name in ("json_blueprint", "sinal", "http_gun"):
-                (workspace / name).mkdir()
+                (root / "build/packages" / name).mkdir(parents=True)
             for name in (
                 "flake.lock",
                 "manifest.toml",
@@ -134,7 +134,7 @@ class LocalEvidenceTests(unittest.TestCase):
             self.assertTrue(
                 all(
                     value == {"commit": None, "dirty": None}
-                    for value in receipt["siblings"].values()
+                    for value in receipt["dependencies"].values()
                 )
             )
             self.assertEqual(len(receipt["lockfiles"]), 3)

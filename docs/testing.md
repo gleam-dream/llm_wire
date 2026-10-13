@@ -2,7 +2,7 @@
 
 ## Local validation
 
-- Run in the pinned Nix shell with sibling HTTP Gun, Blueprint and Sinal checkouts present. Package gates use local/offline inputs; a historical passing log is evidence for its recorded revision/runtime only.
+- Run in the pinned Nix shell. Gleam resolves HTTP Gun, Blueprint and Sinal from immutable Git sources. Package gates use local/offline inputs; a historical passing log is evidence for its recorded revision/runtime only.
 
 ```sh
 nix develop -c sh dev/gate fast
@@ -26,7 +26,7 @@ nix flake check
 - `test/external_package_boundary.sh` uses the checked-in consumer dependency closure with absolute local paths. Negative fixtures use `compile-package --no-beam` against a positive compiled control, so missing dependencies do not impersonate intended type errors.
 - `dev/local-http.py` starts controlled verified-TLS/H2 fixtures. It measures finite simultaneous demand and sibling cancellation; it does not establish provider throughput, universal parser allocation or a soak guarantee.
 - CI runs the full gate on every push, PR, manual run and weekly schedule. The final `CI` job rejects failed, cancelled or skipped mandatory jobs. Weekly runs retain current finite HTTP observations without a latency ceiling. Compiler flags reject warnings; runtime fault reports remain runtime evidence.
-- `sibling-revisions.txt` pins each path dependency. Sinal, HTTP Gun and JSON Blueprint use ordinary checkout with the default GitHub Actions token to read their public repositories. Credential persistence is disabled. Fork PRs run the same required checks.
+- `gleam.toml` pins runtime Git dependencies; `sibling-revisions.txt` retains CI qualification checkouts. Sinal, HTTP Gun and JSON Blueprint use ordinary checkout with the default GitHub Actions token to read their public repositories. Credential persistence is disabled. Fork PRs run the same required checks.
 - The canonical formatting check runs against a copied Nix tree. Frozen request fixtures, cassettes, oracle provenance, historical evidence and generated output are excluded from automatic formatting. Static checks never execute `dev/record-live` or read its credential source.
 - Exported source copies record unavailable Git revision and dirty state as `null`; their enclosing consumer receipt owns source identity. Lockfile hashes and runtime identity are still captured.
 - Current H2 receipts go to a fresh ignored `build/local-http/` directory, or an explicit `--output PATH` / `LLM_WIRE_HTTP_OUTPUT`. CI uploads its curated receipt directory, bounded server prefix, consumer output and source/sibling/toolchain provenance even on failures. Existing output directories are refused.

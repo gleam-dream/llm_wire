@@ -6,17 +6,17 @@ Google GenerateContent; custom adapters use the same execution API.
 
 ## Install
 
-This checkout is an unreleased 0.1.0 candidate for Gleam 1.18 or newer. Place
-`http_gun`, `json_blueprint` and `sinal` checkouts beside `llm_wire`, then add the
-paths from your application's directory:
+This checkout is an unreleased 0.1.0 candidate for Gleam 1.18 or newer. Gleam
+fetches its pinned Git dependencies. For local development, add a Wire checkout
+and the matching HTTP Gun revision to your application:
 
 ```toml
 [dependencies]
 llm_wire = { path = "../llm_wire" }
-http_gun = { path = "../http_gun" }
+http_gun = { git = "https://github.com/gleam-dream/http_gun.git", ref = "9360c2481d920d2fdcddcf517886b337c28ec162" }
 ```
 
-Adjust those paths to your workspace. The package targets Erlang; the pinned Nix
+Adjust the Wire path to your workspace. The package targets Erlang; the pinned Nix
 shell uses OTP 28.
 
 ## Make a call
@@ -77,7 +77,7 @@ resource observations with their workload, source and runtime details.
 
 ## Development
 
-Run from this directory with the sibling checkouts present:
+Run from this directory; Gleam resolves the pinned Git sources:
 
 ```sh
 nix develop -c sh dev/gate fast
