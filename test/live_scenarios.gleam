@@ -230,9 +230,11 @@ fn openai_config(key: String) -> llm_wire.Config {
   openai.new(key) |> openai.config
 }
 
-const written_prompt = "Reply with the Written variant: title \"Tides\", body one short sentence on why ocean tides happen."
+const written_prompt =
+  "Reply with the Written variant: title \"Tides\", body one short sentence on why ocean tides happen."
 
-const no_sources_prompt = "You have no sources about my breakfast today. Reply with the NoSources variant and a reason of at most ten words."
+const no_sources_prompt =
+  "You have no sources about my breakfast today. Reply with the NoSources variant and a reason of at most ten words."
 
 fn structured(
   config: llm_wire.Config,
@@ -292,9 +294,11 @@ pub fn tool_call(key: String) -> llm_wire.Prepared(String) {
   prepared
 }
 
-const nullable_null_prompt = "Fill in the contact for Ada Lovelace. Her phone number and address are unknown: give null for both."
+const nullable_null_prompt =
+  "Fill in the contact for Ada Lovelace. Her phone number and address are unknown: give null for both."
 
-const nullable_value_prompt = "Fill in the contact for Bob Stone. His phone number is 555-0100 and he lives in Paris."
+const nullable_value_prompt =
+  "Fill in the contact for Bob Stone. His phone number is 555-0100 and he lives in Paris."
 
 /// A nested nullable string and a nullable object, null or not.
 pub fn nullable_call(
@@ -314,7 +318,8 @@ pub fn nullable_call(
   prepared
 }
 
-const wide_prompt = "Report a reading with label \"north\", score 0.75, point [3, 4] and extra {\"unit\": \"cm\"}. Leave out the note."
+const wide_prompt =
+  "Report a reading with label \"north\", score 0.75, point [3, 4] and extra {\"unit\": \"cm\"}. Leave out the note."
 
 /// An optional field, a number range, a pair and `codec.value()` in one
 /// Gemini schema.

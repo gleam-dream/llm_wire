@@ -366,7 +366,7 @@ import llm_wire
 pub fn fabricate() { llm_wire.$opaque("arbitrary") }
 EOF
   expect_rejected "construct_$opaque" 'Unknown module value' \
-    "llm_wire.$opaque is a type constructor"
+    "type $opaque"
 done
 
 cat >"$negative/src/consumer.gleam" <<'EOF'
@@ -374,7 +374,7 @@ import llm_wire/generation
 pub fn fabricate() { generation.Settings("arbitrary") }
 EOF
 expect_rejected construct_generation_settings 'Unknown module value' \
-  'generation.Settings is a type constructor'
+  'type Settings'
 
 cat >"$negative/src/consumer.gleam" <<'EOF'
 import http_gun

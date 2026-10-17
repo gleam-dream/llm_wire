@@ -17,7 +17,7 @@ http_gun = { git = "https://github.com/gleam-dream/http_gun.git", ref = "9360c24
 ```
 
 Adjust the Wire path to your workspace. The package targets Erlang; the pinned Nix
-shell uses OTP 28.
+shell uses OTP 29.
 
 ## Make a call
 

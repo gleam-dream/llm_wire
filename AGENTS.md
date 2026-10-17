@@ -9,7 +9,7 @@
 
 ## Tooling
 
-- `nix develop` or direnv provides Gleam, Erlang/OTP 28, rebar3 and local-check tools. `nix fmt` formats the repository; lefthook formats and restages staged files; `nix flake check` includes the formatting gate.
+- `nix develop` or direnv provides Gleam, Erlang/OTP 29, rebar3 and local-check tools. `nix fmt` formats the repository; lefthook formats and restages staged files; `nix flake check` includes the formatting gate.
 - `nix develop -c sh dev/gate fast` checks formatting/build warnings, public module docs, production HTTP boundaries and unit/local H1/TLS cases. Full adds clean build, external consumers and nghttpd H2/concurrency checks; details live in [testing guidance](docs/testing.md).
 - Normal gates use offline/local inputs. `dev/record-live` is an opt-in token-spending operation requiring explicit task authorization; never inspect or copy credential values while doing documentation work.
 - Render/check the native layer with the pinned design-gate apps. Use the repository Git flake URL after installation so ignored render/build artifacts do not enter a path snapshot.
