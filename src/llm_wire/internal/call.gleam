@@ -8,6 +8,7 @@ import llm_wire/error.{type ValueFailure}
 import llm_wire/internal/adapter
 import llm_wire/internal/api
 import llm_wire/internal/config.{type Config}
+import llm_wire/internal/generation
 import llm_wire/internal/owner
 import llm_wire/internal/tool_def.{type Tool}
 import llm_wire/message
@@ -27,19 +28,27 @@ pub type Output(o) {
 }
 
 pub opaque type Request(o) {
-  Request(view: adapter.Request, tools: List(Tool), output: Output(o))
+  Request(
+    model: String,
+    messages: List(message.Message),
+    settings: generation.Settings,
+    tools: List(Tool),
+    output: Output(o),
+  )
 }
 
 pub fn request(
-  view: adapter.Request,
+  model: String,
+  messages: List(message.Message),
+  settings: generation.Settings,
   tools: List(Tool),
   output: Output(o),
 ) -> Request(o) {
-  Request(view:, tools:, output:)
+  Request(model:, messages:, settings:, tools:, output:)
 }
 
 pub fn view(request: Request(o)) -> adapter.Request {
-  request.view
+  generation.request_view(request.settings, request.model, request.messages)
 }
 
 pub fn tools(request: Request(o)) -> List(Tool) {
@@ -50,8 +59,30 @@ pub fn output(request: Request(o)) -> Output(o) {
   request.output
 }
 
-pub fn with_view(request: Request(o), view: adapter.Request) -> Request(o) {
-  Request(..request, view:)
+pub fn settings(request: Request(o)) -> generation.Settings {
+  request.settings
+}
+
+pub fn model(request: Request(o)) -> String {
+  request.model
+}
+
+pub fn messages(request: Request(o)) -> List(message.Message) {
+  request.messages
+}
+
+pub fn with_settings(
+  request: Request(o),
+  settings: generation.Settings,
+) -> Request(o) {
+  Request(..request, settings:)
+}
+
+pub fn with_messages(
+  request: Request(o),
+  messages: List(message.Message),
+) -> Request(o) {
+  Request(..request, messages:)
 }
 
 pub fn with_tools(request: Request(o), tools: List(Tool)) -> Request(o) {

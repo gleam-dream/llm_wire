@@ -30,8 +30,8 @@ type Control {
 }
 
 /// Opens the call. The call's whole-call budget replaces the client's
-/// request timeout, so a shorter client default never cuts it; the client's
-/// idle timeout is lifted because the owner runs the first-token and
+/// relative request timeout while retaining an explicit client deadline.
+/// The client's idle timeout is lifted because the owner runs the first-token and
 /// idle-gap timers. A plaintext endpoint is narrowed to loopback addresses
 /// by HTTP Gun's destination policy, so credentials never cross a network
 /// in clear text.
@@ -44,10 +44,6 @@ pub fn open(
     option.map(setup.timeouts.whole_call, fn(ms) {
       deadline.after(duration.milliseconds(ms))
     })
-  let client = case budget {
-    Some(budget) -> http_gun.with_deadline(client, budget)
-    None -> http_gun.with_timeout(client, http_config.Infinity)
-  }
   let client =
     client
     |> http_gun.with_idle_timeout(http_config.Infinity)
@@ -101,7 +97,16 @@ fn start(
         }
         case wait {
           Ok(More) -> {
-            let call = client |> http_gun.with_cancellation(token)
+            // Keep the caller's absolute deadline. Compute the remaining
+            // whole-call timeout after setup, immediately before HTTP dispatch.
+            let timeout = case budget {
+              Some(budget) -> http_config.After(deadline.remaining(budget))
+              None -> http_config.Infinity
+            }
+            let call =
+              client
+              |> http_gun.with_timeout(timeout)
+              |> http_gun.with_cancellation(token)
             let outcome =
               http_gun.with_response(
                 call,

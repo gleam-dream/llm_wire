@@ -77,7 +77,8 @@ resource observations with their workload, source and runtime details.
 
 ## Development
 
-Run from this directory; Gleam resolves the pinned Git sources:
+Ordinary builds resolve the immutable Git dependencies in `gleam.toml`; editing
+a sibling checkout does not replace those dependencies. Run from this directory:
 
 ```sh
 nix develop -c sh dev/gate fast
@@ -89,3 +90,14 @@ opt-in provider recording. [Native design](docs/design/design.typ),
 [rendered design](docs/design/design-layer.pdf) and [decision records](docs/adr/)
 describe ownership and unresolved contracts. The [coverage map](docs/COVERAGE.md)
 locates each design owner.
+
+For reusable generation controls, construct `llm_wire/generation.Settings` and
+apply it with `llm_wire.with_generation`. This replaces all generation controls;
+individual setters applied afterward override only their own control. Preparation
+retains provider-specific validation.
+
+Unpublished coordinated changes use Oversight's explicit local-source capture:
+from Oversight run `nix develop --command python3 -B scripts/local_sources.py
+--output /tmp/gleam-generation-sources`, then run consumers from that copy through
+the original Nix shell. The copy normalizes the complete sibling graph and records
+its source hashes. It does not qualify the immutable Git baseline.

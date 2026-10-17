@@ -44,9 +44,10 @@
 //// | invalid tool calls | fail the response | `with_tool_call_checks` |
 //// | plaintext `http://` | loopback addresses only | none: HTTP Gun's destination policy |
 ////
-//// Each call's whole-call budget replaces the HTTP Gun client's request
-//// timeout and lifts its idle timeout, so a client default never cuts an
-//// LLM call; the client's connect and pool timeouts, destination policy and
+//// Each call's whole-call budget replaces the HTTP Gun client's relative
+//// request timeout and lifts its idle timeout. An explicit absolute deadline
+//// on the supplied client remains a ceiling, including with an infinite call
+//// budget. The client's connect and pool timeouts, destination policy and
 //// trust still apply.
 
 import gleam/list
@@ -57,6 +58,7 @@ import http_gun/error as http_error
 import json/blueprint/codec
 import json/blueprint/contract
 import llm_wire/error.{type Error, type PrepareError}
+import llm_wire/generation
 import llm_wire/internal/adapter
 import llm_wire/internal/api
 import llm_wire/internal/call
@@ -283,15 +285,9 @@ fn to_ms(bound: Bound) -> Option(Int) {
 /// A plain request: its `Answer.output` is the final text.
 pub fn request(model: String, messages: List(Message)) -> Request(String) {
   call.request(
-    adapter.Request(
-      model:,
-      messages:,
-      max_tokens: None,
-      temperature: None,
-      top_p: None,
-      stop_sequences: [],
-      prompt_cache: None,
-    ),
+    model,
+    messages,
+    generation.default(),
     [],
     call.Output(format: None, decode: fn(_, text, _) { Ok(text) }),
   )
@@ -313,7 +309,9 @@ pub fn with_output(
     Ok(schema) -> Ok(#(schema, contract.from_schema(schema)))
   }
   call.request(
-    call.view(request),
+    call.model(request),
+    call.messages(request),
+    call.settings(request),
     call.tools(request),
     call.Output(
       format: Some(#(name, admitted)),
@@ -342,87 +340,89 @@ pub fn with_tools(request: Request(o), tools: List(Tool)) -> Request(o) {
   call.with_tools(request, tools)
 }
 
-pub fn with_max_tokens(request: Request(o), max: Int) -> Request(o) {
-  view(request, adapter.Request(..call.view(request), max_tokens: Some(max)))
+/// Replace all generation controls while preserving model, messages, tools
+/// and output. Later scalar setters override only their named control.
+/// Applying generation.default clears explicit controls. Validation happens
+/// in prepare, where the provider is known.
+pub fn with_generation(
+  request: Request(o),
+  settings: generation.Settings,
+) -> Request(o) {
+  call.with_settings(request, settings)
 }
 
-pub fn with_temperature(request: Request(o), temperature: Float) -> Request(o) {
-  view(
+/// Set the maximum output-token count; preparation requires a positive value.
+pub fn with_max_tokens(request: Request(o), max: Int) -> Request(o) {
+  with_generation(
     request,
-    adapter.Request(..call.view(request), temperature: Some(temperature)),
+    generation.with_max_tokens(call.settings(request), max),
   )
 }
 
-pub fn with_top_p(request: Request(o), top_p: Float) -> Request(o) {
-  view(request, adapter.Request(..call.view(request), top_p: Some(top_p)))
+/// Set sampling temperature; preparation accepts values from zero to two.
+pub fn with_temperature(request: Request(o), temperature: Float) -> Request(o) {
+  with_generation(
+    request,
+    generation.with_temperature(call.settings(request), temperature),
+  )
 }
 
+/// Set nucleus sampling probability; preparation accepts zero through one.
+pub fn with_top_p(request: Request(o), top_p: Float) -> Request(o) {
+  with_generation(request, generation.with_top_p(call.settings(request), top_p))
+}
+
+/// Set stop sequences; provider-specific admission remains in preparation.
 pub fn with_stop_sequences(
   request: Request(o),
   sequences: List(String),
 ) -> Request(o) {
-  view(
+  with_generation(
     request,
-    adapter.Request(..call.view(request), stop_sequences: sequences),
+    generation.with_stop_sequences(call.settings(request), sequences),
   )
 }
 
-/// Send OpenAI's `prompt_cache_key`. Other providers refuse it in
-/// `prepare`.
+/// Set OpenAI's `prompt_cache_key`. Other built-in providers refuse it in
+/// `llm_wire.prepare`.
 pub fn with_openai_prompt_cache_key(
   request: Request(o),
   key: String,
 ) -> Request(o) {
-  view(
+  with_generation(
     request,
-    adapter.Request(
-      ..call.view(request),
-      prompt_cache: Some(adapter.OpenAiPromptCacheKey(key)),
-    ),
+    generation.with_openai_prompt_cache_key(call.settings(request), key),
   )
 }
 
-/// Send Gemini's `cachedContent` reference. Other providers refuse it in
-/// `prepare`.
+/// Set Google's `cachedContent` reference. Other built-in providers refuse it
+/// in `llm_wire.prepare`.
 pub fn with_google_cached_content(
   request: Request(o),
   name: String,
 ) -> Request(o) {
-  view(
+  with_generation(
     request,
-    adapter.Request(
-      ..call.view(request),
-      prompt_cache: Some(adapter.GoogleCachedContent(name)),
-    ),
+    generation.with_google_cached_content(call.settings(request), name),
   )
 }
 
 /// The request's conversation.
 pub fn messages(request: Request(o)) -> List(Message) {
-  call.view(request).messages
+  call.messages(request)
 }
 
 /// Append messages to the request's conversation.
 pub fn append(request: Request(o), messages: List(Message)) -> Request(o) {
-  view(
-    request,
-    adapter.Request(
-      ..call.view(request),
-      messages: list.append(call.view(request).messages, messages),
-    ),
-  )
+  call.with_messages(request, list.append(call.messages(request), messages))
 }
 
 pub fn model(request: Request(o)) -> String {
-  call.view(request).model
+  call.model(request)
 }
 
 pub fn tools(request: Request(o)) -> List(Tool) {
   call.tools(request)
-}
-
-fn view(request: Request(o), view: adapter.Request) -> Request(o) {
-  call.with_view(request, view)
 }
 
 // --- messages ----------------------------------------------------------------

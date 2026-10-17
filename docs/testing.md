@@ -2,7 +2,7 @@
 
 ## Local validation
 
-- Run in the pinned Nix shell. Gleam resolves HTTP Gun, Blueprint and Sinal from immutable Git sources. Package gates use local/offline inputs; a historical passing log is evidence for its recorded revision/runtime only.
+- Run in the pinned Nix shell against the immutable dependency revisions recorded in the manifests. Unpublished sibling changes require the explicit whole-graph local-source command in the consumer README. Package gates use local/offline inputs; a historical passing log is evidence for its recorded revision/runtime only.
 
 ```sh
 nix develop -c sh dev/gate fast
@@ -23,7 +23,7 @@ nix flake check
 | Workflow/shell/Python lint and gate counterexamples | yes  | yes         | Authored tooling and failed evidence rejection          |
 | Git diff whitespace                                 | yes  | yes         | Patch whitespace                                        |
 
-- `test/external_package_boundary.sh` uses the checked-in consumer dependency closure with absolute local paths. Negative fixtures use `compile-package --no-beam` against a positive compiled control, so missing dependencies do not impersonate intended type errors.
+- `test/external_package_boundary.sh` uses the checked-in consumer dependency closure and preserves each declared Git or local source. Negative fixtures use `compile-package --no-beam` against a positive compiled control, so missing dependencies do not impersonate intended type errors.
 - `dev/local-http.py` starts controlled verified-TLS/H2 fixtures. It measures finite simultaneous demand and sibling cancellation; it does not establish provider throughput, universal parser allocation or a soak guarantee.
 - CI runs the full gate on every push, PR, manual run and weekly schedule. The final `CI` job rejects failed, cancelled or skipped mandatory jobs. Weekly runs retain current finite HTTP observations without a latency ceiling. Compiler flags reject warnings; runtime fault reports remain runtime evidence.
 - `gleam.toml` pins runtime Git dependencies; `sibling-revisions.txt` retains CI qualification checkouts. Sinal, HTTP Gun and JSON Blueprint use ordinary checkout with the default GitHub Actions token to read their public repositories. Credential persistence is disabled. Fork PRs run the same required checks.
@@ -36,9 +36,12 @@ nix flake check
 
 - [The separate consumer](../examples/consumer/README.md) exercises text, native structured output, tool rounds, streaming, custom provider, client supervision and script/cassette modes through public imports. Its classification consumer uses both TypeSafe and an independent array envelope.
 - Its transcription consumer exercises common preparation, custom endpoint/model/language/mode, native result records and status failures. Native transcription tests cover admission, output, borrowed limits/deadlines/cancellation, client reuse, JSON depth and credential-free correlated observations. Negative compiler fixtures preserve opaque Audio, Config and Prepared values.
+- `generation_checks` exercises reusable settings through each provider, source-compatible custom provider fields, native output and replay, setter precedence, and typed preparation refusal before extension callbacks.
 - HTTP Gun owns scripts, current binary cassettes, strict playback, recording and publication. Missing, corrupt, incompatible, mismatched or exhausted playback never falls back to a network; a mismatch does not consume the expected exchange.
 - Semantic `llm_wire/testing` replies lower through the real provider reducer. Raw event builders support malformed/fragmented/custom protocols; high-level final-answer substitution alone is not provider reduction evidence.
-- The retry consumer tests excessive provider delay, cumulative waiting, attempt exhaustion and invalid policy through strict playback. A loopback HTTP fixture verifies that active-call time consumes the same deadline, expiry closes the stream and no unaffordable retry starts. [ADR-0009](adr/0009-bound-the-retry-consumer.md) records the application deadline and separate cleanup bounds. No live provider or extension-callback preemption claim follows from these checks.
+- The retry consumer tests excessive provider delay, cumulative waiting, attempt exhaustion and invalid policy through strict playback. A loopback HTTP fixture verifies that active-call time consumes the same deadline, expiry closes the stream and no unaffordable retry starts. [ADR-0012](adr/0012-bound-the-retry-consumer.md) records the application deadline and separate cleanup bounds. No live provider or extension-callback preemption claim follows from these checks.
+
+- `deadline_checks` and `test/generation_deadline.py` cover explicit application deadlines through generation. The latter uses only loopback HTTP and checks both deadline orders, Infinity, relative defaults, retained failure evidence, timed-out socket closure and body/queue counters. These consumers run in the external-package boundary command.
 
 ## Opt-in commercial-provider recording
 

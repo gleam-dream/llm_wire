@@ -312,6 +312,9 @@ EOF
 (cd "$package_root/examples/consumer" && gleam build --warnings-as-errors && gleam run)
 (cd "$package_root/examples/consumer" && timeout 15s gleam run -m retry_checks)
 (cd "$package_root" && python3 test/retry_deadline.py)
+(cd "$package_root/examples/consumer" && gleam run -m deadline_checks)
+(cd "$package_root/examples/consumer" && gleam run -m generation_checks)
+(cd "$package_root" && python3 test/generation_deadline.py)
 
 negative="$scratch/negative"
 make_consumer "$negative"
@@ -365,6 +368,13 @@ EOF
   expect_rejected "construct_$opaque" 'Unknown module value' \
     "llm_wire.$opaque is a type constructor"
 done
+
+cat >"$negative/src/consumer.gleam" <<'EOF'
+import llm_wire/generation
+pub fn fabricate() { generation.Settings("arbitrary") }
+EOF
+expect_rejected construct_generation_settings 'Unknown module value' \
+  'generation.Settings is a type constructor'
 
 cat >"$negative/src/consumer.gleam" <<'EOF'
 import http_gun

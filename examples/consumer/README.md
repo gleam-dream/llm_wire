@@ -1,7 +1,7 @@
 # Public LLM Wire consumer
 
 This is a separate package using the actual `../..` LLM Wire checkout and the
-local HTTP Gun and Blueprint siblings, and only their public modules. Run it
+recorded immutable HTTP Gun and Blueprint dependencies, and only their public modules. Run it
 from the LLM Wire root with `nix develop -c sh test/external_package_boundary.sh`.
 The gate also compiles a second positive consumer and checks that forbidden
 uses of the API fail with the intended compiler errors.
@@ -40,7 +40,8 @@ tool-result and structured workflows is exercised by
 The twelve scripted exchanges of `flow` have identical replies deliberately.
 For distinct replies to identical concurrent requests, coordinate admission
 order explicitly. The example uses HTTP Gun's default configuration: each LLM
-call's own timeouts replace the client's request timeout.
+call's own budget replaces the client's relative request timeout. An explicit
+absolute deadline on the supplied client still constrains the call.
 
 `run_with_retries` admits positive attempts and a total budget of
 1–4,294,967,295 whole milliseconds (the BEAM receive timeout range). Fallback
@@ -73,3 +74,23 @@ and answer candidates. It retains application-native labels in a heterogeneous
 batch, handles absent confidence and usage, configures custom headers and byte
 limits, checks invalid evidence, and round-trips durable receipts offline.
 The main consumer runs it as part of the full gate.
+
+`deadline_checks` verifies that an expired HTTP client deadline refuses a call
+without consuming a scripted exchange. The original client then executes that
+exchange. `test/generation_deadline.py` runs `deadline_http_checks` against a
+loopback server: both deadline orders, an infinite whole-call timeout and
+replacement of a relative client default are covered. A response held behind a
+release request verifies that the default can expire without ending the call.
+OpenAI and Anthropic cases preserve send, progress and reported usage evidence.
+The fixture observes closure of the timed-out sockets and checks that HTTP body
+and queue counters return to zero before reusing the borrowed client.
+
+`generation_checks` compares reusable settings with existing setters through
+public preparation and request JSON. Its custom encoder reads every existing
+provider request field. It covers defaults, full replacement, scalar overrides,
+output/tool/conversation preservation, both cache references and typed refusals
+before encoder or header callbacks. Run `gleam run -m generation_checks` here.
+
+For unpublished sibling changes, first use Oversight's `scripts/local_sources.py`
+from the Oversight Nix shell, then run this consumer inside the captured graph.
+Ordinary Git-pinned resolution does not include those working-tree changes.

@@ -35,9 +35,11 @@ the caller decides whether to retry.
 
 `llm_wire.Infinity` lifts a timeout and must be chosen explicitly. Every
 timeout is a `gleam/time/duration.Duration`. Each call's whole-call budget
-replaces the HTTP Gun client's request timeout and lifts its idle timeout, so a
-client default never cuts a long reasoning stream; the client's connect and
-pool timeouts, destinations and trust still apply. A limit that is exceeded
+replaces the HTTP Gun client's relative request timeout and lifts its idle
+timeout. An explicit absolute deadline on the supplied client remains a ceiling,
+including when the whole-call timeout is `Infinity`. The earlier application or
+whole-call deadline controls HTTP execution; connect and pool timeouts,
+destinations and trust still apply. A limit that is exceeded
 fails with `error.LimitExceeded(limit, ..)`, naming the setting that raises it.
 
 ## Tools and the conversation

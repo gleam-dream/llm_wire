@@ -99,6 +99,9 @@
       #points([Public constructor values are opaque where arbitrary construction could bypass admission. Returned records are read by label; extensible sums use a fallback arm. Generation's Config, Request(o), Prepared(o), Stream(o), tool declaration and Adapter keep private machinery out of caller type parameters. #adr(3) records this facade.])
     ]
     #subsection(title: "Configuration and preparation")[
+      #answers(title: "Reusable generation settings", responsibility: [Retain generation controls independently of a conversation.], interface: [generation.Settings contains optional maximum output tokens, temperature, top-p, stop sequences and one provider cache reference. generation.default leaves optional controls absent and stop sequences empty. with_generation replaces all controls; existing request setters update the same canonical settings.], interactions: [Request retains model, messages, settings, tools and output independently. Preparation derives the existing provider.Request field-label view without changing the custom adapter contract.], invariants: [Settings contain no model identity, messages, tools, credentials, output codec or runtime state. Changing output type or appending conversation preserves settings. Anthropic's default output bound remains an encoding choice.], failure: [Construction does not validate provider compatibility. Existing prepare checks reject invalid controls before encoding or HTTP execution.])
+      #behavior(title: "Generation settings have replacement semantics", area: "Preparation", level: "interface")[#given[A request has generation controls.] #when[The caller applies a Settings value.] #then[All generation controls equal that value.] #then[Model, conversation, tools and output remain unchanged.]]
+      #points([A scalar request setter after with_generation overrides only its named control. Applying generation.default later clears all explicit controls. #adr(11)])
       #answers(title: "Generation preparation", responsibility: [Validate and encode one request without networking.], interface: [prepare(Config, Request(o)) returns Prepared(o) or PrepareError; request_json reads the encoded body without credentials.], interactions: [Uses adapter validation, endpoint admission, tools, schema projection and the caller's output codec.], invariants: [Selected provider, admitted contracts and native decoder remain together. Invalid local values never reach HTTP.], failure: [InvalidSetting, InvalidRequest, UnsupportedSchema, ToolResultMismatch or RequestTooLarge name the refused boundary. Diagnostic strings are not classification keys.])
       #points(
         [Built-in settings hold their keys behind reveal closures. OpenAI adds organization/project; Anthropic adds API version; Google adds API version. Common settings own limits, three time bounds and tool-call checking. All bounds must be positive unless an explicit timeout Infinity is selected.],
@@ -272,10 +275,18 @@
       ))
       #points(
         [WholeCall defaults to 600 seconds. FirstToken defaults to 180 seconds; it begins during owner setup, after reducer factory and transport initializer work, and ends at the first accepted semantic progress. IdleGap defaults to 60 seconds after that point. Infinity lifts each independently. Preparation and caller retry waiting are outside these timers.],
-        [Generation applies the same absolute deadline to HTTP Gun and uses its remaining duration in the owner. It replaces the HTTP request timeout and lifts HTTP idle; connect and pool admission bounds still apply. Synchronous custom factory/reducer/output callbacks are trusted code and may delay observing elapsed time.],
+        [Generation establishes one absolute whole-call deadline before setup. The owner uses its remaining duration, and HTTP opening replaces the relative request timeout with the remaining duration at dispatch. An explicit deadline on the supplied HTTP client remains a ceiling, including when WholeCall is Infinity. Generation lifts HTTP idle; connect and pool admission bounds still apply. #adr(10) records the distinction between a default timeout and an explicit deadline. Synchronous custom factory/reducer/output callbacks are trusted code and may delay observing elapsed time.],
         [For HTTPS, the supplied client's destination policy remains. For admitted plaintext, the implementation configures default destination policy with loopback/private admission and PlaintextToLoopbackOnly through with_destination. HTTP Gun combines view constraints; this setup is not a claim that a caller's refusal can always be overridden or merely narrowed. Resolved non-loopback plaintext remains refused.],
         [Status 200 requires text/event-stream and absent/identity encoding. Other status bodies are bounded by ErrorBodyBytes and retained as Status with Retry-After; body/stream errors preserve independent observed-byte evidence. HTTP Gun does not add retries, redirects or decompression to this path.],
       )
+      #behavior(title: "An application deadline constrains generation", area: "Deadlines", level: "boundary")[
+        #given[The supplied client has an explicit absolute deadline.]
+        #when[Generation opens or consumes its response.]
+        #then[The earlier of the application deadline and the whole-call deadline bounds the provider interaction.]
+        #then[An expired application deadline refuses submission with NotSent evidence.]
+        #then[Expiry closes local response resources while preserving observed send, progress and usage evidence.]
+        #then[The caller retains ownership of the supplied client.]
+      ]
       #behavior(title: "A generation timer ends local execution", area: "Deadlines", level: "interface")[
         #given[An executing generation exceeds an applicable whole-call, first-progress or idle-gap timer.]
         #when[The deadline is observed.]
@@ -339,7 +350,7 @@
       #then[The consumer admits positive attempts and a total budget of 1 through 4,294,967,295 whole milliseconds, within the BEAM receive timeout range. Invalid budgets or negative fallback fail locally without starting a call.]
       #then[One monotonic deadline accounts for calls and waits. Each stream read uses the remaining duration; expiry closes the owned stream and returns an application deadline error without claiming provider rollback.]
       #then[A provider delay or fallback that cannot fit before the deadline returns the original typed provider failure without shortening the wait or starting another call.]
-      #then[The supplied client remains caller-owned. Startup, read-timeout arbitration and cleanup retain their own runtime bounds. Synchronous extension callbacks are not preempted; the budget does not promise an exact return-time ceiling. #adr(9) records this boundary.]
+      #then[The supplied client remains caller-owned. Startup, read-timeout arbitration and cleanup retain their own runtime bounds. Synchronous extension callbacks are not preempted; the budget does not promise an exact return-time ceiling. #adr(12) records this boundary.]
     ]
   ])
 
