@@ -29,6 +29,7 @@ pub fn main() -> Nil {
       ]),
       config.default(),
     )
+  // Leave room for cold runtime startup; the wall bound still rejects waiting.
   let wall = deadline.after(duration.milliseconds(500))
   let assert Error(consumer.ProviderFailure(failure)) =
     consumer.run_with_retries(
@@ -36,7 +37,7 @@ pub fn main() -> Nil {
       call,
       3,
       duration.seconds(0),
-      duration.milliseconds(100),
+      duration.seconds(5),
     )
   let assert error.Status(429, _, Some(wait)) = failure.error
   let assert 86_400_000 = duration.to_milliseconds(wait)

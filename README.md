@@ -13,7 +13,7 @@ and the matching HTTP Gun revision to your application:
 ```toml
 [dependencies]
 llm_wire = { path = "../llm_wire" }
-http_gun = { git = "https://github.com/gleam-dream/http_gun.git", ref = "9360c2481d920d2fdcddcf517886b337c28ec162" }
+http_gun = { git = "https://github.com/gleam-dream/http_gun.git", ref = "e4f00b8525e20a7b568b2cd585fe4e37db161b26" }
 ```
 
 Adjust the Wire path to your workspace. The package targets Erlang; the pinned Nix

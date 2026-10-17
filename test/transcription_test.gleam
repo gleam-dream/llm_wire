@@ -25,10 +25,12 @@ import llm_wire/transcribe as transcription
 import sinal
 import sinal/correlation
 
-const expected_text = "Vou abrir uma cafeteria no Campo Belo. Vamos vender café e pão de queijo."
+const expected_text =
+  "Vou abrir uma cafeteria no Campo Belo. Vamos vender café e pão de queijo."
 
 // Independent request oracle copied from the existing Elixir adapter's fields.
-const expected_body = "{\"store\":false,\"model\":\"gemini-3.5-transcribe\",\"input\":[{\"type\":\"audio\",\"data\":\"YXVkaW8gYnl0ZXM=\",\"mime_type\":\"audio/webm\"}],\"generation_config\":{\"transcription_config\":{\"language_codes\":[\"pt-BR\"],\"mode\":{\"type\":\"verbatim\"}}}}"
+const expected_body =
+  "{\"store\":false,\"model\":\"gemini-3.5-transcribe\",\"input\":[{\"type\":\"audio\",\"data\":\"YXVkaW8gYnl0ZXM=\",\"mime_type\":\"audio/webm\"}],\"generation_config\":{\"transcription_config\":{\"language_codes\":[\"pt-BR\"],\"mode\":{\"type\":\"verbatim\"}}}}"
 
 fn credentials() -> transcription.Config {
   transcription.google("synthetic-key")

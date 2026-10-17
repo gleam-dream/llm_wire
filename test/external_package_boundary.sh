@@ -432,7 +432,7 @@ import llm_wire/transcribe
 pub fn fabricate() { transcribe.$opaque("arbitrary") }
 EOF
   expect_rejected "transcription_$opaque" 'Unknown module value' \
-    "transcribe.$opaque is a type constructor"
+    "type $opaque"
 done
 
 cat >"$negative/src/consumer.gleam" <<'EOF'
