@@ -2,7 +2,8 @@
 
 LLM calls and streaming for Gleam on Erlang/OTP, with typed answers, tool requests
 and failures. Built-in adapters support OpenAI Responses, Anthropic Messages and
-Google GenerateContent; custom adapters use the same execution API.
+Google GenerateContent; custom adapters use the same execution API. Classification
+and inline audio transcription are separate request families.
 
 ## Install
 
@@ -61,43 +62,53 @@ shared client with `http_gun.supervised`.
 
 Generation defaults to a 600-second whole-call timeout, 180 seconds to first
 semantic progress and a 60-second idle gap after that progress. Byte and queue
-limits are finite. See the [defaults and setters](docs/usage.md#defaults) for the
-complete list and how these timers compose with HTTP Gun.
+limits are finite. The [design](docs/design/generation/design.typ) lists every
+default and how the timers compose with HTTP Gun.
 
-## More usage
+## Usage
 
-The [usage guide](docs/usage.md) covers tools and conversation codecs, structured
-output, classification, streaming, retry advice, custom providers, offline tests
-and telemetry. The [separate consumer](examples/consumer/README.md) provides
-complete runnable examples using public imports, including application-native
-values and client supervision.
+Structured output changes only the request: `llm_wire.with_output("invoice",
+invoice_codec)` makes `Answer` carry the decoded value, and unusable text returns
+`error.InvalidOutput` with the raw text. A tool round trip declares tools with
+`llm_wire.with_tools`, decodes each call with `tool.decode_arguments` when `run`
+returns `NeedsTools`, and appends `message.Assistant(turn)` and one
+`llm_wire.tool_result` per call to the next request. `llm_wire.stream` and
+`llm_wire.next` deliver progress until `Done`, and `llm_wire.advise` turns a
+failure into retry advice without scheduling anything.
 
-[Local benchmark results](docs/benchmarks.md) retain measured H2 latency and
-resource observations with their workload, source and runtime details.
+The [public consumer](examples/consumer/README.md) is the usage documentation:
+compiled, offline programs that run in the full gate, one per topic.
+
+| Topic                                                                       | Example                                                                          |
+| --------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| First call (the block above)                                                | [`readme_call`](examples/consumer/src/readme_call.gleam)                         |
+| Defaults, timeouts and limits                                               | [`usage_defaults`](examples/consumer/src/usage_defaults.gleam)                   |
+| Text, structured output, tool rounds, streaming, retries, a custom provider | [`llm_wire_consumer`](examples/consumer/src/llm_wire_consumer.gleam)             |
+| Tools, history and turn persistence                                         | [`usage_conversation`](examples/consumer/src/usage_conversation.gleam)           |
+| Failures and retry advice                                                   | [`usage_failures`](examples/consumer/src/usage_failures.gleam)                   |
+| Own the HTTP client                                                         | [`usage_client`](examples/consumer/src/usage_client.gleam)                       |
+| Test without a network                                                      | [`usage_testing`](examples/consumer/src/usage_testing.gleam)                     |
+| Observe calls                                                               | [`usage_observe`](examples/consumer/src/usage_observe.gleam)                     |
+| Classification                                                              | [`classification_consumer`](examples/consumer/src/classification_consumer.gleam) |
+| Audio transcription                                                         | [`transcription_consumer`](examples/consumer/src/transcription_consumer.gleam)   |
+
+## References
+
+[Oracle references](docs/ORACLE.md) pin the upstream implementations whose
+selected behavior the tests compare against, and [benchmarks](docs/BENCHMARKS.md)
+records the finite local HTTP measurement and its limits. The design layer owns
+the contracts: [overview](docs/design/design.typ),
+[vocabulary](docs/design/generation/CONTEXT.typ), [decisions](docs/adr/) and the
+[coverage map](docs/COVERAGE.md).
 
 ## Development
 
-Ordinary builds resolve the immutable Git dependencies in `gleam.toml`; editing
-a sibling checkout does not replace those dependencies. Run from this directory:
+Run from this directory inside the pinned Nix shell:
 
 ```sh
 nix develop -c sh dev/gate fast
 nix develop -c sh test/external_package_boundary.sh
 ```
 
-[Testing guidance](docs/testing.md) covers the full local gate, formatting and
-opt-in provider recording. [Native design](docs/design/design.typ),
-[rendered design](docs/design/design-layer.pdf) and [decision records](docs/adr/)
-describe ownership and unresolved contracts. The [coverage map](docs/COVERAGE.md)
-locates each design owner.
-
-For reusable generation controls, construct `llm_wire/generation.Settings` and
-apply it with `llm_wire.with_generation`. This replaces all generation controls;
-individual setters applied afterward override only their own control. Preparation
-retains provider-specific validation.
-
-Unpublished coordinated changes use Oversight's explicit local-source capture:
-from Oversight run `nix develop --command python3 -B scripts/local_sources.py
---output /tmp/gleam-generation-sources`, then run consumers from that copy through
-the original Nix shell. The copy normalizes the complete sibling graph and records
-its source hashes. It does not qualify the immutable Git baseline.
+`AGENTS.md` lists the full gate, formatting and design-gate commands. Provider
+recording is opt-in and needs explicit authorization.

@@ -4,7 +4,7 @@
 
 ## Decision
 
-- On 2026-10-07 the user approved correcting the retry teaching example with TDD, including both execution and waiting in a finite budget. This resolves only the retry item from [ADR-0007](0007-preserve-observed-contract-gaps.md); stream read authority remains unresolved.
+- On 2026-10-07 the user approved correcting the retry teaching example with TDD, including both execution and waiting in a finite budget. This resolves only the retry item from [ADR-0007](0007-leave-stream-read-authority-open.md); stream read authority remains unresolved.
 - The application uses `stream`, `next_within` and `close` because a prepared interaction already captures its configured call timeout. A monotonic deadline limits each read and governs retry admission without changing the core API or spawning an unowned worker.
 - Provider delays are minimum waits. An unaffordable delay returns the original failure; shortening that delay to fit would violate provider advice. Attempt exhaustion also returns the provider failure.
 - Deadline and read failures use application error variants rather than fabricating provider identity, usage or send evidence. Closing local work does not establish remote cancellation.

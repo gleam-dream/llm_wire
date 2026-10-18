@@ -1,96 +1,33 @@
 # Public LLM Wire consumer
 
-This is a separate package using the actual `../..` LLM Wire checkout and the
-recorded immutable HTTP Gun and Blueprint dependencies, and only their public modules. Run it
-from the LLM Wire root with `nix develop -c sh test/external_package_boundary.sh`.
-The gate also compiles a second positive consumer and checks that forbidden
-uses of the API fail with the intended compiler errors.
+A separate package that depends on the parent `llm_wire` checkout through public imports only, with HTTP Gun, Blueprint and Sinal pinned in its manifest. Every example runs offline against scripted HTTP Gun playback and contacts no provider. The examples are the usage documentation: they compile and run in the full gate, so they stay current with the library.
 
-`src/llm_wire_consumer.gleam` reads top to bottom as the API is learned:
+## Run
 
-1. the common path: `openai.new(key) |> openai.config`, `llm_wire.request`,
-   `llm_wire.prepare`, `llm_wire.run`, then `Answer` or
-   `llm_wire.describe_failure`;
-2. structured output with `llm_wire.with_output(name, codec)`: the `Answer`
-   holds the decoded value, and `error.InvalidOutput` keeps the raw text;
-3. a tool round trip: on `NeedsTools`, decode each call with
-   `tool.decode_arguments`, append `message.Assistant(turn)` and one
-   `llm_wire.tool_result` per call, and prepare the next request;
-4. streaming with `llm_wire.stream` and `llm_wire.next` until `Done`;
-5. retry decisions with `llm_wire.advise`: LLM Wire never retries, so the
-   application bounds attempts and uses one monotonic deadline for calls and
-   waits; an unaffordable provider delay returns the original failure;
-6. a custom adapter built with `llm_wire/provider`, whose key lives only in
-   its header closure.
+From the LLM Wire root:
 
-`main` runs each of them offline: `testing.events_for(message.OpenAI, reply)`
-lowers a scripted reply into OpenAI's own wire, so the real OpenAI
-configuration runs against an `http_gun/testing` playback client.
+```sh
+nix develop -c sh test/external_package_boundary.sh
+```
 
-The application owns the shared client's entire lifetime. `http_child`
-supervises it under a name with `http_gun.supervised`, and `http_client`
-reaches it with `http_gun.named`, so the handle stays valid across restarts.
-`flow` runs one buffered call, one early-closed stream and ten concurrent calls
-on any client; `main` runs it with a script and again from the script's
-cassette. The `live` and `record` constructors compile but are not invoked
-here, preventing an accidental provider call. Real local recording of text,
-tool-result and structured workflows is exercised by
-`test/llm_wire_recording_test.gleam` in the parent package.
+The command builds this package with warnings as errors, runs `gleam run` (every example below), then compiles a second positive consumer and checks that forbidden uses of the API fail with the intended compiler errors. Run one example with `gleam run -m <module>` in this directory. For unpublished sibling changes, capture the sibling graph first as described in [ADR-0014](../../docs/adr/0014-qualify-unpublished-siblings-by-local-source-capture.md).
 
-The twelve scripted exchanges of `flow` have identical replies deliberately.
-For distinct replies to identical concurrent requests, coordinate admission
-order explicitly. The example uses HTTP Gun's default configuration: each LLM
-call's own budget replaces the client's relative request timeout. An explicit
-absolute deadline on the supplied client still constrains the call.
+## Usage by topic
 
-`run_with_retries` admits positive attempts and a total budget of
-1–4,294,967,295 whole milliseconds (the BEAM receive timeout range). Fallback
-backoff cannot be negative. It uses public `stream`, `next_within` and `close`
-because a prepared call already captures its original timeouts. The same
-deadline survives retries and progress events; provider delays are never
-shortened to fit. Attempt exhaustion and unaffordable waits preserve the
-original `Failure` in `ProviderFailure`.
+| Topic                                                                                                                                           | Module in `src/`                                                                                                                 |
+| ----------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| The first call, as in the [README](../../README.md#make-a-call)                                                                                 | `readme_call.gleam` (compiled; checked against the README by `dev/readme_example_test.py`)                                       |
+| Defaults, timeouts and limits                                                                                                                   | `usage_defaults.gleam`                                                                                                           |
+| Text, structured output, tool rounds, streaming, retry advice, custom provider, client supervision, early close, concurrency, cassette playback | `llm_wire_consumer.gleam`                                                                                                        |
+| Tools, conversation history and turn persistence                                                                                                | `usage_conversation.gleam`                                                                                                       |
+| Failures, retry advice and error kinds                                                                                                          | `usage_failures.gleam`                                                                                                           |
+| Retry with one application deadline                                                                                                             | `retry_checks.gleam`, `retry_deadline_checks.gleam` (the second runs against a loopback server, `test/retry_deadline.py`)        |
+| An explicit client deadline                                                                                                                     | `deadline_checks.gleam`, `deadline_http_checks.gleam` (the second runs against a loopback server, `test/generation_deadline.py`) |
+| Reusable generation settings                                                                                                                    | `generation_checks.gleam`                                                                                                        |
+| Own the HTTP client                                                                                                                             | `usage_client.gleam`                                                                                                             |
+| Testing without a network                                                                                                                       | `usage_testing.gleam`                                                                                                            |
+| Observing calls with Sinal                                                                                                                      | `usage_observe.gleam`                                                                                                            |
+| Classification                                                                                                                                  | `classification_consumer.gleam`                                                                                                  |
+| Inline audio transcription                                                                                                                      | `transcription_consumer.gleam`                                                                                                   |
 
-`RetryDeadlineReached` means local work was stopped; it does not prove that the
-provider cancelled or avoided charging tokens. Startup retains its runtime
-bound; this helper does not preempt synchronous custom callbacks.
-Read-timeout arbitration can take up
-to five additional seconds, and close allows up to five seconds before killing
-the owner. The budget bounds admitted execution and waiting, not an exact
-return-time ceiling including cleanup. The helper owns each stream; the caller
-continues to own the shared HTTP client.
-
-`retry_checks` uses strict offline playback to check excessive provider delays,
-cumulative waiting, attempt exhaustion, affordable retry and invalid policy.
-`test/retry_deadline.py` runs `retry_deadline_checks` against a temporary loopback
-HTTP server: an infinite-timeout call is closed at the application deadline,
-and time spent in a failed call prevents an unaffordable fallback retry. The
-fixture checks request counts, HTTP closure and released body/queue counters.
-These checks run in the external-package boundary command above.
-
-`classification_consumer` exercises `classify.typesafe()` with separate live
-settings, then an independent array-based provider using typed question views
-and answer candidates. It retains application-native labels in a heterogeneous
-batch, handles absent confidence and usage, configures custom headers and byte
-limits, checks invalid evidence, and round-trips durable receipts offline.
-The main consumer runs it as part of the full gate.
-
-`deadline_checks` verifies that an expired HTTP client deadline refuses a call
-without consuming a scripted exchange. The original client then executes that
-exchange. `test/generation_deadline.py` runs `deadline_http_checks` against a
-loopback server: both deadline orders, an infinite whole-call timeout and
-replacement of a relative client default are covered. A response held behind a
-release request verifies that the default can expire without ending the call.
-OpenAI and Anthropic cases preserve send, progress and reported usage evidence.
-The fixture observes closure of the timed-out sockets and checks that HTTP body
-and queue counters return to zero before reusing the borrowed client.
-
-`generation_checks` compares reusable settings with existing setters through
-public preparation and request JSON. Its custom encoder reads every existing
-provider request field. It covers defaults, full replacement, scalar overrides,
-output/tool/conversation preservation, both cache references and typed refusals
-before encoder or header callbacks. Run `gleam run -m generation_checks` here.
-
-For unpublished sibling changes, first use Oversight's `scripts/local_sources.py`
-from the Oversight Nix shell, then run this consumer inside the captured graph.
-Ordinary Git-pinned resolution does not include those working-tree changes.
+The design layer owns the contracts these files exercise; start from [Observability and verification](../../docs/design/design.typ). Oracle and benchmark references are in [ORACLE.md](../../docs/ORACLE.md) and [BENCHMARKS.md](../../docs/BENCHMARKS.md).
