@@ -25,6 +25,9 @@
     pending-entry(title: "Specify advanced interaction lifecycles", kind: "ruling", since: "2026-10-06", adr: [#adr(6)])[
       Richer audio and video, embeddings, realtime and WebSockets, provider batch and background work, interrupted-stream resumption and optional remote cancellation acknowledgement need distinct protocol, state, ownership and compatibility contracts. They are not generation guarantees.
     ],
+    pending-entry(title: "Check carried-over usage claims against code", kind: "verify", since: "2026-10-17", adr: [#adr(17)])[
+      The defaults and timer composition under Effect timing and deadlines, the extension rules under Provider interpretation and the retry guidance under Failure and retry evidence came from retired guides. The compiled usage examples exercise the defaults, conversation persistence, failure kinds, offline testing, observation and client ownership. The remaining statements in those sections are not yet checked against code.
+    ],
   )
 
   #section(title: "Generation admission", lead: "A reusable prepared value binds one encoded request to its output decoder.", body: [

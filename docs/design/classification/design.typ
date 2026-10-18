@@ -13,6 +13,12 @@
     #principle(title: "Separate pure protocol from live operation", lens: "composition")[A wire is fixed for an operation version while fresh live configuration is obtained after approval or restart. Absent measurements stay absent.]
   ])
 
+  #pending-ledger(
+    pending-entry(title: "Check carried-over classification bounds against code", kind: "verify", since: "2026-10-17", adr: [#adr(17)])[
+      The receipt bounds and the admission limits came from retired guides. The classification consumer exercises live admission and durable reconstruction. The numeric bounds and the evidence-failure cases are not yet checked against code.
+    ],
+  )
+
   #section(title: "Classification", lead: "Typed questions use pure protocol adapters and shared evidence validation.", body: [
     #subsection(title: "Question and candidate model")[
       #entity(id: "question-batch", title: "Question batch", description: [The typed classification definition owned by the application.], kind: "value-object", owner: "classification questions", lifecycle: "immutable", domain: "classification")[
