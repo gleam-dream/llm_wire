@@ -1,3 +1,1 @@
-# Preserve captured terminal output, including diagnostic whitespace.
-docs/evidence/http-gun/*.log -whitespace
 *.pdf binary
