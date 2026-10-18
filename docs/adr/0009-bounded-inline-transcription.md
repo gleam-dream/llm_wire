@@ -44,6 +44,11 @@ Normal gates are offline. The earlier synthetic live samples demonstrate that
 request shape, not arbitrary audio quality, future model support or this final
 implementation's release readiness.
 
+On 2026-10-18 the owner accepted the delivered implementation and its public
+surface: `Mode`, `Settings`, `AudioError`, `Audio`, `Config`, `Prepared`,
+`google`, `with_endpoint`, `with_request_limit`, `audio`, `prepare`,
+`request_json` and `run`.
+
 Sources checked 2026-10-09:
 [Google transcription](https://ai.google.dev/gemini-api/docs/transcribe) and
 [Interactions retention](https://ai.google.dev/gemini-api/docs/interactions-overview).

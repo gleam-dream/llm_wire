@@ -12,12 +12,6 @@
     #principle(title: "Leave transport authority with the caller")[The supplied HTTP client keeps its limits, deadline, cancellation, trust and destinations. The operation adds no retry and no client lifetime.]
   ])
 
-  #pending-ledger(
-    pending-entry(title: "Accept the inline transcription implementation", kind: "ruling", since: "2026-10-09", adr: [#adr(9)])[
-      The contract is specified and implemented. The owner has not yet accepted the delivered implementation.
-    ],
-  )
-
   #section(title: "Transcription", lead: "One inline audio request returns completed text while the caller keeps transport and recovery policy.", body: [
     #answers(title: "Inline transcription", responsibility: [Admit inline bytes, encode one Google Interactions request and return completed nonempty text.], interface: [transcribe.audio validates bytes and MIME under the caller's raw byte allowance; settings(model) defaults to automatic language detection and Verbatim. google(key) creates Config, with_endpoint and with_request_limit configure it, prepare returns opaque Prepared, request_json exposes only its body, and run(client, prepared) returns String or the common Failure.], interactions: [The application supplies model, language hints, mode and its existing HTTP Gun client. It may place the returned String in its own record or a later generation request.], invariants: [Preparation performs no I/O. Encoded headers remain behind a closure. Execution neither retries nor changes the client's policy or lifetime.], failure: [AudioError distinguishes invalid bytes, unsupported MIME, invalid allowance and excess raw bytes. Preparation returns PrepareError. Executed failure retains provider and conservative send evidence.])
     #entity(id: "transcription-audio", title: "Inline audio", description: [Nonempty byte-aligned audio declared by the caller.], kind: "value-object", owner: "transcription admission", lifecycle: "immutable", domain: "transcription")[
