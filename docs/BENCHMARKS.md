@@ -16,7 +16,7 @@ Each row is one batch with one duration per caller. Batch elapsed time spans bar
 
 ## Run the workload
 
-From the package root, with local sibling dependencies and the pinned Nix shell:
+From the package root, in the pinned Nix shell:
 
 ```sh
 nix develop -c gleam build

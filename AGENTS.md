@@ -5,7 +5,7 @@
 - `llm_wire` is an independent typed, bounded LLM wire and streaming library for Gleam on Erlang/OTP. The application owns conversation history, retry, tool execution and the shared HTTP Gun client.
 - The design layer under `docs/design/` owns architecture and behavior, each context's `CONTEXT.typ` owns its vocabulary, and `docs/adr/` owns decisions. Read the pending ledgers before treating behavior conflicts or deferred scope as resolved.
 - Verify facade changes (common use, advanced configuration, caller-native types, failure handling) from the separate consumer in `examples/consumer/` using public imports.
-- HTTP Gun, Blueprint and Sinal are pinned Git dependencies. Trust and transport policy belong to the application-owned HTTP client; a dependency checkout stays read-only unless the task explicitly includes it.
+- HTTP Gun, Blueprint and Sinal are Git dependencies of unpublished packages. `manifest.toml` holds their resolved commits, and nothing updates them automatically: run `gleam update <package>` by hand when a change is needed. Trust and transport policy belong to the application-owned HTTP client; a dependency checkout stays read-only unless the task explicitly includes it.
 
 ## Commands
 

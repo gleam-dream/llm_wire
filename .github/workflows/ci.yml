@@ -20,39 +20,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          path: llm_wire
-          persist-credentials: false
-      - name: Read immutable sibling revisions
-        id: revisions
-        working-directory: llm_wire
-        run: |
-          for package in json_blueprint sinal http_gun; do
-            revision="$(sed -n "s/^$package=//p" sibling-revisions.txt)"
-            [[ "$revision" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid $package revision" >&2; exit 1; }
-            echo "$package=$revision" >> "$GITHUB_OUTPUT"
-          done
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          repository: lostbean/json_blueprint
-          ref: ${{ steps.revisions.outputs.json_blueprint }}
-          path: json_blueprint
-          persist-credentials: false
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          repository: gleam-dream/sinal
-          ref: ${{ steps.revisions.outputs.sinal }}
-          path: sinal
-          persist-credentials: false
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          repository: gleam-dream/http_gun
-          ref: ${{ steps.revisions.outputs.http_gun }}
-          path: http_gun
           persist-credentials: false
       - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
       - name: Complete full gate
         shell: bash
-        working-directory: llm_wire
         env:
           LLM_WIRE_HTTP_OUTPUT: ${{ runner.temp }}/llm-wire-ci/http
         run: |
