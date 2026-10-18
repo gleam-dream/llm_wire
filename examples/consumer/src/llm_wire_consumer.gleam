@@ -1,6 +1,7 @@
 //// A separate package using only LLM Wire's public modules: the common path
 //// first, then structured output, a tool round trip, streaming, retry
-//// advice and a custom adapter. `main` runs every flow offline against
+//// advice and a custom adapter. `main` also runs the focused `usage_*`
+//// examples. Every flow runs offline against
 //// scripted HTTP Gun clients; nothing here contacts a provider.
 
 import classification_consumer
@@ -26,6 +27,12 @@ import llm_wire/provider
 import llm_wire/testing
 import llm_wire/tool
 import transcription_consumer
+import usage_client
+import usage_conversation
+import usage_defaults
+import usage_failures
+import usage_observe
+import usage_testing
 
 // --- the common path ---------------------------------------------------------
 
@@ -456,6 +463,12 @@ fn prepared(
 pub fn main() -> Nil {
   classification_consumer.main()
   transcription_consumer.main()
+  usage_defaults.main()
+  usage_conversation.main()
+  usage_failures.main()
+  usage_testing.main()
+  usage_observe.main()
+  usage_client.main()
   // The common path, against OpenAI's own wire lowered from a script.
   let config = openai_config("sk-example")
   let reply = testing.events_for(message.OpenAI, testing.text("Hello!"))
