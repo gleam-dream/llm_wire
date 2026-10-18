@@ -58,7 +58,6 @@
             "build/**"
             "test/fixtures/**"
             "test/cassettes/**"
-            "test/oracle/**"
             "docs/evidence/**"
           ];
           programs.gleam.enable = true;

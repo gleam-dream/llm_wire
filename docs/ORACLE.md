@@ -40,7 +40,7 @@ Pure scripted grammar proves transition laws. Live OTP and HTTP fixtures establi
 
 ## Preserved inputs
 
-Exact request fixtures, malformed and fragmented SSE, offline live cassettes under `test/cassettes/live/` and the source, runtime, red and green receipts under `docs/evidence/http-gun/` stay as retained inputs. Historical complete-header rejection was post-parse evidence, not a pre-allocation guarantee.
+Exact request fixtures, malformed and fragmented SSE, offline live cassettes under `test/cassettes/live/` and the source, runtime, red and green receipts under `docs/evidence/http-gun/` stay as retained inputs. `docs/evidence/http-gun/sources.json` is a dated receipt of the 2026-09-30 capture: its file hashes describe the sources at that capture and are not refreshed. Historical complete-header rejection was post-parse evidence, not a pre-allocation guarantee.
 
 ## Run the comparison
 

@@ -441,4 +441,4 @@ pub fn credentials(call: transcribe.Prepared) { call.request }
 EOF
 expect_rejected transcription_credentials 'Unknown record field' 'request'
 
-printf '%s\n' 'Public wave 4 consumer works; opacity, raw-request, credential, and removed API boundaries hold.'
+printf '%s\n' 'Public consumer works; opacity, raw-request, credential, and removed API boundaries hold.'
