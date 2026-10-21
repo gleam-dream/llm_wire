@@ -9,6 +9,8 @@
 
 ## Commands
 
+- When updating dependency pins, reconcile affected `manifest.toml` files in examples, consumers and nested packages through Gleam, then run the full repository gate; updating the root lock alone is insufficient.
+
 - `nix develop` or direnv provides Gleam, Erlang/OTP 29, rebar3 and local-check tools. `nix fmt` formats the repository, lefthook formats and restages staged files, and `nix flake check` includes the formatting gate.
 - Fast gate: `nix develop -c sh dev/gate fast` (build warnings, unit and local H1/TLS cases).
 - Full gate: `nix develop -c sh dev/gate full` adds a clean build, the external consumers (`nix develop -c sh test/external_package_boundary.sh`) and the nghttpd H2 and concurrency harness (`python3 dev/local-http.py`).
