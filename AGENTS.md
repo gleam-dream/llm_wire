@@ -14,7 +14,7 @@
 - Full gate: `nix develop -c sh dev/gate full` adds a clean build, the external consumers (`nix develop -c sh test/external_package_boundary.sh`) and the nghttpd H2 and concurrency harness (`python3 dev/local-http.py`).
 - Gates use offline and local inputs. `nix develop -c sh dev/record-live [scenario]` is an opt-in operation that spends provider tokens and needs explicit task authorization; never inspect or copy credential values.
 - After design changes, render and run the imported design check.
-- Usage lives as compiled, offline examples in `examples/consumer/src/` (the full gate runs them). When a public API changes, update the matching `usage_*` example; README consistency is reviewed manually.
+- Usage lives as compiled, offline examples in `examples/consumer/src/` (the full gate runs them). When a public API changes, update the matching `usage_*` example; README code excerpts are synchronized from tested sources with Snips.
 
 ## References
 
@@ -60,3 +60,12 @@ estimates context. Review documentation and conventions manually.
 conformance review before the layer is treated as current.
 
 <!-- agent-skills:end -->
+
+## README snippets
+
+Keep README Gleam examples in compiled example or consumer source. Use named
+`snips-start` / `snips-end` regions (or include a whole example module), and retain
+Prettier ignore ranges around generated README blocks. Format the source first,
+then run `nix run .#snips -- --commands deny README.md`. CI runs
+`nix run .#snips -- --check --commands deny README.md` using the shared pinned
+package. Snips checks synchronization; existing example tests check behavior.

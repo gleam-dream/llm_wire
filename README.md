@@ -25,6 +25,9 @@ shell uses OTP 29.
 Replace the example key with one supplied by your application and choose a model
 available to that account.
 
+<!-- prettier-ignore-start -->
+
+<!-- snips: examples/consumer/src/readme_call.gleam#first-call -->
 ```gleam
 import gleam/io
 import http_gun
@@ -54,6 +57,8 @@ pub fn main() -> Nil {
   }
 }
 ```
+
+<!-- prettier-ignore-end -->
 
 `prepare` validates and encodes the request without I/O. `run` returns after the
 response stream is closed. The application owns the HTTP client, conversation

@@ -75,7 +75,7 @@
       )
     ]
     #subsection(title: "Validation profiles")[
-      #points([Required checks cover formatting, compilation and unit/integration behavior. Documentation consistency, source boundaries and design intent are reviewed manually; rendered-layer integrity uses the imported checker; checker self-tests and receipt acceptance are not required. #adr(18)])
+      #points([Required checks cover formatting, compilation and unit/integration behavior. Shared pinned Snips synchronizes README excerpts from compiled examples, with local behavior exercised by consumer tests. Other documentation consistency, source boundaries and design intent are reviewed manually; bespoke README equality checkers remain removed; rendered-layer integrity uses the imported checker; checker self-tests and receipt acceptance are not required. #adr(18)])
       #md-table(4, (
         [*Check*], [*Fast*], [*Full*], [*Establishes*],
         [Shared formatting and design integrity], [separate CI commands], [separate CI commands], [`nix flake check` and imported `design-gate-check`],

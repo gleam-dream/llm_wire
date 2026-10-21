@@ -1,3 +1,4 @@
+// snips-start: first-call
 import gleam/io
 import http_gun
 import http_gun/config as http_config
@@ -25,3 +26,4 @@ pub fn main() -> Nil {
       }
   }
 }
+// snips-end: first-call

@@ -24,6 +24,8 @@ jobs:
       - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
       - run: nix flake check
       - run: nix run .#design-gate-check -- docs/design .
+      - name: README snippets
+        run: nix run --no-update-lock-file .#snips -- --check --commands deny README.md
       - name: Complete full gate
         shell: bash
         env:
