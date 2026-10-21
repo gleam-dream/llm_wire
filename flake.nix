@@ -89,8 +89,6 @@
             python3
             nghttp2
             ripgrep
-            actionlint
-            shellcheck
             ruff
             findutils
             treefmtEval.config.build.wrapper

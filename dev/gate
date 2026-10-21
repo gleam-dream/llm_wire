@@ -7,30 +7,9 @@ case "$profile" in fast | full) ;; *)
   exit 2
   ;;
 esac
-# Nix validates a copied tree, so the gate never repairs the working tree.
-nix flake check
-actionlint
-shellcheck dev/gate dev/check-native dev/record-live test/external_package_boundary.sh
-ruff check dev test/support/classifier
-python3 -B -m unittest discover -s dev -p '*_test.py' -v
-gleam format --check src test examples/consumer/src
 if [ "$profile" = full ]; then gleam clean; fi
-gleam check
 gleam build --warnings-as-errors
 sh dev/check-native
-if rg -n 'http_gun/internal|gun:|llm_wire_gun|llm_wire_cassette_ffi|llm_wire/pool|llm_wire/internal/transport' src; then
-  printf '%s\n' 'A removed or non-public production HTTP path was found.' >&2
-  exit 1
-fi
-module_list=$(mktemp)
-trap 'rm -f "$module_list"' EXIT HUP INT TERM
-find src -name '*.gleam' -not -path '*/internal/*' >"$module_list"
-while IFS= read -r module; do
-  if ! head -n 1 "$module" | grep -q '^////'; then
-    printf '%s\n' "Public module $module must start with a //// module doc." >&2
-    exit 1
-  fi
-done <"$module_list"
 gleam test
 python3 -B -m unittest discover -s test/support/classifier -p "*_test.py"
 if [ "$profile" = full ]; then

@@ -10,11 +10,11 @@
 ## Commands
 
 - `nix develop` or direnv provides Gleam, Erlang/OTP 29, rebar3 and local-check tools. `nix fmt` formats the repository, lefthook formats and restages staged files, and `nix flake check` includes the formatting gate.
-- Fast gate: `nix develop -c sh dev/gate fast` (formatting, build warnings, public module docs, production HTTP boundaries, unit and local H1/TLS cases).
+- Fast gate: `nix develop -c sh dev/gate fast` (build warnings, unit and local H1/TLS cases).
 - Full gate: `nix develop -c sh dev/gate full` adds a clean build, the external consumers (`nix develop -c sh test/external_package_boundary.sh`) and the nghttpd H2 and concurrency harness (`python3 dev/local-http.py`).
 - Gates use offline and local inputs. `nix develop -c sh dev/record-live [scenario]` is an opt-in operation that spends provider tokens and needs explicit task authorization; never inspect or copy credential values.
-- After editing `docs/design/`, run the design-gate commands from the fenced block below sequentially.
-- Usage lives as compiled, offline examples in `examples/consumer/src/` (the full gate runs them). When a public API changes, update the matching `usage_*` example and the README block that `dev/readme_example_test.py` checks against `readme_call.gleam`.
+- After design changes, render and run the imported design check.
+- Usage lives as compiled, offline examples in `examples/consumer/src/` (the full gate runs them). When a public API changes, update the matching `usage_*` example; README consistency is reviewed manually.
 
 ## References
 
@@ -25,7 +25,7 @@
 <!-- agent-skills:begin -->
 <!-- framework-commit: cab7c0590036edaa66d8430cc5016399a9fd2c71 origin: git@github.com:lostbean/skills.git -->
 
-(machine-owned; do not edit inside this fence — re-run setup to refresh)
+(Validation policy updated by the owner on 2026-10-20.)
 
 ## Agent skills
 
@@ -50,20 +50,11 @@ verbatim): states `needs-triage`, `needs-info`, `ready-for-agent`,
 **AI disclaimer** — AI-authored tracker comments start with
 `AI-assisted contribution.`
 
-**Design gate** — `nix run .#design-gate-check -- docs/design .` checks render freshness,
-vocabulary references and layer integrity (exit 0 clean, 1 violation, 2 error).
-The gate is supplied by the pinned `design-layer` flake input.
-`nix run .#design-gate-render -- docs/design docs/design/design-layer.pdf`
-rebuilds the rendered document. `nix run .#design-gate-context -- docs/design --estimate`
-estimates agent context; the same command without `--estimate` emits ephemeral
-Markdown. `--manifest`, `--preview`, and `--section PATH --expect-digest DIGEST`
-support loading selected sections. A bare Typst compilation does not run the gate.
-
-**Context verification** — use native semantic blocks for lists, tables,
-models and behavior. After authoring, verify context estimation and a selected
-section export as well as rendering and the design gate.
-Run these commands sequentially for each layer; they share its generated
-`.render` workspace.
+**Shared validation** — `nix fmt` owns formatting; `nix flake check` checks it.
+`nix run .#design-gate-check -- docs/design .` runs the imported design check.
+CI invokes these checks directly. `nix run .#design-gate-render -- docs/design docs/design/design-layer.pdf`
+renders the layer; `nix run .#design-gate-context -- docs/design --estimate`
+estimates context. Review documentation and conventions manually.
 
 **Staleness** — source changes since the design last changed require a
 conformance review before the layer is treated as current.

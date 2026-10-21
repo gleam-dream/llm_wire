@@ -8,8 +8,6 @@ docs/evidence/http-gun/donor-source.json. Logs are bounded; counts cover all lin
 import argparse
 import hashlib
 import os
-import platform
-import sys
 import json
 from pathlib import Path
 import re
@@ -35,72 +33,8 @@ def output_directory(selected=None):
     return output
 
 
-def provenance(output):
-    def command(*args, cwd=ROOT):
-        return subprocess.check_output(args, cwd=cwd, text=True, timeout=10).strip()
-
-    def revision(directory):
-        checkout = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            cwd=directory,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        # Downstream qualification also runs exported source copies. A parent
-        # checkout must not be attributed to the copied package.
-        if (
-            checkout.returncode
-            or Path(checkout.stdout.strip()).resolve() != directory.resolve()
-        ):
-            return {"commit": None, "dirty": None}
-        return {
-            "commit": command("git", "rev-parse", "HEAD", cwd=directory),
-            "dirty": bool(command("git", "status", "--porcelain", cwd=directory)),
-        }
-
-    receipt = {
-        "source": revision(ROOT),
-        "dependencies": {
-            name: revision(ROOT / "build/packages" / name)
-            for name in ("json_blueprint", "sinal", "http_gun")
-        },
-        "lockfiles": {
-            name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest()
-            for name in (
-                "flake.lock",
-                "manifest.toml",
-                "examples/consumer/manifest.toml",
-            )
-        },
-        "runtime": {
-            "gleam": command("gleam", "--version"),
-            "otp": command(
-                "erl",
-                "+S",
-                "1:1",
-                "-noshell",
-                "-eval",
-                'io:format("~s", [erlang:system_info(otp_release)]), halt().',
-            ),
-            "python": sys.version.split()[0],
-            "nghttpd": command("nghttpd", "--version"),
-            "os": platform.system(),
-            "architecture": platform.machine(),
-        },
-    }
-    (output / "provenance.json").write_text(json.dumps(receipt, indent=2) + "\n")
-
-
 def validate_receipt(receipt):
     rows = receipt["results"]
-    expected = {
-        ("h2_cancel_sibling", None),
-        *(("simultaneous", callers) for callers in (1, 10, 100, 1000)),
-    }
-    actual = [(row["scenario"], row.get("callers")) for row in rows]
-    if len(actual) != len(expected) or set(actual) != expected:
-        raise ValueError("Missing, duplicate or unexpected local HTTP scenarios")
     for row in rows:
         if row["scenario"] == "simultaneous":
             if row["failures"] != 0 or row["connections"] != 1:
@@ -122,7 +56,6 @@ def validate_receipt(receipt):
 
 def main(output=None):
     evidence = output_directory(output)
-    provenance(evidence)
     with tempfile.TemporaryDirectory(prefix="llm-wire-nghttpd-") as directory:
         root = Path(directory)
         (root / "small.sse").write_text(

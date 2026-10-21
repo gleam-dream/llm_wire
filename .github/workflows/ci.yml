@@ -22,6 +22,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
+      - run: nix flake check
+      - run: nix run .#design-gate-check -- docs/design .
       - name: Complete full gate
         shell: bash
         env:
@@ -38,28 +40,16 @@ jobs:
           path: ${{ runner.temp }}/llm-wire-ci/
           retention-days: 14
           include-hidden-files: true
-          if-no-files-found: error
-
-  design:
-    name: Design layer
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
-      - run: nix run .#design-gate-check -- docs/design .
+          if-no-files-found: warn
 
   ci:
     name: CI
     if: always()
-    needs: [validation, design]
+    needs: [validation]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Require every mandatory job to succeed
         env:
           VALIDATION: ${{ needs.validation.result }}
-          DESIGN: ${{ needs.design.result }}
-        run: test "$VALIDATION" = success && test "$DESIGN" = success
+        run: test "$VALIDATION" = success

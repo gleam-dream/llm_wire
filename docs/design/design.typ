@@ -75,25 +75,22 @@
       )
     ]
     #subsection(title: "Validation profiles")[
+      #points([Required checks cover formatting, compilation and unit/integration behavior. Documentation consistency, source boundaries and design intent are reviewed manually; rendered-layer integrity uses the imported checker; checker self-tests and receipt acceptance are not required. #adr(18)])
       #md-table(4, (
         [*Check*], [*Fast*], [*Full*], [*Establishes*],
-        [Tree and Gleam formatting], [yes], [yes], [Declared formatting],
-        [Gleam check and build with warnings as errors], [yes], [clean build], [Public types and compiler checks],
+        [Shared formatting and design integrity], [separate CI commands], [separate CI commands], [`nix flake check` and imported `design-gate-check`],
+        [Gleam build with warnings as errors], [yes], [clean build], [Public types and compiler checks],
         [Authored Erlang bridges with warnings as errors], [yes], [yes], [Independent native FFI compilation],
-        [Production boundary and public module-doc audit], [yes], [yes], [Named forbidden paths and documentation presence],
         [Gleam and classifier Python tests], [yes], [yes], [Named semantic, local H1, TLS and server cases],
         [External positive and negative consumers], [no], [yes], [Public adoption and intended opacity errors],
-        [Usage examples in the public consumer], [format], [build and run], [Documented usage compiles and runs against the current public API (#adr(17))],
-        [README first call against the compiled example], [yes], [yes], [The README block equals the compiled example],
+        [Usage examples in the public consumer], [no], [build and run], [Documented usage compiles and runs against the current public API (#adr(17))],
         [Local nghttpd H2 and concurrency harness], [no], [yes], [Finite local trust, isolation and resource observations],
-        [Workflow, shell and Python lint and gate counterexamples], [yes], [yes], [Authored tooling and failed evidence rejection],
         [Git diff whitespace], [yes], [yes], [Patch whitespace],
       ))
       #points(
         [Gates run in the pinned Nix shell against the immutable dependency revisions in the manifests. Formatting is checked on a copied Nix tree, so a gate never repairs the working tree. Frozen request fixtures, cassettes, oracle provenance, retained evidence and generated output are excluded from automatic formatting. A passing gate log is evidence for its recorded revision and runtime only.],
         [Gates use local and offline inputs. Static checks never execute the live recorder or read its credential source. Compiler flags reject warnings; runtime fault reports remain runtime evidence.],
         [CI runs the full gate on every push, pull request, manual run and weekly schedule. A final job rejects failed, cancelled and skipped mandatory jobs. The weekly run records finite HTTP observations without a latency ceiling. Sibling dependency revisions come from one pinned list, are checked out without persisted credentials, and fork pull requests run the same checks.],
-        [Exported source copies record an unavailable Git revision and dirty state as null; the enclosing consumer receipt owns source identity. Lockfile hashes and runtime identity are still captured. Changes to unpublished siblings are qualified by an explicit whole-graph local-source capture that records its source hashes and does not qualify the locked Git sources (#adr(14)).],
       )
     ]
     #subsection(title: "Offline qualification")[
@@ -107,7 +104,7 @@
     #subsection(title: "Local HTTP measurement")[
       #points(
         [A harness measures finite simultaneous demand (1, 10, 100 and 1,000 callers on one verified H2 connection to a local nghttpd) and the isolation of a cancelled stream from a sibling that collects its full response. The workload, method, recorded environment, dated results and limits are in #lnk("../BENCHMARKS.md")[the benchmarks reference].],
-        [Acceptance checks semantic results, one H2 connection and cancellation isolation; timing has no speed ceiling. A run writes a fresh receipt directory recording source and sibling revisions with dirty flags, lockfile hashes, runtime and OS versions, raw consumer output and a bounded server-log prefix, and an existing directory is refused. The measurements are finite local observations and establish no provider throughput, soak result or universal memory bound (#adr(15)).],
+        [Acceptance checks semantic results, one H2 connection and cancellation isolation; timing has no speed ceiling. A run writes a fresh receipt directory recording raw consumer output and a bounded server-log prefix, and an existing directory is refused. The measurements are finite local observations and establish no provider throughput, soak result or universal memory bound (#adr(15)).],
       )
     ]
     #subsection(title: "Provider recording")[

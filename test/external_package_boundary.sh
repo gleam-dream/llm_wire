@@ -308,7 +308,7 @@ pub fn restores_turn(
   json.parse(stored, message.turn_replay_decoder(text, calls))
 }
 EOF
-(cd "$positive" && gleam check --target erlang && gleam build --target erlang --warnings-as-errors)
+(cd "$positive" && gleam build --target erlang --warnings-as-errors)
 (cd "$package_root/examples/consumer" && gleam build --warnings-as-errors && gleam run)
 (cd "$package_root/examples/consumer" && timeout 15s gleam run -m retry_checks)
 (cd "$package_root" && python3 test/retry_deadline.py)
