@@ -36,6 +36,7 @@ import usage_testing
 
 // --- the common path ---------------------------------------------------------
 
+// snips-start: common-call
 /// OpenAI with the default limits and timeouts.
 pub fn openai_config(api_key: String) -> llm_wire.Config {
   openai.new(api_key) |> openai.config
@@ -61,6 +62,8 @@ pub fn ask(
       }
   }
 }
+
+// snips-end: common-call
 
 // --- structured output -------------------------------------------------------
 

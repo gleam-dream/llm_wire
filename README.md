@@ -1,119 +1,104 @@
-# llm_wire
+# LLM Wire
 
-LLM calls and streaming for Gleam on Erlang/OTP, with typed answers, tool requests
-and failures. Built-in adapters support OpenAI Responses, Anthropic Messages and
-Google GenerateContent; custom adapters use the same execution API. Classification
-and inline audio transcription are separate request families.
+Typed, bounded LLM interactions for Gleam on Erlang/OTP. Use it when an application needs provider calls and typed results while keeping conversation history, tool effects, and retry policy under application control. This checkout is an unreleased `0.1.0` candidate and requires Gleam 1.18 or newer.
+
+## What it provides
+
+- Built-in generation adapters for OpenAI Responses, Anthropic Messages, and Google GenerateContent, plus a custom adapter interface.
+- Reusable generation settings for output-token limits, temperature, top-p, stop sequences, and provider-specific cache references.
+- Codec-backed structured answers decoded into Gleam values, with unsupported provider schema profiles rejected during preparation.
+- Typed tool declarations and admitted tool calls. The caller decides whether to authorize and execute each call.
+- Semantic streaming progress or a collected outcome, including text, tool arguments, refusal, reasoning, and usage updates.
+- Finite request, response, queue, text, and tool-argument bounds, with whole-call, first-progress, and idle-gap timeouts.
+- Normalized outcomes and failures with send evidence, plus retry advice that can include the provider's `Retry-After` delay.
+- Typed classification questions with a built-in TypeSafe wire, custom pure wires, and durable evidence receipts.
+- Bounded inline Google audio transcription that returns completed text.
+- Offline scripted-provider testing and correlated Sinal lifecycle observations.
+
+## When to use it
+
+Use LLM Wire for typed extraction or generation in a backend or interactive application; for an agent that needs an explicit tool loop; or for typed classification and short inline-audio transcription. Its core lifecycle is `Request -> prepare -> Prepared -> run/stream -> Outcome or Failure`:
+
+```mermaid
+flowchart LR
+  app["Application: request, history, policy"] --> prepare["prepare<br/>validate and encode"]
+  prepare --> prepared["Prepared"]
+  prepared --> execute["run or stream"]
+  client["Application-owned HTTP Gun client"] --> execute
+  execute --> provider["Provider protocol"]
+  provider --> execute
+  execute --> result["Outcome, Failure, or stream progress"]
+  result --> app
+```
+
+The application owns the shared HTTP Gun client and can supervise it under its OTP supervisor. A generation stream has a per-call owner process that coordinates its HTTP work; the caller's process owns the stream lifetime. Classification and transcription use separate buffered request lifecycles.
+
+LLM Wire is a wire and execution library, not an agent framework. The caller owns the conversation loop, history and storage, authorization, tool execution, retries, round budgets, and durable recovery. The built-in classification wire is TypeSafe; other protocols need a custom wire. Transcription handles one bounded inline audio request, not real-time audio or remote file management.
 
 ## Install
 
-This checkout is an unreleased 0.1.0 candidate for Gleam 1.18 or newer. Gleam
-fetches its pinned Git dependencies. For local development, add a Wire checkout
-and the matching HTTP Gun revision to your application:
+Add LLM Wire and HTTP Gun to an Erlang-targeted Gleam application. Declare HTTP Gun directly when passing its client to LLM Wire. These Git `main` declarations match the package manifest; commit the generated `manifest.toml` to record the revisions resolved for your application.
 
 ```toml
 [dependencies]
-llm_wire = { path = "../llm_wire" }
-http_gun = { git = "https://github.com/gleam-dream/http_gun.git", ref = "e4f00b8525e20a7b568b2cd585fe4e37db161b26" }
+llm_wire = { git = "https://github.com/gleam-dream/llm_wire.git", ref = "main" }
+http_gun = { git = "https://github.com/gleam-dream/http_gun.git", ref = "main" }
 ```
-
-Adjust the Wire path to your workspace. The package targets Erlang; the pinned Nix
-shell uses OTP 29.
 
 ## Make a call
 
-Replace the example key with one supplied by your application and choose a model
-available to that account.
+The application starts and owns its HTTP Gun client. Pass that client and a
+provider configuration to this function. Import `http_gun`, `llm_wire`,
+`llm_wire/error` and `llm_wire/openai`; the [complete consumer](examples/consumer/src/llm_wire_consumer.gleam)
+supplies the imports and exercises the same function with scripted responses.
+For a real provider, supply your own API key and select an available model.
 
 <!-- prettier-ignore-start -->
 
-<!-- snips: examples/consumer/src/readme_call.gleam#first-call -->
+<!-- snips: examples/consumer/src/llm_wire_consumer.gleam#common-call -->
 ```gleam
-import gleam/io
-import http_gun
-import http_gun/config as http_config
-import llm_wire
-import llm_wire/error
-import llm_wire/openai
+/// OpenAI with the default limits and timeouts.
+pub fn openai_config(api_key: String) -> llm_wire.Config {
+  openai.new(api_key) |> openai.config
+}
 
-pub fn main() -> Nil {
-  let config = openai.new("sk-...") |> openai.config
-  let request = llm_wire.request("gpt-5", [llm_wire.user("Hello")])
-  case llm_wire.prepare(config, request) {
-    Error(problem) -> io.println(error.describe_prepare_error(problem))
+pub fn question(text: String) -> llm_wire.Request(String) {
+  llm_wire.request("gpt-5", [llm_wire.user(text)])
+}
+
+/// Prepare, run, and read the answer or a one-line failure.
+pub fn ask(
+  client: http_gun.Client,
+  config: llm_wire.Config,
+  text: String,
+) -> Result(String, String) {
+  case llm_wire.prepare(config, question(text)) {
+    Error(problem) -> Error(error.describe_prepare_error(problem))
     Ok(prepared) ->
-      case http_gun.start(http_config.default()) {
-        Error(problem) -> io.println(http_gun.describe_start_error(problem))
-        Ok(client) -> {
-          let result = llm_wire.run(client, prepared)
-          http_gun.stop(client)
-          case result {
-            Ok(llm_wire.Answer(text:, ..)) -> io.println(text)
-            Ok(_) -> io.println("no final answer")
-            Error(failure) -> io.println(llm_wire.describe_failure(failure))
-          }
-        }
+      case llm_wire.run(client, prepared) {
+        Ok(llm_wire.Answer(text:, ..)) -> Ok(text)
+        Ok(_) -> Error("no final answer")
+        Error(failure) -> Error(llm_wire.describe_failure(failure))
       }
   }
 }
+
 ```
 
 <!-- prettier-ignore-end -->
 
-`prepare` validates and encodes the request without I/O. `run` returns after the
-response stream is closed. The application owns the HTTP client, conversation
-history, tool execution and retries; a long-running application can supervise one
-shared client with `http_gun.supervised`.
+`prepare` validates and encodes without I/O. `run` performs one call and returns a typed outcome or failure. For generation, the default whole-call timeout is 600 seconds, first semantic progress is 180 seconds, and the idle gap is 60 seconds. See [all generation bounds](src/llm_wire/limit.gleam) and [generation settings](src/llm_wire/generation.gleam).
 
-Generation defaults to a 600-second whole-call timeout, 180 seconds to first
-semantic progress and a 60-second idle gap after that progress. Byte and queue
-limits are finite. The [design](docs/design/generation/design.typ) lists every
-default and how the timers compose with HTTP Gun.
+## Operational notes
 
-## Usage
+- `llm_wire.advise` reports whether another attempt may help; it never schedules a retry. A `MaybeSent` failure may already have cost tokens. Cap a provider delay against the caller's remaining budget before sleeping.
+- Closing a stream ends local work. It does not prove that the provider rolled back or stopped processing the request.
+- Request JSON and prompts can contain sensitive data; transcription request JSON contains the encoded audio. Do not log them by default.
+- Structured-output codecs must fit the selected provider's admitted schema profile. Preparation reports unsupported schemas before execution.
+- Keep transport trust and destination policy on the application-owned HTTP Gun client; use HTTPS for remote endpoints.
 
-Structured output changes only the request: `llm_wire.with_output("invoice",
-invoice_codec)` makes `Answer` carry the decoded value, and unusable text returns
-`error.InvalidOutput` with the raw text. A tool round trip declares tools with
-`llm_wire.with_tools`, decodes each call with `tool.decode_arguments` when `run`
-returns `NeedsTools`, and appends `message.Assistant(turn)` and one
-`llm_wire.tool_result` per call to the next request. `llm_wire.stream` and
-`llm_wire.next` deliver progress until `Done`, and `llm_wire.advise` turns a
-failure into retry advice without scheduling anything.
+## Examples and references
 
-The [public consumer](examples/consumer/README.md) is the usage documentation:
-compiled, offline programs that run in the full gate, one per topic.
+The [public consumer examples](examples/consumer/README.md) are compiled offline programs covering structured output, tool rounds, streaming, retry advice, classification, transcription, client ownership, testing, and observation. The [design overview](docs/design/design-layer.pdf) describes behavior and ownership. [Benchmark notes](docs/BENCHMARKS.md) retain a dated local HTTP measurement and its limits; they make no provider-latency claim.
 
-| Topic                                                                       | Example                                                                          |
-| --------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
-| First call (the block above)                                                | [`readme_call`](examples/consumer/src/readme_call.gleam)                         |
-| Defaults, timeouts and limits                                               | [`usage_defaults`](examples/consumer/src/usage_defaults.gleam)                   |
-| Text, structured output, tool rounds, streaming, retries, a custom provider | [`llm_wire_consumer`](examples/consumer/src/llm_wire_consumer.gleam)             |
-| Tools, history and turn persistence                                         | [`usage_conversation`](examples/consumer/src/usage_conversation.gleam)           |
-| Failures and retry advice                                                   | [`usage_failures`](examples/consumer/src/usage_failures.gleam)                   |
-| Own the HTTP client                                                         | [`usage_client`](examples/consumer/src/usage_client.gleam)                       |
-| Test without a network                                                      | [`usage_testing`](examples/consumer/src/usage_testing.gleam)                     |
-| Observe calls                                                               | [`usage_observe`](examples/consumer/src/usage_observe.gleam)                     |
-| Classification                                                              | [`classification_consumer`](examples/consumer/src/classification_consumer.gleam) |
-| Audio transcription                                                         | [`transcription_consumer`](examples/consumer/src/transcription_consumer.gleam)   |
-
-## References
-
-[Oracle references](docs/ORACLE.md) pin the upstream implementations whose
-selected behavior the tests compare against, and [benchmarks](docs/BENCHMARKS.md)
-records the finite local HTTP measurement and its limits. The design layer owns
-the contracts: [overview](docs/design/design.typ),
-[vocabulary](docs/design/generation/CONTEXT.typ), [decisions](docs/adr/) and the
-[coverage map](docs/COVERAGE.md).
-
-## Development
-
-Run from this directory inside the pinned Nix shell:
-
-```sh
-nix develop -c sh dev/gate fast
-nix develop -c sh test/external_package_boundary.sh
-```
-
-`AGENTS.md` lists the full gate, formatting and design-gate commands. Provider
-recording is opt-in and needs explicit authorization.
+For local validation, see [AGENTS.md](AGENTS.md). Provider recording is opt-in and contacts external services.
