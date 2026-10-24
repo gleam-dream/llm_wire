@@ -1,0 +1,40 @@
+{
+  "http_gun": 2,
+  "exchanges": [
+    {
+      "request": {
+        "method": "POST",
+        "url": "https://api.typesafe.ai/v1/systemone",
+        "headers": [
+          ["content-type", "application/json"],
+          ["accept", "application/json"],
+          ["accept-encoding", "identity"]
+        ],
+        "body": {
+          "text": "{\"model\":\"jev-latest\",\"state\":\"2 + 2 = 4\",\"questions\":{\"correct\":{\"type\":\"noul\",\"instructions\":\"Is the statement correct?\"},\"decision\":{\"type\":\"choice\",\"instructions\":\"What should happen?\",\"criteria\":{\"approve\":\"Correct\",\"revise\":\"Incorrect\"}},\"quality\":{\"type\":\"score\",\"instructions\":\"How correct?\",\"criteria\":[\"incorrect\",\"partial\",\"correct\"]}}}"
+        }
+      },
+      "reply": {
+        "kind": "response",
+        "status": 200,
+        "headers": [
+          ["date", "Mon, 05 Oct 2026 13:10:34 GMT"],
+          ["content-type", "application/json"],
+          ["content-length", "383"],
+          ["connection", "keep-alive"],
+          ["server", "cloudflare"],
+          ["x-typesafe-request-id", "req_01a10c2ffd5170ba8254712d56d8343e"],
+          ["cf-cache-status", "DYNAMIC"],
+          ["cf-ray", "a45caace487da45a-GRU"],
+          ["alt-svc", "h3=\":443\"; ma=86400"]
+        ],
+        "chunks": [
+          {
+            "text": "{\"model\":\"jev-1.13.0\",\"answers\":{\"correct\":{\"type\":\"noul\",\"noul\":0.99},\"decision\":{\"type\":\"choice\",\"choice\":\"approve\",\"confidence\":1.0,\"probabilities\":{\"revise\":0.0,\"approve\":1.0}},\"quality\":{\"type\":\"score\",\"score\":2.0,\"confidence\":1.0,\"legend\":{\"0\":\"incorrect\",\"1\":\"partial\",\"2\":\"correct\"},\"probabilities\":{\"0\":0.0,\"1\":0.0,\"2\":1.0}}},\"usage\":{\"input_tokens\":358,\"output_tokens\":62}}"
+          }
+        ],
+        "ending": { "kind": "finished", "trailers": [] }
+      }
+    }
+  ]
+}

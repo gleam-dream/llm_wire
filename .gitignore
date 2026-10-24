@@ -1,0 +1,9 @@
+build/
+erl_crash.dump
+*.beam
+.direnv/
+.env.local
+.env*.local
+.render/
+**/.render/
+__pycache__/

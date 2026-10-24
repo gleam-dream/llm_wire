@@ -1,0 +1,20 @@
+#!/bin/sh
+set -eu
+cd "$(dirname "$0")/.."
+profile=${1:-fast}
+case "$profile" in fast | full) ;; *)
+  printf '%s\n' 'Usage: sh dev/gate fast|full' >&2
+  exit 2
+  ;;
+esac
+if [ "$profile" = full ]; then gleam clean; fi
+gleam build --warnings-as-errors
+sh dev/check-native
+gleam test
+python3 -B -m unittest discover -s test/support/classifier -p "*_test.py"
+if [ "$profile" = full ]; then
+  sh test/external_package_boundary.sh
+  python3 dev/local-http.py
+fi
+git diff --check
+printf 'LLM Wire %s gate passed.\n' "$profile"

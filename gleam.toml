@@ -1,0 +1,25 @@
+name = "llm_wire"
+version = "0.1.0"
+target = "erlang"
+gleam = ">= 1.18.0"
+licenses = ["Apache-2.0"]
+description = "A bounded HTTP/SSE LLM client for Gleam with typed provider adapters, streaming, and caller-owned conversations."
+
+internal_modules = ["llm_wire/internal", "llm_wire/internal/*"]
+
+[dependencies]
+gleam_stdlib = ">= 0.70.0 and < 2.0.0"
+gleam_json = ">= 3.0.0 and < 4.0.0"
+gleam_erlang = ">= 1.0.0 and < 2.0.0"
+gleam_otp = ">= 1.0.0 and < 2.0.0"
+json_blueprint = { git = "https://github.com/lostbean/json_blueprint.git", ref = "main" }
+sinal = { git = "https://github.com/gleam-dream/sinal.git", ref = "main" }
+http_gun = { git = "https://github.com/gleam-dream/http_gun.git", ref = "main" }
+gleam_http = ">= 4.4.0 and < 5.0.0"
+gleam_time = ">= 1.11.0 and < 2.0.0"
+
+[dev-dependencies]
+simplifile = ">= 2.7.0 and < 3.0.0"
+anthropic_gleam = ">= 0.1.1 and < 1.0.0"
+gleeunit = ">= 1.0.0 and < 2.0.0"
+mist = ">= 6.0.2 and < 7.0.0"

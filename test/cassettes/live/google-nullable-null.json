@@ -1,0 +1,54 @@
+{
+  "http_gun": 2,
+  "exchanges": [
+    {
+      "request": {
+        "method": "POST",
+        "url": "https://generativelanguage.googleapis.com:443/v1beta/models/gemini-3.8-flash:streamGenerateContent?alt=sse",
+        "headers": [
+          ["content-type", "application/json"],
+          ["accept", "text/event-stream"],
+          ["accept-encoding", "identity"]
+        ],
+        "body": {
+          "text": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"Fill in the contact for Ada Lovelace. Her phone number and address are unknown: give null for both.\"}]}],\"generationConfig\":{\"maxOutputTokens\":2048,\"responseMimeType\":\"application/json\",\"responseJsonSchema\":{\"type\":\"object\",\"properties\":{\"contact\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"},\"phone\":{\"anyOf\":[{\"type\":\"null\"},{\"type\":\"string\"}]},\"address\":{\"anyOf\":[{\"type\":\"null\"},{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"],\"additionalProperties\":false}]}},\"required\":[\"name\",\"phone\",\"address\"],\"additionalProperties\":false}},\"required\":[\"contact\"],\"additionalProperties\":false}}}"
+        }
+      },
+      "reply": {
+        "kind": "response",
+        "status": 200,
+        "headers": [
+          ["content-type", "text/event-stream"],
+          ["content-disposition", "attachment"],
+          ["vary", "Origin"],
+          ["vary", "X-Origin"],
+          ["vary", "Referer"],
+          ["transfer-encoding", "chunked"],
+          ["date", "Sun, 04 Oct 2026 12:48:18 GMT"],
+          ["server", "scaffolding on HTTPServer2"],
+          ["x-xss-protection", "0"],
+          ["x-frame-options", "SAMEORIGIN"],
+          ["x-content-type-options", "nosniff"],
+          ["server-timing", "gfet4t7; dur=1848"],
+          ["alt-svc", "h3=\":443\"; ma=2592000,h3-29=\":443\"; ma=2592000"]
+        ],
+        "chunks": [
+          {
+            "text": "data: {\"candidates\": [{\"content\": {\"parts\": [{\"text\": \"{\\\"contact\\\":{\\\"name\\\":\\\"Ada Lovelace\\\",\\\"phone\\\":null,\\\"address\\\":null}}\"}],\"role\": \"model\"},\"index\": 0}],\"usageMetadata\": {\"promptTokenCount\": 23,\"candidatesTokenCount\": 17,\"totalTokenCount\": 303,\"promptTokensDetails\": [{\"modality\": \"TEXT\",\"tokenCount\": 23}],\"thoughtsTokenCount\": 263,\"serviceTier\": \"standard\"},\"modelVersion\": \"gemini-3.8-flash\",\"responseId\": \"EEvCaoD9Hcysz7IPur_wkAg\"}\r\n\r\n"
+          },
+          {
+            "text": "data: {\"candidates\": [{\"content\": {\"parts\": [{\"text\": \"\",\"thoughtSignature\": \"EtgJCtUJAWkUfRPvaIKmvW0EMkT1tnjdCcXdW4K7rRWpc73JnrP6s86aVYGHeF2iP5aZDm/i498+MRUeU9TDpqZ7aEL7W0gemEak8b1IrurtKDzMaV2TvXzBfJX6VJlLMlYD7ilppZSLBKc0jXdI6P74n/5msSE3wy9KgcD9L17+2W02uZ9Obo5g61+dCayGarhcrynZrlI7ocFnAZemQ0eL5qnbLGP8oZw6IHbTCoxLjnA7yn+wz3/x5/ZPMXHgcQm3K57hm56g+Y/84EHuTjKVmC/UPYGyhSaNY+vcGSDYWqS97k1EQE/gdbg+lgpSF+eSF6NHwJBppU5det4RMzchj4uc32ymk3/UkHowOTxCxfHdoCVqs2D42MdrPXQ2KYXM401hqqHot9qBX35L8IOSL5zAeOJm8YW3Q8wtovuryVDQAEpbaPMFASDRcw2gxyfZsr6axhodYbbqU8uyAIHM6CqZ4TJ0DYErZ2GG2R8nLsWVnZT0Ne9MrtXfBahSGZQZYsM1Qs8F0zfR0qjwSJIIjdAl9lf3/GxF9u8j19qYoU8niDCrZVvZsDUjJcI3nXzz+zANKIQc+w0Q5aMESZxGdKV2zEcxb+K+tGr6xIVmgoNbqG10v7LjYVP0ZhnDTf5wq6TrgNBVKs1Nx2FgUTqpJB/15ZsmCLfgnsQRRKGD5A/RxRD28NqiMKmUK7PC0+mxdAVK2vh8QiPhGHzfCAHfF/p0RaupqkV6JrFO/sPkAhfKNyqKh8DWjIcLS4K+hyWmSsCjf1qeeSuGk2mPM3qiSTOERez6irJ+M7itn3EzxbOX808RTX1OH3vKeNZGDAMXHLaNyp4Oez+K6zFS9kO6NuAJ51iwH5Lh6OIugRkjUdZJzZ5SQD1yExSn1Kakhd+Ts6eMeBk1gxCXaOsiVJU2ONl9ii85rufjh8HsvnbPeQRUuZdQLblD6xppIjlVpVinexOLRF2GsH/WglLluBl9NdkW4Y9Uz6jgcmwpQ7AYv+j7b4/bnFsRyavpAzzTDL7lC198zAqDu3hlAP+wwi7eBjnhpZkZEmcjTQlzRdCxqzg/4145DcREHsGBbAQMRzmvBvvc7yg/DKAsL7YH5+ztiHphJZ9iatgBZvmWS3C93aS68AKGmZmQH35ybxAeOsjx2lRketPbl9G20qW+TWvvx22Q69xBXxL+1L0mSS8lmvpf8ttNAizAfVDTH9wVWdgWup5xDZub8bJagEW0YKp2KFnvvf0t0oiLN4PJIC6xe1H3HRz+0w3sn3EA9tt60JOaLn7ttH+br6mpv9lFje2/FDB1XCwO47CXPk0U0iKMcou9Zx1qGToWXb34lxiDqu5PFwd/kHdzdb6qf+EzG1iitk9KqAqqt9/8JzHNrVmyYSw+fTL0TJKjINnduHZHvrVVpGGehzFSMcWwVPG7AOVt5JlO+2H5HKTaFxiDpLq7RPeVL/mce2mr7gMgNl+1dO3jbCWE8hLUi1aofQ0trP40V788/MhCSgyKqmop6fKqjdYPtx8nNBw7LzXrthWgjdevP0MRgzxCgPmpdXNsdMtadRY/oqGNfZddPJ3p4n0z1wEC4DTbyPc2k5qj7VFOtwdPLJcQLzUD06N/vRHxtYO1uJRjloHuKdakM8we5KpV15h1RAtsMDbMrA==\"}],\"role\": \"model\"},\"finishReason\": \"STOP\",\"index\": 0}],\"usageMetadata\": {\"promptTokenCount\": 23,\"candidatesTokenCount\": 17,\"totalTokenCount\": 303,\"promptTokensDetails\": [{\"modality\": \"TEXT\",\"tokenCount\": 23}],\"thoughtsTokenCount\": 263,\"serviceTier\": \"standard\"},\"modelVersion\": \"gemini-3.8-flash\",\"responseId\": \"EEvCaoD9Hcysz7IPur_wkAg\"}\r\n\r\n"
+          }
+        ],
+        "ending": {
+          "kind": "aborted",
+          "failure": {
+            "name": "cancelled",
+            "evidence": "maybe_sent",
+            "status": 200
+          }
+        }
+      }
+    }
+  ]
+}
