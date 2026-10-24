@@ -1,0 +1,10 @@
+{
+  "revision": "ebf2b479761e8c932b0c85a8f83cf8460c014d4f",
+  "repository": "https://github.com/gleam-dream/http_gun",
+  "license": "Apache-2.0",
+  "reuse": "Local nghttpd and VM sampling validation patterns; new harness and snapshot-only test bridge, no production source copied.",
+  "sources": {
+    "dev/nghttpd.py": "73ae761ef4bf31ae6c22a6fd8c3d28064a583b4a5d1583b9fdb06fb921573e02",
+    "test/http_gun_measure_ffi.erl": "c7f42764222e0721d9de69ba5b88642cba5dc5bb6909d530631b9b71b1c326a8"
+  }
+}

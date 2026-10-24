@@ -1,0 +1,57 @@
+{
+  "http_gun": 2,
+  "exchanges": [
+    {
+      "request": {
+        "method": "POST",
+        "url": "https://generativelanguage.googleapis.com:443/v1beta/models/gemini-3.8-flash:streamGenerateContent?alt=sse",
+        "headers": [
+          ["content-type", "application/json"],
+          ["accept", "text/event-stream"],
+          ["accept-encoding", "identity"]
+        ],
+        "body": {
+          "text": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"Reply with the Written variant: title \\\"Tides\\\", body one short sentence on why ocean tides happen.\"}]}],\"generationConfig\":{\"maxOutputTokens\":2048,\"responseMimeType\":\"application/json\",\"responseJsonSchema\":{\"type\":\"object\",\"properties\":{\"answer\":{\"anyOf\":[{\"type\":\"object\",\"properties\":{\"tag\":{\"type\":\"string\",\"enum\":[\"Written\"]},\"value\":{\"type\":\"object\",\"properties\":{\"title\":{\"type\":\"string\"},\"body\":{\"type\":\"string\"}},\"required\":[\"title\",\"body\"],\"additionalProperties\":false}},\"required\":[\"tag\",\"value\"],\"additionalProperties\":false},{\"type\":\"object\",\"properties\":{\"tag\":{\"type\":\"string\",\"enum\":[\"NoSources\"]},\"value\":{\"type\":\"object\",\"properties\":{\"reason\":{\"type\":\"string\"}},\"required\":[\"reason\"],\"additionalProperties\":false}},\"required\":[\"tag\",\"value\"],\"additionalProperties\":false}]}},\"required\":[\"answer\"],\"additionalProperties\":false}}}"
+        }
+      },
+      "reply": {
+        "kind": "response",
+        "status": 200,
+        "headers": [
+          ["content-type", "text/event-stream"],
+          ["content-disposition", "attachment"],
+          ["vary", "Origin"],
+          ["vary", "X-Origin"],
+          ["vary", "Referer"],
+          ["transfer-encoding", "chunked"],
+          ["date", "Sun, 04 Oct 2026 12:48:57 GMT"],
+          ["server", "scaffolding on HTTPServer2"],
+          ["x-xss-protection", "0"],
+          ["x-frame-options", "SAMEORIGIN"],
+          ["x-content-type-options", "nosniff"],
+          ["server-timing", "gfet4t7; dur=1738"],
+          ["alt-svc", "h3=\":443\"; ma=2592000,h3-29=\":443\"; ma=2592000"]
+        ],
+        "chunks": [
+          {
+            "text": "data: {\"candidates\": [{\"content\": {\"parts\": [{\"text\": \"{\\\"answer\\\":{\\\"tag\\\":\\\"Written\\\",\\\"value\\\":{\\\"title\\\":\\\"Tides\\\",\\\"body\\\":\\\"Ocean tides are\"}],\"role\": \"model\"},\"index\": 0}],\"usageMetadata\": {\"promptTokenCount\": 22,\"candidatesTokenCount\": 19,\"totalTokenCount\": 342,\"promptTokensDetails\": [{\"modality\": \"TEXT\",\"tokenCount\": 22}],\"thoughtsTokenCount\": 301,\"serviceTier\": \"standard\"},\"modelVersion\": \"gemini-3.8-flash\",\"responseId\": \"N0vCatfQOLL4qtsPgY2okAI\"}\r\n\r\n"
+          },
+          {
+            "text": "data: {\"candidates\": [{\"content\": {\"parts\": [{\"text\": \" primarily caused by the gravitational pull of the Moon and the Sun on the Earth's oceans.\\\"}}}\"}],\"role\": \"model\"},\"index\": 0}],\"usageMetadata\": {\"promptTokenCount\": 22,\"candidatesTokenCount\": 39,\"totalTokenCount\": 362,\"promptTokensDetails\": [{\"modality\": \"TEXT\",\"tokenCount\": 22}],\"thoughtsTokenCount\": 301,\"serviceTier\": \"standard\"},\"modelVersion\": \"gemini-3.8-flash\",\"responseId\": \"N0vCatfQOLL4qtsPgY2okAI\"}\r\n\r\n"
+          },
+          {
+            "text": "data: {\"candidates\": [{\"content\": {\"parts\": [{\"text\": \"\",\"thoughtSignature\": \"Es8LCswLAWkUfRPC9OmqY03ghTu3UQc4TW9a0zQvZ5nUV8pLjioB/BC9CuV2knN+5alsjWV/0HMvoI17PS7350JsWHVv34/HMIRldxTHN1UGfYnRB+rOMgXupKdn5M0K1kUz0fregR/I3qA1G1w/THXhqrC3IYWve36p2GRTfApzr/ipT64vXuMejCtRUVUJwQXOMe0RErmEivhqg1rpJHS8/hceX7P0sCy5PwYEJv+JT+L6lAzVnTnEMYN929U1CCgPB/8hX+xsuKBXRBHMW16ZbQpYNALT0TaJdnUpYIVuRvBSFBvrJsT0JLszS5zYat9WuFOkU6WQVljaZ8qYzEgtAIpV9z2b9ly5f4kibtMBaIbpBCZqZEY9MX4smJLBwes19fGnm1ZCkW4Fuo3hHqt4qznmb90AjA2ARudXCC+rlLjUMF/SiArA7A/xGGVmFvVYFV8c52jKekivLSCennRmoEsGF61N/NlT5bodV3HHPVqo1L8pvZMtnZ6oi5C6HDZgFjtxUekAdBPfTSsI5dPHEwvDae9K/wgrjdZKlzdu7sDqWINQKOzfXRva/jI3MaJq3+5RJqMUSJCBTal2w2XYqBh/mmCRk21+O+GwGXwBUEJN/3clRdB9ER/R1IusJa2mCWNA7+krDGFBD/RdmFXLcOBFQtakhRx8/M5ebGocYHomvhVoj/5nowDy24SGcKUna7/vgQJucjE92+QTTQoYJkYYXcgaIEVrHZn84Y14kwHlLcM7NrD2hk6rxgXFG+jSU6CKlTyKOMBAGAlduZxKdfpH7iRJX3MPj0hNOryKueELI5irNkrpWZlnusTWj0StOUMp9z1uCGURjg2bOPcuyu5dNygvumF3p97p5B2aocJ27gBjCQg6kD6kiqtCFIOhq3hArWlsNzp32lQrcf/dGmKx+bpNK+H7S2nltuB8e5/Zt+aypIYbLkFoMQB7w8wgMmLh+ahoHcPfZO8gidMtjpYNlvSqcY49GJqsAv2SjCIOyCPrBeWpU8ASIcikO/JlQ9OW8U449SnZyDOdzI92n7lDWlhb2+pvxxYHowO/aTISWHf7BvZjoeiPY0vPP25fd+vBQm4bXxzy9KL4+E6lFC9YYXqFQPlZixuzLMjFjDiZ50HU9K5rFwKfsqC4wOUGU5PdI2YKgSqxXyvJTcixur89BEH9wa1dyVmmiuqYT9sgMrsZ1XONUh5DTqDdNaGubIIk7ddf0uV8+BA3iGLJ1N6Cws7a4ap4mXsBHy5i/KnEa7EKcWD9s5WUSsxsdt3KsDzxWs79Z6f33ako7sghZUJmPmDQyEMpsQCDV/KkxO4RIgV7AKQQmAMZHMwlmGBanoMr1vdXt4mct7hqBOlqDeOZtSOUN9aJdu1SQ/XeVCnHCjhG7MjseZmrZbhv9ZIUuyaY8Po6lj88TY4nWA9TQF0smWlPjuVAE4OlQ2KfI6+iyo9jy1KEaJrLJR6yRIods00gZiv5BTJMjvIxrlgerf7EQCuYvSW34PqhiXcQkT0Wrbc7C3i7QevNDRM53Ly+71C2eoLl4CRcOOQc4QT1ICXXjfQ5QMRHHfDOJOS0fWfFy45eswPmxs4ea2zLMhb5RfRYCtjkPSm6W7n4LPt0rm5iBmtQKhCIZRVDJgCVm13mULofsmtecV2k2cQoBqwAch2F36z9WikicPc5xOBwc7OkxFqb/r35Gfopuh5/kAkpCqMy3QCeWNpb/ygm1+Pff94MpK97Ha04nHt2JrUIc7QG10vl7XKh0iMYBAYmf/P9NhPokxn/5of0vpxqwC4mVgZHrpmrWVTfxapDXY8KR1dINJ78elsIZ+Hd54M1xi+hDo5qTBP6CDwSX1lSrLpZ1uAprbotQ9gD5vXUlk7L5QrRC+NRYClWBu+snI3i42QEZ2skxQSNZRxSuCNlZqUXJD+9t2kuSXNLumBc4xwoifFNRB/g/LI5J2YYKcSrL7v+XN61OihqNql33hw0HmQ=\"}],\"role\": \"model\"},\"finishReason\": \"STOP\",\"index\": 0}],\"usageMetadata\": {\"promptTokenCount\": 22,\"candidatesTokenCount\": 39,\"totalTokenCount\": 362,\"promptTokensDetails\": [{\"modality\": \"TEXT\",\"tokenCount\": 22}],\"thoughtsTokenCount\": 301,\"serviceTier\": \"standard\"},\"modelVersion\": \"gemini-3.8-flash\",\"responseId\": \"N0vCatfQOLL4qtsPgY2okAI\"}\r\n\r\n"
+          }
+        ],
+        "ending": {
+          "kind": "aborted",
+          "failure": {
+            "name": "cancelled",
+            "evidence": "maybe_sent",
+            "status": 200
+          }
+        }
+      }
+    }
+  ]
+}

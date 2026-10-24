@@ -1,0 +1,57 @@
+name: CI
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "30 4 * * 0"
+
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validation:
+    name: Full local validation and HTTP observations
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
+      - run: nix flake check
+      - run: nix run .#design-gate-check -- docs/design .
+      - name: README snippets
+        run: nix run --no-update-lock-file .#snips -- --check --commands deny README.md
+      - name: Complete full gate
+        shell: bash
+        env:
+          LLM_WIRE_HTTP_OUTPUT: ${{ runner.temp }}/llm-wire-ci/http
+        run: |
+          set -o pipefail
+          mkdir "$RUNNER_TEMP/llm-wire-ci"
+          nix develop --command sh dev/gate full 2>&1 | tee "$RUNNER_TEMP/llm-wire-ci/gate.log"
+      - name: Retain gate and HTTP evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: llm-wire-validation-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/llm-wire-ci/
+          retention-days: 14
+          include-hidden-files: true
+          if-no-files-found: warn
+
+  ci:
+    name: CI
+    if: always()
+    needs: [validation]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every mandatory job to succeed
+        env:
+          VALIDATION: ${{ needs.validation.result }}
+        run: test "$VALIDATION" = success

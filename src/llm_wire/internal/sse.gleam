@@ -1,0 +1,309 @@
+import gleam/bit_array
+import gleam/int
+import gleam/list
+import gleam/option.{type Option, None, Some}
+import gleam/string
+import llm_wire/error
+import llm_wire/internal/limits
+import llm_wire/limit
+
+pub type ServerSentEvent {
+  ServerSentEvent(
+    event: Option(String),
+    data: String,
+    id: Option(String),
+    retry: Option(Int),
+  )
+}
+
+pub opaque type Framer {
+  Framer(
+    limits: limits.Limits,
+    buffer: BitArray,
+    event_type: Option(String),
+    data_lines: List(String),
+    event_id: Option(String),
+    retry_ms: Option(Int),
+    accumulated_event_bytes: Int,
+  )
+}
+
+pub fn new(limits: limits.Limits) -> Framer {
+  Framer(
+    limits: limits,
+    buffer: <<>>,
+    event_type: None,
+    data_lines: [],
+    event_id: None,
+    retry_ms: None,
+    accumulated_event_bytes: 0,
+  )
+}
+
+pub fn feed(
+  framer: Framer,
+  chunk: BitArray,
+) -> Result(#(Framer, List(ServerSentEvent)), error.Error) {
+  let chunk_size = bit_array.byte_size(chunk)
+  case chunk_size > framer.limits.chunk_bytes_limit {
+    True ->
+      Error(error.LimitExceeded(
+        limit.ChunkBytes,
+        framer.limits.chunk_bytes_limit,
+        chunk_size,
+      ))
+    False -> {
+      let buf_len = bit_array.byte_size(framer.buffer)
+      let pending_line_len = case find_first_terminator_offset(chunk, 0) {
+        Some(offset) -> buf_len + offset
+        None -> buf_len + chunk_size
+      }
+      case pending_line_len > framer.limits.line_bytes_limit {
+        True ->
+          Error(error.LimitExceeded(
+            limit.LineBytes,
+            framer.limits.line_bytes_limit,
+            pending_line_len,
+          ))
+        False -> {
+          // The buffer holds no line terminator except possibly a trailing
+          // CR, so scanning resumes at its last byte. Rescanning the whole
+          // buffer on every chunk would make a long line cost quadratic time.
+          let combined = bit_array.append(framer.buffer, chunk)
+          parse_lines(framer, combined, [], 0, int.max(buf_len - 1, 0))
+        }
+      }
+    }
+  }
+}
+
+fn find_first_terminator_offset(chunk: BitArray, offset: Int) -> Option(Int) {
+  case chunk {
+    <<_:bytes-size(offset), 13, _:bits>> -> Some(offset)
+    <<_:bytes-size(offset), 10, _:bits>> -> Some(offset)
+    <<_:bytes-size(offset), _:size(8), _:bits>> ->
+      find_first_terminator_offset(chunk, offset + 1)
+    _ -> None
+  }
+}
+
+pub fn finish(framer: Framer) -> Result(List(ServerSentEvent), error.Error) {
+  case bit_array.byte_size(framer.buffer) > 0 {
+    True -> Error(error.Protocol("Incomplete SSE frame at EOF"))
+    False ->
+      case framer.data_lines {
+        [] -> Ok([])
+        _ -> {
+          let event =
+            ServerSentEvent(
+              event: framer.event_type,
+              data: string.join(list.reverse(framer.data_lines), "\n"),
+              id: framer.event_id,
+              retry: framer.retry_ms,
+            )
+          Ok([event])
+        }
+      }
+  }
+}
+
+fn parse_lines(
+  framer: Framer,
+  buffer: BitArray,
+  emitted: List(ServerSentEvent),
+  emitted_count: Int,
+  scan_from: Int,
+) -> Result(#(Framer, List(ServerSentEvent)), error.Error) {
+  case find_line_terminator(buffer, scan_from) {
+    EndOfBuffer(remaining) -> {
+      let remaining_size = bit_array.byte_size(remaining)
+      case remaining_size > framer.limits.line_bytes_limit {
+        True ->
+          Error(error.LimitExceeded(
+            limit.LineBytes,
+            framer.limits.line_bytes_limit,
+            remaining_size,
+          ))
+        False ->
+          Ok(#(Framer(..framer, buffer: remaining), list.reverse(emitted)))
+      }
+    }
+    LineFound(raw_line, remaining) -> {
+      let line_size = bit_array.byte_size(raw_line)
+      case line_size > framer.limits.line_bytes_limit {
+        True ->
+          Error(error.LimitExceeded(
+            limit.LineBytes,
+            framer.limits.line_bytes_limit,
+            line_size,
+          ))
+        False -> {
+          case bit_array.to_string(raw_line) {
+            Error(Nil) -> Error(error.Protocol("Invalid UTF-8 in SSE stream"))
+            Ok(line) -> {
+              case process_line(framer, line) {
+                Error(e) -> Error(e)
+                Ok(#(next_framer, maybe_event)) -> {
+                  let next_emitted = case maybe_event {
+                    Some(ev) -> [ev, ..emitted]
+                    None -> emitted
+                  }
+                  let next_count = case maybe_event {
+                    Some(_) -> emitted_count + 1
+                    None -> emitted_count
+                  }
+                  case next_count > framer.limits.queue_count_limit {
+                    True ->
+                      Error(error.LimitExceeded(
+                        limit.QueueCount,
+                        framer.limits.queue_count_limit,
+                        next_count,
+                      ))
+                    False ->
+                      parse_lines(
+                        next_framer,
+                        remaining,
+                        next_emitted,
+                        next_count,
+                        0,
+                      )
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+type LineExtract {
+  EndOfBuffer(BitArray)
+  LineFound(BitArray, BitArray)
+}
+
+fn find_line_terminator(buffer: BitArray, offset: Int) -> LineExtract {
+  case buffer {
+    <<prefix:bytes-size(offset), 13, 10, rest:bits>> -> LineFound(prefix, rest)
+
+    <<prefix:bytes-size(offset), 13, rest:bits>> ->
+      case bit_array.byte_size(rest) == 0 {
+        // Keep a trailing CR until the next chunk can distinguish CR from CRLF.
+        True -> EndOfBuffer(buffer)
+        False -> LineFound(prefix, rest)
+      }
+
+    <<prefix:bytes-size(offset), 10, rest:bits>> -> LineFound(prefix, rest)
+
+    <<_:bytes-size(offset), _:size(8), _:bits>> ->
+      find_line_terminator(buffer, offset + 1)
+
+    _ -> EndOfBuffer(buffer)
+  }
+}
+
+fn process_line(
+  framer: Framer,
+  line: String,
+) -> Result(#(Framer, Option(ServerSentEvent)), error.Error) {
+  case line {
+    "" -> {
+      case framer.data_lines {
+        [] ->
+          case framer.event_type, framer.event_id {
+            None, None -> Ok(#(framer, None))
+            _, _ -> {
+              let event =
+                ServerSentEvent(
+                  event: framer.event_type,
+                  data: "",
+                  id: framer.event_id,
+                  retry: framer.retry_ms,
+                )
+              let reset_framer =
+                Framer(
+                  ..framer,
+                  event_type: None,
+                  data_lines: [],
+                  event_id: None,
+                  retry_ms: None,
+                  accumulated_event_bytes: 0,
+                )
+              Ok(#(reset_framer, Some(event)))
+            }
+          }
+        _ -> {
+          let event =
+            ServerSentEvent(
+              event: framer.event_type,
+              data: string.join(list.reverse(framer.data_lines), "\n"),
+              id: framer.event_id,
+              retry: framer.retry_ms,
+            )
+          let reset_framer =
+            Framer(
+              ..framer,
+              event_type: None,
+              data_lines: [],
+              event_id: None,
+              retry_ms: None,
+              accumulated_event_bytes: 0,
+            )
+          Ok(#(reset_framer, Some(event)))
+        }
+      }
+    }
+
+    ":" <> _ -> Ok(#(framer, None))
+
+    _ -> {
+      let #(field, value) = parse_field(line)
+      case field {
+        "data" -> {
+          let added_bytes = string.byte_size(value) + 1
+          let new_total = framer.accumulated_event_bytes + added_bytes
+          case new_total > framer.limits.event_bytes_limit {
+            True ->
+              Error(error.LimitExceeded(
+                limit.EventBytes,
+                framer.limits.event_bytes_limit,
+                new_total,
+              ))
+            False -> {
+              let next_framer =
+                Framer(
+                  ..framer,
+                  data_lines: [value, ..framer.data_lines],
+                  accumulated_event_bytes: new_total,
+                )
+              Ok(#(next_framer, None))
+            }
+          }
+        }
+        "event" -> Ok(#(Framer(..framer, event_type: Some(value)), None))
+        "id" -> Ok(#(Framer(..framer, event_id: Some(value)), None))
+        "retry" -> {
+          case int.parse(value) {
+            Ok(ms) -> Ok(#(Framer(..framer, retry_ms: Some(ms)), None))
+            Error(Nil) -> Ok(#(framer, None))
+          }
+        }
+        _ -> Ok(#(framer, None))
+      }
+    }
+  }
+}
+
+fn parse_field(line: String) -> #(String, String) {
+  case string.split_once(line, ":") {
+    Ok(#(field, rest)) -> {
+      let value = case string.starts_with(rest, " ") {
+        True -> string.drop_start(rest, 1)
+        False -> rest
+      }
+      #(field, value)
+    }
+    Error(Nil) -> #(line, "")
+  }
+}
