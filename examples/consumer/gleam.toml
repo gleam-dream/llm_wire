@@ -8,7 +8,7 @@ gleam_http = ">= 4.4.0 and < 5.0.0"
 llm_wire = { path = "../.." }
 http_gun = { git = "https://github.com/gleam-dream/http_gun.git", ref = "main" }
 sinal = { git = "https://github.com/gleam-dream/sinal.git", ref = "main" }
-json_blueprint = { git = "https://github.com/lostbean/json_blueprint.git", ref = "main" }
+json_blueprint = { git = "https://github.com/lostbean/json_blueprint.git", ref = "909ceb74864898082bf0c6323bb9b3a3af8346ab" }
 gleam_stdlib = ">= 0.71.0 and < 2.0.0"
 gleam_erlang = ">= 1.3.0 and < 2.0.0"
 gleam_otp = ">= 1.3.0 and < 2.0.0"

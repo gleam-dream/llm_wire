@@ -65,7 +65,8 @@ pub fn prepare_openai_request_uses_responses_wire_test() {
   let assert Some(actual_schema) = find_field(tool_fields, "parameters")
   let assert Ok(contract_schema) =
     codec.schema(tool_fixtures.one_field("value", codec.int()))
-  actual_schema |> should.equal(codec.schema_value(contract_schema))
+  canonical_value(actual_schema)
+  |> should.equal(canonical_value(codec.schema_value(contract_schema)))
 }
 
 pub fn schema_only_tool_validates_json_without_a_native_codec_test() {
@@ -233,7 +234,8 @@ pub fn codec_schema_projection_matches_blueprint_for_recursive_forms_test() {
     let assert Ok(projected_json) = schema.codec_schema_to_json(contract_schema)
     let assert Ok(projected_value) =
       value.parse(json.to_string(projected_json), value.default_limits())
-    projected_value |> should.equal(codec.schema_value(contract_schema))
+    canonical_value(projected_value)
+    |> should.equal(canonical_value(codec.schema_value(contract_schema)))
   })
 }
 
@@ -540,4 +542,18 @@ pub fn lifecycle_observation_contains_only_fixed_metadata_test() {
   correlation |> should.equal(None)
   { call != "" } |> should.be_true
   string.contains(string.inspect(metadata), "secret") |> should.be_false
+}
+
+// JSON object member order is not part of the schema contract.
+fn canonical_value(input: value.Value) -> value.Value {
+  case input {
+    value.Object(fields) ->
+      value.Object(
+        fields
+        |> list.map(fn(field) { #(field.0, canonical_value(field.1)) })
+        |> list.sort(fn(a, b) { string.compare(a.0, b.0) }),
+      )
+    value.Array(items) -> value.Array(list.map(items, canonical_value))
+    other -> other
+  }
 }

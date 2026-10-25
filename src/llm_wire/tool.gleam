@@ -182,8 +182,8 @@ pub fn schema(tool: Tool) -> codec.Schema {
 }
 
 /// Decode a call's arguments with `input`, validating them against the
-/// codec's schema. Parsing is bounded by Blueprint's default limits (1 MiB,
-/// depth 64).
+/// codec's schema. Parsing uses Blueprint's default 1 MiB byte limit.
+/// This does not impose a document-depth or value-count policy.
 pub fn decode_arguments(
   call: ToolCall,
   input: codec.Codec(a),

@@ -304,7 +304,7 @@ pub fn raised_request_receipts_keep_legacy_shape_and_explicit_byte_budget_test()
   |> should.equal(Ok(ordinary))
 }
 
-pub fn raised_byte_limits_retain_depth_and_element_limits_test() {
+pub fn admitted_bytes_allow_deep_and_wide_classification_json_test() {
   let settings =
     config()
     |> classify.with_request_limit(2_097_152)
@@ -315,20 +315,16 @@ pub fn raised_byte_limits_retain_depth_and_element_limits_test() {
     })
   let wide = value.Array(list.repeat(value.Null, 262_145))
   list.each([deep, wide], fn(state) {
-    let bad = classify.request("fixture", state, receipt_questions())
-    let failed =
-      classify.prepare(large_wire(), settings, bad) |> should.be_error
-    let assert error.InvalidRequest(error.InvalidClassificationContent(_)) =
-      failed
-    let failed =
+    let admitted = classify.request("fixture", state, receipt_questions())
+    classify.prepare(large_wire(), settings, admitted) |> should.be_ok
+    let answer =
       replay_classification(
         settings,
         request(),
         padded_response(value.to_string(state)),
       )
-      |> should.be_error
-    error.kind(failed.error) |> should.equal(error.UnusableResponse)
-    failed.sent |> should.equal(llm_wire.Completed)
+      |> should.be_ok
+    answer.answer.yes |> should.equal(0.9)
   })
 }
 
@@ -458,7 +454,18 @@ pub fn narrower_live_limits_leave_old_receipt_evidence_readable_test() {
   codec.decode(receipt, saved) |> should.equal(Ok(answer))
 }
 
-pub fn custom_wire_cannot_bypass_response_structure_limits_live_or_stored_test() {
+pub fn custom_wire_receives_deep_and_large_number_json_live_and_stored_test() {
+  let deeply_nested = string.repeat("[", 65) <> "0" <> string.repeat("]", 65)
+  list.each([deeply_nested, "{\"number\":1e999999999}"], fn(body) {
+    check_custom_wire_json_admission(body, True)
+  })
+}
+
+pub fn custom_wire_rejects_syntax_before_callback_live_and_stored_test() {
+  check_custom_wire_json_admission("not JSON", False)
+}
+
+fn check_custom_wire_json_admission(body: String, accepted: Bool) {
   let decoded = process.new_subject()
   let wire =
     classify.wire(
@@ -475,23 +482,31 @@ pub fn custom_wire_cannot_bypass_response_structure_limits_live_or_stored_test()
       },
     )
   let call = classify.prepare(wire, config(), request()) |> should.be_ok
-  let deeply_nested = string.repeat("[", 65) <> "0" <> string.repeat("]", 65)
-  list.each([deeply_nested, "{\"number\":1e999999999}", "not JSON"], fn(body) {
-    let http =
-      http_testing.playback(
-        http_testing.script([
-          testing.classification_exchange(
-            call,
-            testing.classification_response(body),
-          ),
-        ]),
-        http_config.default(),
-      )
-      |> should.be_ok
-    let failure = classify.run(http, call) |> should.be_error
-    failure.sent |> should.equal(llm_wire.Completed)
-    process.receive(decoded, 0) |> should.be_error
-    let receipt = classify.receipt_codec(wire, receipt_questions())
+  let http =
+    http_testing.playback(
+      http_testing.script([
+        testing.classification_exchange(
+          call,
+          testing.classification_response(body),
+        ),
+      ]),
+      http_config.default(),
+    )
+    |> should.be_ok
+  case accepted {
+    True -> {
+      let answer = classify.run(http, call) |> should.be_ok
+      answer.answer.yes |> should.equal(0.9)
+      process.receive(decoded, 0) |> should.equal(Ok(Nil))
+    }
+    False -> {
+      let failure = classify.run(http, call) |> should.be_error
+      failure.sent |> should.equal(llm_wire.Completed)
+      process.receive(decoded, 0) |> should.be_error
+    }
+  }
+  let receipt = classify.receipt_codec(wire, receipt_questions())
+  let restored =
     codec.decode(
       receipt,
       value.Array([
@@ -502,10 +517,18 @@ pub fn custom_wire_cannot_bypass_response_structure_limits_live_or_stored_test()
         value.String(body),
       ]),
     )
-    |> should.be_error
-    process.receive(decoded, 0) |> should.be_error
-    http_gun.stop(http)
-  })
+  case accepted {
+    True -> {
+      let answer = restored |> should.be_ok
+      answer.answer.yes |> should.equal(0.9)
+      process.receive(decoded, 0) |> should.equal(Ok(Nil))
+    }
+    False -> {
+      restored |> should.be_error
+      process.receive(decoded, 0) |> should.be_error
+    }
+  }
+  http_gun.stop(http)
 }
 
 pub fn custom_wire_unknown_usage_stays_absent_and_negative_usage_is_rejected_test() {

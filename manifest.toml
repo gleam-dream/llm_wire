@@ -26,7 +26,7 @@ packages = [
   { name = "gun", version = "2.6.0", build_tools = ["make", "rebar3"], requirements = ["cowlib"], otp_app = "gun", source = "hex", outer_checksum = "69BB957F4BD6C475B5714460FD65C26FC7EB85760AA64B74754DE36CE5CCED7D" },
   { name = "hpack_erl", version = "0.3.0", build_tools = ["rebar3"], requirements = [], otp_app = "hpack", source = "hex", outer_checksum = "D6137D7079169D8C485C6962DFE261AF5B9EF60FBC557344511C1E65E3D95FB0" },
   { name = "http_gun", version = "0.1.0", build_tools = ["gleam"], requirements = ["cowlib", "file_streams", "gleam_erlang", "gleam_http", "gleam_json", "gleam_otp", "gleam_stdlib", "gleam_time", "gun", "simplifile", "sinal", "youid"], source = "git", repo = "https://github.com/gleam-dream/http_gun.git", commit = "08e2c283e834e7e106c29abf95c501b40cb2df22" },
-  { name = "json_blueprint", version = "1.7.1", build_tools = ["gleam"], requirements = ["gleam_crypto", "gleam_json", "gleam_stdlib"], source = "git", repo = "https://github.com/lostbean/json_blueprint.git", commit = "ada6bb18e1b1f5ba3ecb7cfd86fa26e0560d9ac3" },
+  { name = "json_blueprint", version = "2.0.0", build_tools = ["gleam"], requirements = ["gleam_crypto", "gleam_json", "gleam_stdlib"], source = "git", repo = "https://github.com/lostbean/json_blueprint.git", commit = "909ceb74864898082bf0c6323bb9b3a3af8346ab" },
   { name = "logging", version = "1.5.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "logging", source = "hex", outer_checksum = "BC5F18CE5DD9686100229FE5409BDC3DD5C46D5A7DF2F804AD2D8F0DD6C5060E" },
   { name = "mist", version = "6.0.3", build_tools = ["gleam"], requirements = ["exception", "gleam_erlang", "gleam_http", "gleam_otp", "gleam_stdlib", "glisten", "gramps", "hpack_erl", "logging"], otp_app = "mist", source = "hex", outer_checksum = "1B07F321D5FA0CB162D81496F2DE96AEB6EF8980F4F38230A4CC3F849497E020" },
   { name = "simplifile", version = "2.7.0", build_tools = ["gleam"], requirements = ["filepath", "gleam_stdlib"], otp_app = "simplifile", source = "hex", outer_checksum = "A2727627B063E87351934C7F7F008F2D1FDB16F6DE0B8C79F9E46459CFC9C164" },
@@ -45,7 +45,7 @@ gleam_stdlib = { version = ">= 0.70.0 and < 2.0.0" }
 gleam_time = { version = ">= 1.11.0 and < 2.0.0" }
 gleeunit = { version = ">= 1.0.0 and < 2.0.0" }
 http_gun = { git = "https://github.com/gleam-dream/http_gun.git", ref = "main" }
-json_blueprint = { git = "https://github.com/lostbean/json_blueprint.git", ref = "main" }
+json_blueprint = { git = "https://github.com/lostbean/json_blueprint.git", ref = "909ceb74864898082bf0c6323bb9b3a3af8346ab" }
 mist = { version = ">= 6.0.2 and < 7.0.0" }
 simplifile = { version = ">= 2.7.0 and < 3.0.0" }
 sinal = { git = "https://github.com/gleam-dream/sinal.git", ref = "main" }

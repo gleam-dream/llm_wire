@@ -34,11 +34,11 @@
         #attribute(name: "Evidence", type: "requested/resolved model, state, request JSON and response JSON", provenance: "observed")[This material supports pure reconstruction; it contains no live authentication or HTTP process.]
       ]
       #points(
-        [Question instructions/state content is text, object or array validated under JSON structural/numeric limits; choice descriptions may explicitly be null. Ids/labels are nonempty, trimmed only for the emptiness check. Batches contain at most 256 unique questions, choices 2 through 255 alternatives, scores 2 through 10 levels.],
+        [Question instructions/state content is text, object or array validated as JSON within the admitted byte allowance; choice descriptions may explicitly be null. Ids/labels are nonempty, trimmed only for the emptiness check. Batches contain at most 256 unique questions, choices 2 through 255 alternatives, scores 2 through 10 levels.],
         [The candidate sum is Yes(yes), Selected(label, probabilities, confidence) or Rated(position, indexed probabilities, levels, confidence). Exact question ids/kinds and exact distribution keys are checked, including duplicates. Probabilities are finite in 0 through 1 and sum to one within 0.00001.],
         [A selected choice must be a known label and maximal within 0.00001. Returned probabilities are reordered to authored alternative order and retain each application value even when several labels map to the same value. A score's canonical rubric must match; its position is in 0 through levels minus one and matches the weighted distribution within 0.00001 times level count.],
         [Present confidence must be within 0 through 1; absent #term("term-concentration-evidence") remains None. Missing usage is None, and reported counts must be nonnegative. TypeSafe's protocol still requires its mandatory confidence/usage fields; shared optionality does not make malformed mandatory evidence absent.],
-        [Shared parsing uses the already admitted byte allowance while retaining Blueprint's depth, value-count and numeric-token limits. TypeSafe validates precise decimal bounds before Float conversion and rejects positive underflow to zero. Custom wires own their corresponding precise-number and mandatory-field checks. #adr(8) records this extension boundary.],
+        [Shared parsing uses the already admitted byte allowance. Blueprint rejects duplicate keys and retains exact numbers; it imposes no global depth, value-count or numeric-token admission limit. No additional structural policy is introduced here. TypeSafe validates precise decimal bounds before Float conversion and rejects positive underflow to zero. Custom wires own their corresponding precise-number and mandatory-field checks. #adr(8) records this extension boundary.],
       )
       #behavior(title: "Malformed candidates cannot bypass shared admission", area: "Classification evidence", level: "boundary")[
         #given[A wire returns missing, duplicate or unknown ids, wrong kinds, incomplete probabilities or inconsistent native evidence.]
@@ -76,7 +76,7 @@
         [Questions per batch], [256], [Fixed],
         [Choice alternatives and score levels], [2 through 255 and 2 through 10], [Fixed],
       ))
-      #points([Raising a byte allowance does not raise Blueprint's structural limits (nesting 64, 262,144 values and bounded number tokens). The HTTP client's own request, buffering and collection limits are independent and can impose a smaller allowance. A call neither retries nor follows redirects, and keys enter only through a reveal closure.])
+      #points([Byte admission is independent of any consumer-specific structural policy. Valid deep or wide JSON reaches the wire decoder when it fits the admitted bytes; this library adds no depth, value-count or numeric-token limit. The HTTP client's own request, buffering and collection limits are independent and can impose a smaller allowance. A call neither retries nor follows redirects, and keys enter only through a reveal closure.])
       #behavior(title: "Receipt limits are checked before credentials", area: "Classification preparation", level: "interface")[
         #given[A live byte allowance is nonpositive or exceeds the wire's fixed receipt allowance.]
         #when[The caller prepares classification.]
