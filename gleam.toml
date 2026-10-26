@@ -12,7 +12,7 @@ gleam_stdlib = ">= 0.70.0 and < 2.0.0"
 gleam_json = ">= 3.0.0 and < 4.0.0"
 gleam_erlang = ">= 1.0.0 and < 2.0.0"
 gleam_otp = ">= 1.0.0 and < 2.0.0"
-json_blueprint = { git = "https://github.com/lostbean/json_blueprint.git", ref = "2c6df6148c9357b03041be2c95a3a46a6694120d" }
+json_blueprint = { git = "https://github.com/lostbean/json_blueprint.git", ref = "54ba14b8cc611ec80e149be9e695c416ba9d1a75" }
 sinal = { git = "https://github.com/gleam-dream/sinal.git", ref = "main" }
 http_gun = { git = "https://github.com/gleam-dream/http_gun.git", ref = "main" }
 gleam_http = ">= 4.4.0 and < 5.0.0"
