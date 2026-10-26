@@ -4,6 +4,7 @@ target = "erlang"
 gleam = ">= 1.18.0"
 licenses = ["Apache-2.0"]
 description = "A bounded HTTP/SSE LLM client for Gleam with typed provider adapters, streaming, and caller-owned conversations."
+repository = { type = "github", user = "gleam-dream", repo = "llm_wire" }
 
 internal_modules = ["llm_wire/internal", "llm_wire/internal/*"]
 
@@ -12,7 +13,7 @@ gleam_stdlib = ">= 0.70.0 and < 2.0.0"
 gleam_json = ">= 3.0.0 and < 4.0.0"
 gleam_erlang = ">= 1.0.0 and < 2.0.0"
 gleam_otp = ">= 1.0.0 and < 2.0.0"
-json_blueprint = { git = "https://github.com/lostbean/json_blueprint.git", ref = "54ba14b8cc611ec80e149be9e695c416ba9d1a75" }
+json_blueprint = { git = "https://github.com/lostbean/json_blueprint.git", ref = "e8955222b7bf123d808ea1497cd3bbec98e22923" }
 sinal = { git = "https://github.com/gleam-dream/sinal.git", ref = "main" }
 http_gun = { git = "https://github.com/gleam-dream/http_gun.git", ref = "main" }
 gleam_http = ">= 4.4.0 and < 5.0.0"
