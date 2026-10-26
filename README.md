@@ -1,6 +1,6 @@
 # LLM Wire
 
-Typed, bounded LLM interactions for Gleam on Erlang/OTP. Use it when an application needs provider calls and typed results while keeping conversation history, tool effects, and retry policy under application control. This checkout is an unreleased `0.1.0` candidate and requires Gleam 1.18 or newer.
+Typed, bounded LLM interactions for Gleam on Erlang/OTP. Use it when an application needs provider calls and typed results while keeping conversation history, tool effects, and retry policy under application control. It requires Gleam 1.18 or newer.
 
 ## What it provides
 
@@ -37,13 +37,14 @@ LLM Wire is a wire and execution library, not an agent framework. The caller own
 
 ## Install
 
-Add LLM Wire and HTTP Gun to an Erlang-targeted Gleam application. Declare HTTP Gun directly when passing its client to LLM Wire. These Git `main` declarations match the package manifest; commit the generated `manifest.toml` to record the revisions resolved for your application.
+Add LLM Wire and HTTP Gun from Hex to an Erlang-targeted Gleam application.
+Declare HTTP Gun directly when passing its client to LLM Wire:
 
-```toml
-[dependencies]
-llm_wire = { git = "https://github.com/gleam-dream/llm_wire.git", ref = "main" }
-http_gun = { git = "https://github.com/gleam-dream/http_gun.git", ref = "main" }
+```sh
+gleam add llm_wire http_gun
 ```
+
+Commit `gleam.toml` and `manifest.toml` to retain the resolved versions.
 
 ## Make a call
 
