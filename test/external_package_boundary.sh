@@ -36,8 +36,12 @@ config_path = destination / "gleam.toml"
 config = config_path.read_text()
 upstream = tomllib.loads((seed.parents[2] / "gleam.toml").read_text())["dependencies"]
 for name in ("json_blueprint", "http_gun", "sinal"):
-    fields = ", ".join(key + " = " + json.dumps(value) for key, value in upstream[name].items())
-    config += name + " = { " + fields + " }\n"
+    dependency = upstream[name]
+    if isinstance(dependency, str):
+        config += name + " = " + json.dumps(dependency) + "\n"
+    else:
+        fields = ", ".join(key + " = " + json.dumps(value) for key, value in dependency.items())
+        config += name + " = { " + fields + " }\n"
 config_path.write_text(config)
 packages = seed.read_text().split("[requirements]", 1)[0]
 packages = re.sub(
