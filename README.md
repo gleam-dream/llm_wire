@@ -1,5 +1,9 @@
 # LLM Wire
 
+[![CI](https://github.com/gleam-dream/llm_wire/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/gleam-dream/llm_wire/actions/workflows/ci.yml)
+[![llm_wire on Hex](https://img.shields.io/hexpm/v/llm_wire?label=Hex%3A%20llm_wire)](https://hex.pm/packages/llm_wire)
+[![Gleam](https://img.shields.io/badge/Gleam-FFAFF3?logo=gleam&logoColor=000000)](https://gleam.run/)
+
 Typed, bounded LLM interactions for Gleam on Erlang/OTP. Use it when an application needs provider calls and typed results while keeping conversation history, tool effects, and retry policy under application control. It requires Gleam 1.18 or newer.
 
 ## What it provides
