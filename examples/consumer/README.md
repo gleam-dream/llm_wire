@@ -4,9 +4,11 @@
 [![llm_wire on Hex](https://img.shields.io/hexpm/v/llm_wire?label=Hex%3A%20llm_wire)](https://hex.pm/packages/llm_wire)
 [![Gleam](https://img.shields.io/badge/Gleam-FFAFF3?logo=gleam&logoColor=000000)](https://gleam.run/)
 
-A separate package that depends on the parent `llm_wire` checkout through public imports only, with HTTP Gun, Blueprint and Sinal pinned in its manifest. The consumer flows run offline against scripted HTTP Gun playback. The standalone
+A separate package using only public imports from the parent `llm_wire` checkout,
+with HTTP Gun, Blueprint and Sinal pinned in its manifest. Its offline flows use
+scripted HTTP Gun playback and run in the full gate. The standalone
 `readme_call` module is a compiled live-provider example; running it separately
-requires provider credentials and network access. The offline flows compile and run in the full gate against the public API.
+requires provider credentials and network access.
 
 ## Run
 
