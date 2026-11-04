@@ -1,3 +1,4 @@
+import gleam/bit_array
 import gleam/dynamic/decode
 import gleam/json
 import gleam/list
@@ -850,6 +851,7 @@ pub fn google_adapter(
     headers: fn() { [#("x-goog-api-key", key()), ..optional_headers] },
     validate: fn() { require_key(key) },
     encode: fn(request, tools, format) {
+      use Nil <- result.try(admit_google_model(request.model))
       use body <- result.try(encode_google_request(
         request,
         projected_tool_json(message.Google, tools),
@@ -867,6 +869,44 @@ fn require_key(key: fn() -> String) -> Result(Nil, error.PrepareError) {
   case string.trim(key()) {
     "" -> Error(error.InvalidSetting(error.ApiKey, "the API key is empty"))
     _ -> Ok(Nil)
+  }
+}
+
+/// The Google model is one segment of the request path, so it is admitted
+/// only as a model id: ASCII letters, digits, `.`, `-`, `_` and `:`, and
+/// never `.` or `..`. Anything else could add segments, a query or a
+/// fragment and send the API key to another resource on the same origin.
+fn admit_google_model(model: String) -> Result(Nil, error.PrepareError) {
+  case
+    model != ""
+    && model != "."
+    && model != ".."
+    && model_id_bytes(bit_array.from_string(model))
+  {
+    True -> Ok(Nil)
+    False ->
+      Error(error.InvalidSetting(
+        error.Model,
+        "the model name may contain only ASCII letters, digits, '.', '-', '_' and ':'",
+      ))
+  }
+}
+
+fn model_id_bytes(bytes: BitArray) -> Bool {
+  case bytes {
+    <<>> -> True
+    <<byte, rest:bytes>> ->
+      {
+        { byte >= 0x41 && byte <= 0x5a }
+        || { byte >= 0x61 && byte <= 0x7a }
+        || { byte >= 0x30 && byte <= 0x39 }
+        || byte == 0x2e
+        || byte == 0x2d
+        || byte == 0x5f
+        || byte == 0x3a
+      }
+      && model_id_bytes(rest)
+    _ -> False
   }
 }
 

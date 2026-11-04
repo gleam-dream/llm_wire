@@ -216,12 +216,21 @@ fn validate_headers(
   }
 }
 
+/// Admits the joined endpoint and adapter path as an origin-form request
+/// target: a leading `/`, no control bytes or spaces, no fragment, at most
+/// one `?` (the adapter's own query) and no `.` or `..` segment, including
+/// percent-encoded dots, that a server could normalise to another resource.
 fn validate_path(path: String) -> Result(Nil, PrepareError) {
+  let #(target, query) = case string.split_once(path, "?") {
+    Ok(parts) -> parts
+    Error(Nil) -> #(path, "")
+  }
   case
     string.starts_with(path, "/")
-    && !string.contains(path, "\r")
-    && !string.contains(path, "\n")
-    && !string.contains(path, " ")
+    && !string.contains(path, "#")
+    && !string.contains(query, "?")
+    && no_controls_or_spaces(bit_array.from_string(path))
+    && !list.any(string.split(target, "/"), is_dot_segment)
   {
     True -> Ok(Nil)
     False ->
@@ -229,6 +238,22 @@ fn validate_path(path: String) -> Result(Nil, PrepareError) {
         error.Endpoint,
         "the request path is not a valid HTTP path",
       ))
+  }
+}
+
+fn no_controls_or_spaces(bytes: BitArray) -> Bool {
+  case bytes {
+    <<>> -> True
+    <<byte, rest:bytes>> ->
+      byte > 0x20 && byte != 0x7f && no_controls_or_spaces(rest)
+    _ -> False
+  }
+}
+
+fn is_dot_segment(segment: String) -> Bool {
+  case string.lowercase(segment) |> string.replace("%2e", ".") {
+    "." | ".." -> True
+    _ -> False
   }
 }
 

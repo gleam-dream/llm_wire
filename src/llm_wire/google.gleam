@@ -5,6 +5,10 @@
 //// ```
 ////
 //// The adapter targets `https://generativelanguage.googleapis.com/v1beta`.
+//// The model is one segment of the request path, so `prepare` admits only
+//// ASCII letters, digits, `.`, `-`, `_` and `:` (for example
+//// `gemini-2.5-pro`) and refuses anything else with
+//// `InvalidSetting(Model, _)`.
 //// Gemini's signed parts travel in each assistant turn's `provider_data`
 //// and must be replayed unchanged. Structured output is sent as
 //// `generationConfig.responseJsonSchema`, which also takes what strict
