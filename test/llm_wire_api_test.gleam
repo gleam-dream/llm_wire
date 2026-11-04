@@ -688,3 +688,31 @@ pub fn encoded_paths_with_dot_segments_fragments_or_controls_are_refused_test() 
   sent.path |> should.equal("/v1/stream")
   sent.query |> should.equal(Some("alt=sse"))
 }
+
+pub fn encoded_paths_with_separator_or_encoding_tricks_are_refused_test() {
+  [
+    "/a/..;/admin", "/a\\..\\admin", "/a/%2e%2e%2fadmin", "/a/%2f..",
+    "/a/%c0%ae%c0%ae/x", "/a/%252e%252e/x", "//evil.example/x", "/a;b",
+    "/a/%5Cx", "/a/%00x", "/a/%7fx", "/a/%zz", "/a/%2",
+  ]
+  |> list.filter(fn(path) {
+    case
+      llm_wire.prepare(
+        custom_path_config(path),
+        llm_wire.request("custom-model", [llm_wire.user("hello")]),
+      )
+    {
+      Error(error.InvalidSetting(error.Endpoint, _)) -> False
+      _ -> True
+    }
+  })
+  |> should.equal([])
+  let assert Ok(prepared) =
+    llm_wire.prepare(
+      custom_path_config("/files/a%20b%3Ac/stream?alt=sse"),
+      llm_wire.request("custom-model", [llm_wire.user("hello")]),
+    )
+  let sent = sent_request(prepared)
+  sent.path |> should.equal("/v1/files/a%20b%3Ac/stream")
+  sent.query |> should.equal(Some("alt=sse"))
+}

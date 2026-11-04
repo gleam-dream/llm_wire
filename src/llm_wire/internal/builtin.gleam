@@ -887,7 +887,7 @@ fn admit_google_model(model: String) -> Result(Nil, error.PrepareError) {
     False ->
       Error(error.InvalidSetting(
         error.Model,
-        "the model name may contain only ASCII letters, digits, '.', '-', '_' and ':'",
+        "the model name may contain only ASCII letters, digits, '.', '-', '_' and ':'; omit the 'models/' prefix",
       ))
   }
 }
