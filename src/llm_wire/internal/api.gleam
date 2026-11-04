@@ -216,12 +216,27 @@ fn validate_headers(
   }
 }
 
+/// Admits the joined endpoint and adapter path as an origin-form request
+/// target: a leading `/`, no control bytes or spaces, no fragment and at
+/// most one `?` (the adapter's own query). Before the query, the path
+/// refuses `\`, `;`, empty and `.` or `..` segments, and any
+/// percent-encoding that is malformed or decodes to `/`, `\`, `.`, `%`,
+/// a control byte or a non-ASCII byte, so that no server normalisation,
+/// decoding or alternate separator can reach another resource.
 fn validate_path(path: String) -> Result(Nil, PrepareError) {
+  let #(target, query) = case string.split_once(path, "?") {
+    Ok(parts) -> parts
+    Error(Nil) -> #(path, "")
+  }
   case
     string.starts_with(path, "/")
-    && !string.contains(path, "\r")
-    && !string.contains(path, "\n")
-    && !string.contains(path, " ")
+    && !string.contains(path, "#")
+    && !string.contains(query, "?")
+    && no_controls_or_spaces(bit_array.from_string(path))
+    && !string.contains(target, "\\")
+    && !string.contains(target, ";")
+    && safe_percent_encoding(bit_array.from_string(target))
+    && safe_segments(string.split(target, "/"))
   {
     True -> Ok(Nil)
     False ->
@@ -229,6 +244,68 @@ fn validate_path(path: String) -> Result(Nil, PrepareError) {
         error.Endpoint,
         "the request path is not a valid HTTP path",
       ))
+  }
+}
+
+fn no_controls_or_spaces(bytes: BitArray) -> Bool {
+  case bytes {
+    <<>> -> True
+    <<byte, rest:bytes>> ->
+      byte > 0x20 && byte != 0x7f && no_controls_or_spaces(rest)
+    _ -> False
+  }
+}
+
+/// The path splits as `["", first, ..]`; only the last segment may be
+/// empty (a trailing `/`).
+fn safe_segments(segments: List(String)) -> Bool {
+  case segments {
+    ["", ..rest] -> safe_inner_segments(rest)
+    _ -> False
+  }
+}
+
+fn safe_inner_segments(segments: List(String)) -> Bool {
+  case segments {
+    [] -> True
+    [last] -> last != "." && last != ".."
+    [segment, ..rest] ->
+      segment != ""
+      && segment != "."
+      && segment != ".."
+      && safe_inner_segments(rest)
+  }
+}
+
+fn safe_percent_encoding(bytes: BitArray) -> Bool {
+  case bytes {
+    <<>> -> True
+    <<"%", high, low, rest:bytes>> ->
+      case hex_value(high), hex_value(low) {
+        Ok(h), Ok(l) -> {
+          let byte = h * 16 + l
+          byte >= 0x20
+          && byte < 0x7f
+          && byte != 0x2e
+          && byte != 0x2f
+          && byte != 0x5c
+          && byte != 0x25
+          && safe_percent_encoding(rest)
+        }
+        _, _ -> False
+      }
+    <<"%", _:bytes>> -> False
+    <<_, rest:bytes>> -> safe_percent_encoding(rest)
+    _ -> False
+  }
+}
+
+fn hex_value(byte: Int) -> Result(Int, Nil) {
+  case byte {
+    _ if byte >= 0x30 && byte <= 0x39 -> Ok(byte - 0x30)
+    _ if byte >= 0x41 && byte <= 0x46 -> Ok(byte - 0x37)
+    _ if byte >= 0x61 && byte <= 0x66 -> Ok(byte - 0x57)
+    _ -> Error(Nil)
   }
 }
 

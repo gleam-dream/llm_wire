@@ -557,3 +557,162 @@ fn canonical_value(input: value.Value) -> value.Value {
     other -> other
   }
 }
+
+fn google_endpoint_config() -> llm_wire.Config {
+  google.new("test-key")
+  |> google.config
+  |> llm_wire.with_endpoint("https://generativelanguage.example.test/v1beta")
+}
+
+pub fn google_model_names_outside_the_path_segment_grammar_are_refused_test() {
+  // The Google adapter places the model in the request path, so a model
+  // string must not be able to add segments, a query or a fragment.
+  [
+    "../../v1beta/cachedContents",
+    "..",
+    ".",
+    "x?alt=json&foo",
+    "gemini-pro#fragment",
+    "gemini%2Fpro",
+    "tunedModels/x",
+    "gemini\u{0}pro",
+    "gemini\tpro",
+    "gemini pro",
+    "gemini\u{7f}pro",
+    "gémini-pro",
+  ]
+  |> list.each(fn(model) {
+    let request = llm_wire.request(model, [llm_wire.user("hello")])
+    let assert Error(error.InvalidSetting(error.Model, _)) =
+      llm_wire.prepare(google_endpoint_config(), request)
+  })
+}
+
+pub fn google_model_name_is_the_request_path_segment_test() {
+  let assert Ok(prepared) =
+    llm_wire.prepare(
+      google_endpoint_config(),
+      llm_wire.request("gemini-2.5-pro", [llm_wire.user("hello")]),
+    )
+  let sent = sent_request(prepared)
+  sent.path
+  |> should.equal("/v1beta/models/gemini-2.5-pro:streamGenerateContent")
+  sent.query |> should.equal(Some("alt=sse"))
+}
+
+pub fn body_only_model_names_are_admitted_test() {
+  let anthropic_config =
+    anthropic.new("test-key")
+    |> anthropic.config
+    |> llm_wire.with_endpoint("https://api.example.test/v1")
+  let assert Ok(prepared) =
+    llm_wire.prepare(
+      anthropic_config,
+      llm_wire.request("claude-sonnet-4-5", [llm_wire.user("hello")]),
+    )
+  sent_request(prepared).path |> should.equal("/v1/messages")
+  llm_wire.request_json(prepared)
+  |> string.contains("\"model\":\"claude-sonnet-4-5\"")
+  |> should.be_true
+
+  let openai_config =
+    openai.new("test-key")
+    |> openai.config
+    |> llm_wire.with_endpoint("https://api.example.test/v1")
+  let assert Ok(prepared) =
+    llm_wire.prepare(
+      openai_config,
+      llm_wire.request("gpt-4.1-mini", [llm_wire.user("hello")]),
+    )
+  sent_request(prepared).path |> should.equal("/v1/responses")
+  llm_wire.request_json(prepared)
+  |> string.contains("\"model\":\"gpt-4.1-mini\"")
+  |> should.be_true
+}
+
+pub fn endpoint_paths_with_dot_segments_or_controls_are_refused_test() {
+  [
+    "https://api.example.test/v1/../admin",
+    "https://api.example.test/v1/./responses",
+    "https://api.example.test/v1/%2e%2E/admin",
+    "https://api.example.test/v1\u{1}x",
+    "https://api.example.test/v1\u{7f}x",
+  ]
+  |> list.each(fn(endpoint) {
+    let config =
+      openai.new("test-key")
+      |> openai.config
+      |> llm_wire.with_endpoint(endpoint)
+    let assert Error(error.InvalidSetting(error.Endpoint, _)) =
+      llm_wire.prepare(
+        config,
+        llm_wire.request("gpt-test", [llm_wire.user("hello")]),
+      )
+  })
+}
+
+fn custom_path_config(path: String) -> llm_wire.Config {
+  provider.new(
+    message.Custom("path-check"),
+    "https://custom.example.test/v1",
+    fn(_request, _tools, _format) { Ok(provider.encoded(path, "{}")) },
+    fn() {
+      provider.reducer(
+        None,
+        fn(state: Option(String), _event: provider.Event) { Ok(#(state, [])) },
+        fn(state) { option.map(state, provider.text(_, None)) },
+      )
+    },
+  )
+  |> provider.config
+}
+
+pub fn encoded_paths_with_dot_segments_fragments_or_controls_are_refused_test() {
+  [
+    "/models/../files", "/models/./x", "/x#fragment", "/x?a=1?b=2",
+    "/x?a=1#frag", "/x\u{1}y", "/x?a=\u{1}",
+  ]
+  |> list.each(fn(path) {
+    let assert Error(error.InvalidSetting(error.Endpoint, _)) =
+      llm_wire.prepare(
+        custom_path_config(path),
+        llm_wire.request("custom-model", [llm_wire.user("hello")]),
+      )
+  })
+  let assert Ok(prepared) =
+    llm_wire.prepare(
+      custom_path_config("/stream?alt=sse"),
+      llm_wire.request("custom-model", [llm_wire.user("hello")]),
+    )
+  let sent = sent_request(prepared)
+  sent.path |> should.equal("/v1/stream")
+  sent.query |> should.equal(Some("alt=sse"))
+}
+
+pub fn encoded_paths_with_separator_or_encoding_tricks_are_refused_test() {
+  [
+    "/a/..;/admin", "/a\\..\\admin", "/a/%2e%2e%2fadmin", "/a/%2f..",
+    "/a/%c0%ae%c0%ae/x", "/a/%252e%252e/x", "//evil.example/x", "/a;b",
+    "/a/%5Cx", "/a/%00x", "/a/%7fx", "/a/%zz", "/a/%2",
+  ]
+  |> list.filter(fn(path) {
+    case
+      llm_wire.prepare(
+        custom_path_config(path),
+        llm_wire.request("custom-model", [llm_wire.user("hello")]),
+      )
+    {
+      Error(error.InvalidSetting(error.Endpoint, _)) -> False
+      _ -> True
+    }
+  })
+  |> should.equal([])
+  let assert Ok(prepared) =
+    llm_wire.prepare(
+      custom_path_config("/files/a%20b%3Ac/stream?alt=sse"),
+      llm_wire.request("custom-model", [llm_wire.user("hello")]),
+    )
+  let sent = sent_request(prepared)
+  sent.path |> should.equal("/v1/files/a%20b%3Ac/stream")
+  sent.query |> should.equal(Some("alt=sse"))
+}
