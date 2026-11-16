@@ -90,7 +90,7 @@
       #points(
         [Gates run in the pinned Nix shell against the immutable dependency revisions in the manifests. Formatting is checked on a copied Nix tree, so a gate never repairs the working tree. Frozen request fixtures, cassettes, oracle provenance, retained evidence and generated output are excluded from automatic formatting. A passing gate log is evidence for its recorded revision and runtime only.],
         [Gates use local and offline inputs. Static checks never execute the live recorder or read its credential source. Compiler flags reject warnings; runtime fault reports remain runtime evidence.],
-        [CI runs the full gate on every push, pull request, manual run and weekly schedule. A final job rejects failed, cancelled and skipped mandatory jobs. The weekly run records finite HTTP observations without a latency ceiling. Sibling dependency revisions come from one pinned list, are checked out without persisted credentials, and fork pull requests run the same checks.],
+        [CI runs the full gate on pushes to `main`, pull requests, manual runs and a weekly schedule. A final job rejects failed, cancelled and skipped mandatory jobs. The weekly run records finite HTTP observations without a latency ceiling. Sibling dependency revisions come from one pinned list, are checked out without persisted credentials, and fork pull requests run the same checks.],
       )
     ]
     #subsection(title: "Offline qualification")[
