@@ -23,7 +23,7 @@ nix develop -c gleam build
 nix develop -c python3 dev/local-http.py
 ```
 
-The [harness](../dev/local-http.py), [consumer](../test/llm_wire_local_gate.gleam) and [VM sampler](../test/llm_wire_measure_ffi.erl) are the executable inputs. The harness writes a fresh ignored `build/local-http/` directory; select another with `--output PATH` or `LLM_WIRE_HTTP_OUTPUT`, and a reused directory fails. The receipt records source and sibling revisions with dirty flags, lockfile hashes, runtime and OS versions, raw consumer output and a bounded server-log prefix. The full CI gate runs this finite workload on pushes, pull requests and manual runs, and the weekly schedule retains current observations.
+The [harness](../dev/local-http.py), [consumer](../test/llm_wire_local_gate.gleam) and [VM sampler](../test/llm_wire_measure_ffi.erl) are the executable inputs. The harness writes a fresh ignored `build/local-http/` directory; select another with `--output PATH` or `LLM_WIRE_HTTP_OUTPUT`, and a reused directory fails. The receipt records source and sibling revisions with dirty flags, lockfile hashes, runtime and OS versions, raw consumer output and a bounded server-log prefix. The full CI gate runs this finite workload on pushes to `main`, pull requests and manual runs, and the weekly schedule retains current observations.
 
 ## Environment of the retained run
 
