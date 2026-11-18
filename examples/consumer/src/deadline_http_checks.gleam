@@ -127,6 +127,6 @@ fn reported_usage_survives(client: http_gun.Client) -> Nil {
   let assert error.DeadlineExceeded(error.WholeCall) = failure.error
   let assert llm_wire.MaybeSent = failure.sent
   let assert True = failure.partial_output
-  let assert Some(message.Usage(4, 2, 6)) = failure.usage
+  let assert Some(message.Usage(4, 2, 6, None)) = failure.usage
   Nil
 }

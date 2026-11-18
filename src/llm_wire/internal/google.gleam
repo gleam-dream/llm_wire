@@ -235,18 +235,44 @@ fn extract_usage(
   case get_field(payload, "usageMetadata") {
     Error(Nil) -> #(reducer, [])
     Ok(meta) -> {
+      // Google leaves out a count that is zero, so an absent candidate or
+      // thought count reads as 0; output counts both (ADR 0020).
+      let count = fn(name) {
+        case get_field(meta, name) {
+          Error(Nil) -> Ok(None)
+          Ok(value) -> get_int(value) |> result.map(Some)
+        }
+      }
       case
         get_field(meta, "promptTokenCount") |> result.try(get_int),
-        get_field(meta, "candidatesTokenCount") |> result.try(get_int),
+        count("candidatesTokenCount"),
+        count("thoughtsTokenCount"),
         get_field(meta, "totalTokenCount") |> result.try(get_int)
       {
-        Ok(prompt), Ok(candidates), Ok(total)
-          if prompt >= 0 && candidates >= 0 && total >= 0
-        -> {
-          let usage = message.Usage(prompt, candidates, total)
-          #(Reducer(..reducer, usage: Some(usage)), [message.UsageUpdate(usage)])
+        Ok(prompt), Ok(candidates), Ok(thoughts), Ok(total) -> {
+          let candidates = option.unwrap(candidates, 0)
+          case
+            prompt >= 0
+            && candidates >= 0
+            && option.unwrap(thoughts, 0) >= 0
+            && total >= 0
+          {
+            True -> {
+              let usage =
+                message.Usage(
+                  input_tokens: prompt,
+                  output_tokens: candidates + option.unwrap(thoughts, 0),
+                  total_tokens: total,
+                  thought_tokens: thoughts,
+                )
+              #(Reducer(..reducer, usage: Some(usage)), [
+                message.UsageUpdate(usage),
+              ])
+            }
+            False -> #(reducer, [])
+          }
         }
-        _, _, _ -> #(reducer, [])
+        _, _, _, _ -> #(reducer, [])
       }
     }
   }

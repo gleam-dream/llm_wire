@@ -3,13 +3,17 @@
 
 import gleam/io
 import gleam/list
+import gleam/option.{Some}
+import gleam/string
 import gleam/time/duration
 import llm_wire
 import llm_wire/error
+import llm_wire/google
 import llm_wire/limit
 import llm_wire/message
 import llm_wire/openai
 import llm_wire/testing
+import llm_wire/thinking
 import usage_support.{prepared, scripted}
 
 pub fn main() -> Nil {
@@ -49,4 +53,59 @@ pub fn main() -> Nil {
     llm_wire.run(client, call)
   }
   io.println("limit exceeded: " <> llm_wire.describe_failure(failure))
+
+  thinking_level()
+}
+
+/// A thinking level bounds how much the model thinks. The output limit counts
+/// thought and visible tokens together, so a level reserves no visible share;
+/// usage shows afterwards how the limit was spent.
+fn thinking_level() -> Nil {
+  let config = google.new("example-key") |> google.config
+  let request =
+    llm_wire.request("gemini-3.8-flash", [llm_wire.user("Name a city")])
+    |> llm_wire.with_max_tokens(1024)
+    |> llm_wire.with_thinking_level(thinking.Low)
+  let call = prepared(config, request)
+  let assert True =
+    string.contains(
+      llm_wire.request_json(call),
+      "\"thinkingConfig\":{\"thinkingLevel\":\"LOW\"}",
+    )
+
+  // A level the provider has no value for is refused before anything is sent.
+  let assert Error(error.InvalidRequest(error.ThinkingUnsupported(error.LevelUnsupported(
+    thinking.Max,
+  )))) =
+    llm_wire.prepare(
+      config,
+      request |> llm_wire.with_thinking_level(thinking.Max),
+    )
+
+  // A response cut off while thinking explains itself: of the output tokens
+  // counted against the limit, `thought_tokens` were thought.
+  let spent =
+    message.Usage(
+      input_tokens: 10,
+      output_tokens: 1020,
+      total_tokens: 1030,
+      thought_tokens: Some(979),
+    )
+  let reply =
+    testing.events_for(
+      message.Google,
+      testing.output_limited("") |> testing.with_usage(spent),
+    )
+  let assert Ok(llm_wire.OutputLimited(partial_text: "", usage: Some(usage), ..)) = {
+    use client <- scripted([testing.exchange(call, reply)])
+    llm_wire.run(client, call)
+  }
+  let assert Some(thought) = usage.thought_tokens
+  io.println(
+    "output limited: "
+    <> string.inspect(usage.output_tokens)
+    <> " output tokens, "
+    <> string.inspect(thought)
+    <> " of them thought",
+  )
 }

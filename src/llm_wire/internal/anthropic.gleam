@@ -18,6 +18,7 @@ pub opaque type Reducer {
     input_tokens: Int,
     output_tokens: Int,
     has_usage: Bool,
+    thought_tokens: Option(Int),
     stop_reason: Option(String),
     response_id: Option(String),
     blocks: Dict(Int, BlockState),
@@ -42,6 +43,10 @@ type BlockState {
     is_closed: Bool,
   )
   ServerToolBlock(is_closed: Bool)
+  /// A thinking or redacted thinking block: its text is reasoning progress,
+  /// never answer text; its signature and redacted data are not kept, since
+  /// the assistant turn does not carry them (ADR 0020).
+  ThinkingBlock(bytes: Int, is_closed: Bool)
 }
 
 pub fn new(limits: limits.Limits) -> Reducer {
@@ -50,6 +55,7 @@ pub fn new(limits: limits.Limits) -> Reducer {
     input_tokens: 0,
     output_tokens: 0,
     has_usage: False,
+    thought_tokens: None,
     stop_reason: None,
     response_id: None,
     blocks: dict.new(),
@@ -323,6 +329,25 @@ fn handle_content_block_start(
                       ))
                   }
                 }
+                "thinking" | "redacted_thinking" -> {
+                  let updated_blocks =
+                    dict.insert(
+                      reducer.blocks,
+                      payload.index,
+                      ThinkingBlock(0, False),
+                    )
+                  Ok(
+                    #(
+                      Reducer(
+                        ..reducer,
+                        blocks: updated_blocks,
+                        block_order: updated_order,
+                        active_blocks_count: reducer.active_blocks_count + 1,
+                      ),
+                      [],
+                    ),
+                  )
+                }
                 "server_tool_use" -> {
                   let updated_blocks =
                     dict.insert(
@@ -424,15 +449,8 @@ fn handle_content_block_delta(
                   ))
                 False -> {
                   case payload.delta_type {
-                    "text_delta" | "thinking_delta" -> {
-                      let fragment = case payload.text {
-                        Some(t) -> t
-                        None ->
-                          case payload.thinking {
-                            Some(th) -> th
-                            None -> ""
-                          }
-                      }
+                    "text_delta" -> {
+                      let fragment = option.unwrap(payload.text, "")
                       let frag_bytes = string.byte_size(fragment)
                       let block_bytes = string.byte_size(existing) + frag_bytes
                       let total_bytes = reducer.total_text_bytes + frag_bytes
@@ -465,20 +483,12 @@ fn handle_content_block_delta(
                                   payload.index,
                                   updated_block,
                                 )
-                              let progress = case payload.delta_type {
-                                "thinking_delta" -> [
-                                  message.ReasoningDelta(
-                                    block_id: string.inspect(payload.index),
-                                    text: fragment,
-                                  ),
-                                ]
-                                _ -> [
-                                  message.TextDelta(
-                                    block_id: string.inspect(payload.index),
-                                    text: fragment,
-                                  ),
-                                ]
-                              }
+                              let progress = [
+                                message.TextDelta(
+                                  block_id: string.inspect(payload.index),
+                                  text: fragment,
+                                ),
+                              ]
                               Ok(#(
                                 Reducer(
                                   ..reducer,
@@ -500,6 +510,8 @@ fn handle_content_block_delta(
                 }
               }
             }
+            ThinkingBlock(bytes, is_closed) ->
+              thinking_delta(reducer, payload, bytes, is_closed)
             ToolUseBlock(call_id, name, existing_args, is_closed) -> {
               case is_closed {
                 True ->
@@ -601,6 +613,66 @@ fn handle_content_block_delta(
   }
 }
 
+/// A thinking delta is reasoning progress under the text limits; a signature
+/// delta is accepted and not kept.
+fn thinking_delta(
+  reducer: Reducer,
+  payload: ContentBlockDeltaPayload,
+  bytes: Int,
+  is_closed: Bool,
+) -> Result(#(Reducer, List(message.Progress)), error.Error) {
+  case is_closed, payload.delta_type {
+    True, _ -> Error(error.Protocol("Delta received after content_block_stop"))
+    False, "signature_delta" -> Ok(#(reducer, []))
+    False, "thinking_delta" -> {
+      let fragment = option.unwrap(payload.thinking, "")
+      let fragment_bytes = string.byte_size(fragment)
+      let block_bytes = bytes + fragment_bytes
+      let total_bytes = reducer.total_text_bytes + fragment_bytes
+      case
+        block_bytes > reducer.limits.text_bytes_per_block_limit,
+        total_bytes > reducer.limits.total_text_bytes_limit
+      {
+        True, _ ->
+          Error(error.LimitExceeded(
+            limit.TextBytesPerBlock,
+            reducer.limits.text_bytes_per_block_limit,
+            block_bytes,
+          ))
+        _, True ->
+          Error(error.LimitExceeded(
+            limit.TotalTextBytes,
+            reducer.limits.total_text_bytes_limit,
+            total_bytes,
+          ))
+        False, False ->
+          Ok(
+            #(
+              Reducer(
+                ..reducer,
+                blocks: dict.insert(
+                  reducer.blocks,
+                  payload.index,
+                  ThinkingBlock(block_bytes, False),
+                ),
+                total_text_bytes: total_bytes,
+                semantic_progress_observed: True,
+              ),
+              [
+                message.ReasoningDelta(
+                  block_id: string.inspect(payload.index),
+                  text: fragment,
+                ),
+              ],
+            ),
+          )
+      }
+    }
+    False, other ->
+      Error(error.Protocol("Delta type mismatch for thinking block: " <> other))
+  }
+}
+
 type ContentBlockStopPayload {
   ContentBlockStopPayload(index: Int)
 }
@@ -677,6 +749,20 @@ fn handle_content_block_stop(
                 }
               }
             }
+            ThinkingBlock(bytes, is_closed) -> {
+              case is_closed {
+                True -> Error(error.Protocol("Duplicate content_block_stop"))
+                False -> {
+                  let updated_blocks =
+                    dict.insert(
+                      reducer.blocks,
+                      payload.index,
+                      ThinkingBlock(bytes, True),
+                    )
+                  Ok(#(Reducer(..reducer, blocks: updated_blocks), []))
+                }
+              }
+            }
           }
         }
       }
@@ -685,7 +771,11 @@ fn handle_content_block_stop(
 }
 
 type MessageDeltaPayload {
-  MessageDeltaPayload(stop_reason: Option(String), output_tokens: Option(Int))
+  MessageDeltaPayload(
+    stop_reason: Option(String),
+    output_tokens: Option(Int),
+    thinking_tokens: Option(Int),
+  )
 }
 
 fn decode_message_delta() -> decode.Decoder(MessageDeltaPayload) {
@@ -709,7 +799,27 @@ fn decode_message_delta() -> decode.Decoder(MessageDeltaPayload) {
       fn(ot) { decode.success(ot) },
     ),
   )
-  decode.success(MessageDeltaPayload(stop_reason, output_tokens))
+  use thinking_tokens <- decode.optional_field(
+    "usage",
+    None,
+    // The details member may be absent or null.
+    decode.optional_field(
+      "output_tokens_details",
+      None,
+      decode.optional(decode.optional_field(
+        "thinking_tokens",
+        None,
+        decode.optional(decode.int),
+        decode.success,
+      )),
+      fn(details) { decode.success(option.flatten(details)) },
+    ),
+  )
+  decode.success(MessageDeltaPayload(
+    stop_reason,
+    output_tokens,
+    thinking_tokens,
+  ))
 }
 
 fn handle_message_delta(
@@ -723,7 +833,11 @@ fn handle_message_delta(
         Some(sr) -> Some(sr)
         None -> reducer.stop_reason
       }
-      let #(updated_out_tokens, progress) = case payload.output_tokens {
+      // Each usage report replaces the previous one; Anthropic reports the
+      // thinking part of `output_tokens` on the final delta (ADR 0020).
+      let #(updated_out_tokens, updated_thought, progress) = case
+        payload.output_tokens
+      {
         Some(ot) -> {
           let tot = reducer.input_tokens + ot
           let usage =
@@ -731,10 +845,11 @@ fn handle_message_delta(
               input_tokens: reducer.input_tokens,
               output_tokens: ot,
               total_tokens: tot,
+              thought_tokens: payload.thinking_tokens,
             )
-          #(ot, [message.UsageUpdate(usage)])
+          #(ot, payload.thinking_tokens, [message.UsageUpdate(usage)])
         }
-        None -> #(reducer.output_tokens, [])
+        None -> #(reducer.output_tokens, reducer.thought_tokens, [])
       }
 
       Ok(#(
@@ -742,6 +857,7 @@ fn handle_message_delta(
           ..reducer,
           stop_reason: updated_stop_reason,
           output_tokens: updated_out_tokens,
+          thought_tokens: updated_thought,
           semantic_progress_observed: True,
         ),
         progress,
@@ -788,6 +904,7 @@ fn handle_message_stop(
             input_tokens: reducer.input_tokens,
             output_tokens: reducer.output_tokens,
             total_tokens: reducer.input_tokens + reducer.output_tokens,
+            thought_tokens: reducer.thought_tokens,
           ))
         False -> None
       }
@@ -923,6 +1040,7 @@ fn check_all_blocks_closed(
           TextBlock(_, closed) -> closed
           ToolUseBlock(_, _, _, closed) -> closed
           ServerToolBlock(closed) -> closed
+          ThinkingBlock(_, closed) -> closed
         }
         case is_closed {
           True -> Ok(Nil)

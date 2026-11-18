@@ -93,6 +93,7 @@ pub fn anthropic_text_stream_test() {
       input_tokens: 15,
       output_tokens: 10,
       total_tokens: 25,
+      thought_tokens: None,
     )),
   ])
 
@@ -115,6 +116,7 @@ pub fn anthropic_text_stream_test() {
         input_tokens: 15,
         output_tokens: 10,
         total_tokens: 25,
+        thought_tokens: None,
       )),
     )),
   )
@@ -206,7 +208,12 @@ pub fn anthropic_tool_use_stream_test() {
     anthropic.terminal(reducer)
   usage
   |> should.equal(
-    Some(message.Usage(input_tokens: 20, output_tokens: 35, total_tokens: 55)),
+    Some(message.Usage(
+      input_tokens: 20,
+      output_tokens: 35,
+      total_tokens: 55,
+      thought_tokens: None,
+    )),
   )
 
   case outcome {
@@ -364,6 +371,7 @@ pub fn anthropic_cumulative_usage_replacement_test() {
       input_tokens: 100,
       output_tokens: 10,
       total_tokens: 110,
+      thought_tokens: None,
     )),
   ])
 
@@ -382,6 +390,7 @@ pub fn anthropic_cumulative_usage_replacement_test() {
       input_tokens: 100,
       output_tokens: 25,
       total_tokens: 125,
+      thought_tokens: None,
     )),
   ])
 }

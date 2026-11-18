@@ -56,7 +56,13 @@ pub fn scripted_text_runs_through_the_session_test() {
 }
 
 pub fn scripted_usage_is_reported_test() {
-  let usage = message.Usage(input_tokens: 3, output_tokens: 2, total_tokens: 5)
+  let usage =
+    message.Usage(
+      input_tokens: 3,
+      output_tokens: 2,
+      total_tokens: 5,
+      thought_tokens: None,
+    )
   let assert Ok(prepared) =
     llm_wire.prepare(testing.config(), request([llm_wire.user("Hi")]))
   http_test_helpers.run_reply(
@@ -226,7 +232,13 @@ fn run_lowered(
 
 pub fn events_for_text_with_usage_in_every_wire_test() {
   use #(provider, config) <- list.each(wires())
-  let usage = message.Usage(input_tokens: 4, output_tokens: 6, total_tokens: 10)
+  let usage =
+    message.Usage(
+      input_tokens: 4,
+      output_tokens: 6,
+      total_tokens: 10,
+      thought_tokens: None,
+    )
   let outcome =
     run_lowered(
       config,
@@ -956,7 +968,7 @@ pub fn a_lowered_reply_is_not_lowered_again_test() {
   use #(provider, config) <- list.each(wires())
   let once = testing.events_for(provider, testing.text("hi"))
   testing.events_for(provider, once) |> should.equal(once)
-  testing.with_usage(once, message.Usage(1, 1, 2)) |> should.equal(once)
+  testing.with_usage(once, message.Usage(1, 1, 2, None)) |> should.equal(once)
   let assert Ok(llm_wire.Answer(text: "hi", ..)) = run_in(config, once)
 }
 

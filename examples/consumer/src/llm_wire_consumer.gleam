@@ -356,7 +356,7 @@ fn acme_step(
     Some("done") ->
       case int.parse(event.data) {
         Ok(tokens) -> {
-          let usage = message.Usage(0, tokens, tokens)
+          let usage = message.Usage(0, tokens, tokens, None)
           Ok(
             #(AcmeState(..state, usage: Some(usage), done: True), [
               message.UsageUpdate(usage),

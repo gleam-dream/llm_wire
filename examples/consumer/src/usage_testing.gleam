@@ -23,7 +23,7 @@ pub fn main() -> Nil {
   // A `Reply` is opaque. Constructors describe what a provider sends,
   // including its failures.
   let replies = [
-    testing.text("done") |> testing.with_usage(message.Usage(1, 2, 3)),
+    testing.text("done") |> testing.with_usage(message.Usage(1, 2, 3, None)),
     testing.tool_calls("", [testing.tool_call("c1", "lookup", "{}")]),
     testing.refusal("declined"),
     testing.output_limited("cut"),

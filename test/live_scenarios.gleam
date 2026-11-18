@@ -14,6 +14,7 @@ import json/blueprint/value.{type Value}
 import llm_wire
 import llm_wire/google
 import llm_wire/openai
+import llm_wire/thinking
 import llm_wire/tool
 
 /// `gemini-2.5-flash` answered 404 "no longer available to new users" on
@@ -171,6 +172,9 @@ pub type Scenario {
   GoogleWideSchema
   OpenAiWritten
   OpenAiNoSources
+  GoogleThinkingLevel
+  GoogleThoughtLimit
+  OpenAiThinkingLevel
 }
 
 pub fn all() -> List(Scenario) {
@@ -184,6 +188,9 @@ pub fn all() -> List(Scenario) {
     GoogleWideSchema,
     OpenAiWritten,
     OpenAiNoSources,
+    GoogleThinkingLevel,
+    GoogleThoughtLimit,
+    OpenAiThinkingLevel,
   ]
 }
 
@@ -198,6 +205,9 @@ pub fn name(scenario: Scenario) -> String {
     GoogleWideSchema -> "google-wide-schema"
     OpenAiWritten -> "openai-union-written"
     OpenAiNoSources -> "openai-union-no-sources"
+    GoogleThinkingLevel -> "google-thinking-level"
+    GoogleThoughtLimit -> "google-thought-limit"
+    OpenAiThinkingLevel -> "openai-thinking-level"
   }
 }
 
@@ -217,8 +227,10 @@ pub fn is_google(scenario: Scenario) -> Bool {
     | GoogleTool
     | GoogleNullableNull
     | GoogleNullableValue
-    | GoogleWideSchema -> True
-    OpenAiWritten | OpenAiNoSources -> False
+    | GoogleWideSchema
+    | GoogleThinkingLevel
+    | GoogleThoughtLimit -> True
+    OpenAiWritten | OpenAiNoSources | OpenAiThinkingLevel -> False
   }
 }
 
@@ -329,5 +341,44 @@ pub fn wide_call(key: String) -> llm_wire.Prepared(Reading) {
     |> llm_wire.with_max_tokens(2048)
     |> llm_wire.with_output("reading", reading_output())
   let assert Ok(prepared) = llm_wire.prepare(google_config(key), request)
+  prepared
+}
+
+/// The smallest OpenAI reasoning model on OpenAI's models page, for the
+/// thinking-level scenario; the union scenarios keep `openai_model`.
+pub const openai_reasoning_model = "gpt-6-luna"
+
+const thinking_prompt = "What is the capital of France? Answer in one word."
+
+const thought_limit_prompt =
+  "Work out 17 multiplied by 23 step by step, then give the result."
+
+/// The thinking scenarios (ADR 0020): a Google level, a Google response the
+/// limit cuts off while thinking (dash-crm's case at a small limit, with no
+/// level set), and an OpenAI reasoning effort.
+pub fn thinking_call(
+  scenario: Scenario,
+  key: String,
+) -> llm_wire.Prepared(String) {
+  let #(config, request) = case scenario {
+    GoogleThinkingLevel -> #(
+      google_config(key),
+      llm_wire.request(gemini_model, [llm_wire.user(thinking_prompt)])
+        |> llm_wire.with_max_tokens(2048)
+        |> llm_wire.with_thinking_level(thinking.Low),
+    )
+    GoogleThoughtLimit -> #(
+      google_config(key),
+      llm_wire.request(gemini_model, [llm_wire.user(thought_limit_prompt)])
+        |> llm_wire.with_max_tokens(64),
+    )
+    OpenAiThinkingLevel -> #(
+      openai_config(key),
+      llm_wire.request(openai_reasoning_model, [llm_wire.user(thinking_prompt)])
+        |> llm_wire.with_thinking_level(thinking.Low),
+    )
+    _ -> panic as "not a thinking scenario"
+  }
+  let assert Ok(prepared) = llm_wire.prepare(config, request)
   prepared
 }

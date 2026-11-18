@@ -104,7 +104,7 @@ fn decode_response(raw: String) -> Result(runtime.Decoded, wire.Error) {
   runtime.Decoded(
     model,
     answers,
-    Some(message.Usage(input, output, input + output)),
+    Some(message.Usage(input, output, input + output, None)),
   )
 }
 

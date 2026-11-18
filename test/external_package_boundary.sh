@@ -228,7 +228,7 @@ pub fn scripts_a_provider_without_a_socket() -> Nil {
 
 pub fn lowers_a_reply_into_a_builtin_wire() -> testing.Reply {
   testing.text("hello")
-  |> testing.with_usage(message.Usage(1, 2, 3))
+  |> testing.with_usage(message.Usage(1, 2, 3, None))
   |> testing.events_for(message.OpenAI, _)
 }
 

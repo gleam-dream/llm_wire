@@ -18,6 +18,7 @@ import llm_wire/internal/limits.{type Limits}
 import llm_wire/internal/tool_def.{type Tool}
 import llm_wire/limit
 import llm_wire/message.{type Message}
+import llm_wire/thinking
 
 /// A provider-bound request whose options, messages and schemas were
 /// admitted locally. The body is encoded once and never re-encoded.
@@ -380,6 +381,43 @@ fn validate_provider_options(
       }
     message.Custom(_) -> Ok(Nil)
   }
+  |> result.try(fn(_) { validate_thinking(provider, request) })
+}
+
+/// Refuses a thinking level the provider has no value for (ADR 0020), and
+/// Anthropic thinking while the last assistant message requested tools: its
+/// thinking blocks would have to travel back with the results, and the
+/// assistant turn does not keep them.
+fn validate_thinking(
+  provider: message.Provider,
+  request: adapter.Request,
+) -> Result(Nil, PrepareError) {
+  let unsupported = fn(problem) {
+    Error(error.InvalidRequest(error.ThinkingUnsupported(problem)))
+  }
+  case provider, request.thinking_level {
+    _, None -> Ok(Nil)
+    message.Google, Some(thinking.Max) ->
+      unsupported(error.LevelUnsupported(thinking.Max))
+    message.Anthropic, Some(thinking.Minimal) ->
+      unsupported(error.LevelUnsupported(thinking.Minimal))
+    message.Anthropic, Some(_) ->
+      case last_assistant_requested_tools(request.messages) {
+        True -> unsupported(error.ThinkingInToolRound)
+        False -> Ok(Nil)
+      }
+    _, Some(_) -> Ok(Nil)
+  }
+}
+
+fn last_assistant_requested_tools(messages: List(message.Message)) -> Bool {
+  list.fold(messages, False, fn(requested, item) {
+    case item {
+      message.Assistant(turn) -> turn.calls != []
+      message.AssistantParts(_) -> False
+      _ -> requested
+    }
+  })
 }
 
 fn in_float_range(value: Float, minimum: Float, maximum: Float) -> Bool {

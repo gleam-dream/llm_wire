@@ -83,6 +83,11 @@ fn record(scenario: Scenario) -> Result(Nil, Nil) {
     live_scenarios.GoogleWideSchema ->
       llm_wire.run(recorded.client, live_scenarios.wide_call(key))
       |> result.map(summary)
+    live_scenarios.GoogleThinkingLevel
+    | live_scenarios.GoogleThoughtLimit
+    | live_scenarios.OpenAiThinkingLevel ->
+      llm_wire.run(recorded.client, live_scenarios.thinking_call(scenario, key))
+      |> result.map(summary)
     _ ->
       llm_wire.run(
         recorded.client,
@@ -139,9 +144,17 @@ fn summary(outcome: llm_wire.Outcome(o)) -> String {
       <> string.inspect(
         list.map(turn.calls, fn(c) { #(c.name, c.arguments_json) }),
       )
-    llm_wire.OutputLimited(..) -> "OutputLimited"
+    llm_wire.OutputLimited(partial_text:, ..) ->
+      "OutputLimited " <> string.inspect(partial_text)
     llm_wire.Refused(reason:, ..) -> "Refused " <> reason
   }
+  <> " usage "
+  <> string.inspect(case outcome {
+    llm_wire.Answer(usage:, ..)
+    | llm_wire.NeedsTools(usage:, ..)
+    | llm_wire.OutputLimited(usage:, ..)
+    | llm_wire.Refused(usage:, ..) -> usage
+  })
 }
 
 /// A provider's error body explains a rejected schema. An authentication
