@@ -21,13 +21,18 @@
 ////
 //// `encode` receives the admitted `Request` (read its fields by label:
 //// `model`, `messages`, `max_tokens`, `temperature`, `top_p`,
-//// `stop_sequences`, `prompt_cache`), the tools after schema projection
+//// `stop_sequences`, `prompt_cache`, `thinking_level`), the tools after
+//// schema projection
 //// (`name`, `description`, `schema`) and the structured-output format
 //// (`name`, `schema`), and returns `encoded(path, body)`, where `path` is
 //// appended to the endpoint. A reducer turns each server-sent `Event`
 //// (`event`, `data`, `id`, `retry`) into `message.Progress` values, and
 //// ends with a `Terminal` built by `text`, `tool_calls`, `output_limited`,
 //// `refused` or `failed`.
+////
+//// An adapter refuses from `encode` a control it cannot carry, such as a
+//// `thinking_level`, rather than dropping it:
+//// `Error(error.InvalidRequest(error.ThinkingUnsupported(..)))`.
 ////
 //// Credentials belong in the `with_headers` closure, so they never print
 //// with the adapter or a configuration. `step` and `terminal` drive a

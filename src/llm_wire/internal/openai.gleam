@@ -847,7 +847,24 @@ fn decode_response_completed() -> decode.Decoder(ResponseCompleted) {
         use in_tok <- decode.field("input_tokens", decode.int)
         use out_tok <- decode.field("output_tokens", decode.int)
         use tot_tok <- decode.field("total_tokens", decode.int)
-        decode.success(message.Usage(in_tok, out_tok, tot_tok))
+        // Reasoning tokens are part of `output_tokens` (ADR 0020).
+        // The details member may be absent or null.
+        use reasoning <- decode.optional_field(
+          "output_tokens_details",
+          None,
+          decode.optional(decode.optional_field(
+            "reasoning_tokens",
+            None,
+            decode.optional(decode.int),
+            decode.success,
+          )),
+        )
+        decode.success(message.Usage(
+          in_tok,
+          out_tok,
+          tot_tok,
+          option.flatten(reasoning),
+        ))
       }),
       fn(u) { decode.success(u) },
     ),

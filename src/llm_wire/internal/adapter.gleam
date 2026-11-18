@@ -9,6 +9,7 @@ import llm_wire/error.{type Error, type PrepareError}
 import llm_wire/internal/limits.{type Limits}
 import llm_wire/internal/sse
 import llm_wire/message.{type Message, type Progress, type ToolCall, type Usage}
+import llm_wire/thinking
 
 /// The admitted request an adapter encodes. Tools and output format are
 /// passed separately, already projected.
@@ -21,6 +22,7 @@ pub type Request {
     top_p: Option(Float),
     stop_sequences: List(String),
     prompt_cache: Option(PromptCache),
+    thinking_level: Option(thinking.Level),
   )
 }
 

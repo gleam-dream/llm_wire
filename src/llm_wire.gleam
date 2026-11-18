@@ -76,6 +76,7 @@ import llm_wire/message.{
   type Usage,
 }
 import llm_wire/telemetry
+import llm_wire/thinking
 import llm_wire/tool.{type Tool, type ToolCallChecks, type ToolCallIssue}
 
 /// A provider and its execution settings, built by `llm_wire/openai`,
@@ -380,6 +381,17 @@ pub fn with_stop_sequences(
   with_generation(
     request,
     generation.with_stop_sequences(call.settings(request), sequences),
+  )
+}
+
+/// Set how much the model may think; see `generation.with_thinking_level`.
+pub fn with_thinking_level(
+  request: Request(o),
+  level: thinking.Level,
+) -> Request(o) {
+  with_generation(
+    request,
+    generation.with_thinking_level(call.settings(request), level),
   )
 }
 

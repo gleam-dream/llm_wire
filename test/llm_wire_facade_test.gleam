@@ -72,7 +72,7 @@ pub fn structured_output_decodes_in_the_same_family_test() {
 pub fn invalid_structured_output_fails_with_raw_text_and_typed_reason_test() {
   let request = hello() |> llm_wire.with_output("invoice", invoice_codec())
   let assert Ok(prepared) = llm_wire.prepare(testing.config(), request)
-  let usage = message.Usage(3, 4, 7)
+  let usage = message.Usage(3, 4, 7, None)
   let assert Error(failure) =
     http_test_helpers.run_reply(
       prepared,
@@ -250,7 +250,7 @@ pub fn events_for_lowers_text_into_every_builtin_wire_test() {
   use #(provider, config) <- list.each(builtin_configs())
   let assert Ok(prepared) = llm_wire.prepare(config, hello())
   let reply =
-    testing.text("Bonjour") |> testing.with_usage(message.Usage(2, 3, 5))
+    testing.text("Bonjour") |> testing.with_usage(message.Usage(2, 3, 5, None))
   let assert Ok(llm_wire.Answer(text: "Bonjour", usage: Some(usage), ..)) =
     http_test_helpers.run_reply(prepared, testing.events_for(provider, reply))
   usage.output_tokens |> should.equal(3)

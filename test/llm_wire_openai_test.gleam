@@ -257,6 +257,7 @@ pub fn openai_text_stream_test() {
       input_tokens: 10,
       output_tokens: 5,
       total_tokens: 15,
+      thought_tokens: None,
     )),
   ])
 
@@ -268,6 +269,7 @@ pub fn openai_text_stream_test() {
         input_tokens: 10,
         output_tokens: 5,
         total_tokens: 15,
+        thought_tokens: None,
       )),
     )),
   )

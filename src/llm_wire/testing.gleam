@@ -590,6 +590,7 @@ pub fn with_usage(reply: Reply, usage: Usage) -> Reply {
         #("input_tokens", json.int(usage.input_tokens)),
         #("output_tokens", json.int(usage.output_tokens)),
         #("total_tokens", json.int(usage.total_tokens)),
+        ..thought_field("thought_tokens", usage)
       ]),
     )
   case reply {
@@ -878,7 +879,21 @@ fn usage_decoder() -> decode.Decoder(Usage) {
   use input <- decode.field("input_tokens", decode.int)
   use output <- decode.field("output_tokens", decode.int)
   use total <- decode.field("total_tokens", decode.int)
-  decode.success(message.Usage(input, output, total))
+  use thought <- decode.optional_field(
+    "thought_tokens",
+    None,
+    decode.optional(decode.int),
+  )
+  decode.success(message.Usage(input, output, total, thought))
+}
+
+/// `name: count` when the usage reports a thought count, for lowering it into
+/// each wire's own field.
+fn thought_field(name: String, usage: Usage) -> List(#(String, json.Json)) {
+  case usage.thought_tokens {
+    Some(count) -> [#(name, json.int(count))]
+    None -> []
+  }
 }
 
 fn error_decoder() -> decode.Decoder(#(String, String)) {
@@ -1131,10 +1146,15 @@ fn message_item(
 }
 
 fn usage_json(usage: Usage) -> json.Json {
+  let details = case thought_field("reasoning_tokens", usage) {
+    [] -> []
+    fields -> [#("output_tokens_details", json.object(fields))]
+  }
   json.object([
     #("input_tokens", json.int(usage.input_tokens)),
     #("output_tokens", json.int(usage.output_tokens)),
     #("total_tokens", json.int(usage.total_tokens)),
+    ..details
   ])
 }
 
@@ -1142,6 +1162,14 @@ fn anthropic_events(script: Script) -> List(String) {
   let #(input, output) = case script.usage {
     Some(usage) -> #(usage.input_tokens, usage.output_tokens)
     None -> #(0, 0)
+  }
+  let thinking = case script.usage {
+    Some(usage) ->
+      case thought_field("thinking_tokens", usage) {
+        [] -> []
+        fields -> [#("output_tokens_details", json.object(fields))]
+      }
+    None -> []
   }
   let text = case script.stop {
     "refusal" -> unsupported(message.Anthropic, "refusal")
@@ -1230,7 +1258,10 @@ fn anthropic_events(script: Script) -> List(String) {
         json.object([
           #("type", json.string("message_delta")),
           #("delta", json.object([#("stop_reason", json.string(stop_reason))])),
-          #("usage", json.object([#("output_tokens", json.int(output))])),
+          #(
+            "usage",
+            json.object([#("output_tokens", json.int(output)), ..thinking]),
+          ),
         ]),
       ),
       event(
@@ -1280,8 +1311,16 @@ fn google_events(script: Script) -> List(String) {
       <> json.to_string(
         json.object([
           #("promptTokenCount", json.int(usage.input_tokens)),
-          #("candidatesTokenCount", json.int(usage.output_tokens)),
+          // Google counts thoughts apart from candidates; output holds both.
+          #(
+            "candidatesTokenCount",
+            json.int(int.max(
+              0,
+              usage.output_tokens - option.unwrap(usage.thought_tokens, 0),
+            )),
+          ),
           #("totalTokenCount", json.int(usage.total_tokens)),
+          ..thought_field("thoughtsTokenCount", usage)
         ]),
       )
     None -> ""

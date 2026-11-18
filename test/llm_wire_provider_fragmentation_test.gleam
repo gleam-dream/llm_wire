@@ -73,7 +73,7 @@ fn anthropic_interaction_splits() {
     |> should.equal(
       Some(stream_types.StreamFinished(
         stream_types.CompletedText("oé🦊"),
-        Some(message.Usage(1, 1, 2)),
+        Some(message.Usage(1, 1, 2, None)),
       )),
     )
   })

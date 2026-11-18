@@ -253,3 +253,56 @@ pub fn every_live_cassette_ends_finished_test() {
     #(path, endings) |> should.equal(#(path, ["finished"]))
   })
 }
+
+fn thinking_run(scenario: Scenario) {
+  let call = live_scenarios.thinking_call(scenario, key)
+  use client <- with_tape(scenario)
+  #(llm_wire.request_json(call), llm_wire.run(client, call))
+}
+
+pub fn gemini_takes_a_thinking_level_test() {
+  let #(body, outcome) = thinking_run(live_scenarios.GoogleThinkingLevel)
+  string.contains(body, "\"thinkingConfig\":{\"thinkingLevel\":\"LOW\"}")
+  |> should.be_true
+  // At Low the model reported no thinking: no thought count, and output is
+  // the visible token alone.
+  let assert Ok(llm_wire.Answer(
+    output: "Paris",
+    usage: Some(message.Usage(
+      input_tokens: 13,
+      output_tokens: 1,
+      total_tokens: 14,
+      thought_tokens: None,
+    )),
+    ..,
+  )) = outcome
+}
+
+/// dash-crm's case at a small limit: Gemini spent the whole limit thinking,
+/// left out its candidate count, and the result still says how.
+pub fn gemini_cut_off_while_thinking_shows_how_the_limit_was_spent_test() {
+  let #(_, outcome) = thinking_run(live_scenarios.GoogleThoughtLimit)
+  outcome
+  |> should.equal(
+    Ok(llm_wire.OutputLimited(
+      partial_text: "",
+      partial_calls: [],
+      usage: Some(message.Usage(
+        input_tokens: 20,
+        output_tokens: 60,
+        total_tokens: 80,
+        thought_tokens: Some(60),
+      )),
+    )),
+  )
+}
+
+pub fn openai_takes_a_reasoning_effort_test() {
+  let #(body, outcome) = thinking_run(live_scenarios.OpenAiThinkingLevel)
+  string.contains(body, "\"reasoning\":{\"effort\":\"low\"}") |> should.be_true
+  let assert Ok(llm_wire.Answer(
+    output: "Paris",
+    usage: Some(message.Usage(thought_tokens: Some(_), ..)),
+    ..,
+  )) = outcome
+}

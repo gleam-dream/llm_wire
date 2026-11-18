@@ -4,6 +4,7 @@
 //// Applying llm_wire.with_generation replaces every generation control.
 
 import llm_wire/internal/generation as internal
+import llm_wire/thinking
 
 /// Generation controls only; no conversation, tool, credential or output state.
 pub type Settings =
@@ -54,4 +55,15 @@ pub fn with_google_cached_content(
   name: String,
 ) -> Settings {
   internal.with_google_cached_content(settings, name)
+}
+
+/// Set how much the model may think. Each built-in provider writes the level
+/// in its own form; `llm_wire.prepare` refuses a level the provider has no
+/// value for. The output limit counts thought and visible tokens together,
+/// so a level reserves no visible share. See `llm_wire/thinking`.
+pub fn with_thinking_level(
+  settings: Settings,
+  level: thinking.Level,
+) -> Settings {
+  internal.with_thinking_level(settings, level)
 }

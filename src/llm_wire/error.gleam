@@ -35,6 +35,7 @@ import json/blueprint/codec
 import json/blueprint/contract
 import json/blueprint/value
 import llm_wire/limit.{type Limit}
+import llm_wire/thinking
 
 /// Why an executed call failed.
 pub type Error {
@@ -179,6 +180,19 @@ pub type RequestProblem {
   /// An assistant turn's provider data is missing, malformed or disagrees
   /// with its text and calls. `reason` is diagnostic.
   InvalidProviderData(reason: String)
+  /// The request's thinking level cannot be sent to this provider.
+  ThinkingUnsupported(problem: ThinkingProblem)
+}
+
+/// Why a thinking level cannot be sent.
+pub type ThinkingProblem {
+  /// The provider has no value for this level: Google has no `Max`,
+  /// Anthropic no `Minimal`.
+  LevelUnsupported(level: thinking.Level)
+  /// Anthropic needs the thinking blocks of a tool-requesting turn sent back
+  /// with its results, which LLM Wire does not carry yet; a level is refused
+  /// while the conversation's last assistant message contains a tool call.
+  ThinkingInToolRound
 }
 
 /// Where an unsupported schema was found.
@@ -364,5 +378,9 @@ fn describe_problem(problem: RequestProblem) -> String {
     InvalidToolName(name) -> "invalid tool name \"" <> name <> "\""
     TurnFromOtherProvider -> "an assistant turn belongs to another provider"
     InvalidProviderData(reason) -> "invalid provider data: " <> reason
+    ThinkingUnsupported(LevelUnsupported(level)) ->
+      "thinking level " <> thinking.name(level) <> " is not supported"
+    ThinkingUnsupported(ThinkingInToolRound) ->
+      "a thinking level cannot continue a tool round on this provider"
   }
 }

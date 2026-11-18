@@ -96,7 +96,7 @@ pub fn openai_reply_over_20_kb_succeeds_with_default_limits_test() {
     Ok(llm_wire.Answer(
       output: expected,
       text: expected,
-      usage: Some(message.Usage(37, 5012, 5049)),
+      usage: Some(message.Usage(37, 5012, 5049, Some(0))),
     )),
   )
 }

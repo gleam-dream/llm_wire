@@ -8,7 +8,7 @@ import gleam/erlang/process
 import gleam/http
 import gleam/int
 import gleam/list
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import gleam/string
 import gleam/time/duration
 import gleeunit/should
@@ -260,7 +260,7 @@ pub fn configured_refusal_keeps_usage_test() {
     llm_wire.prepare(local_config(server.port), request())
   llm_wire.run(owned_http, prepared)
   |> should.equal(
-    Ok(llm_wire.Refused("declined", Some(message.Usage(3, 2, 5)))),
+    Ok(llm_wire.Refused("declined", Some(message.Usage(3, 2, 5, None)))),
   )
   fake_server.stop(server)
 }

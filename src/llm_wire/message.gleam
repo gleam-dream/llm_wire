@@ -93,9 +93,17 @@ pub type Message {
   ToolResult(call_id: String, content: String)
 }
 
-/// Token counts a provider reported.
+/// Token counts a provider reported. `output_tokens` counts every generated
+/// token, thoughts included, on every built-in provider: it is the quantity
+/// the output limit bounds. `thought_tokens` is the part the provider
+/// reports as the model's thinking, or `None` when it reports none.
 pub type Usage {
-  Usage(input_tokens: Int, output_tokens: Int, total_tokens: Int)
+  Usage(
+    input_tokens: Int,
+    output_tokens: Int,
+    total_tokens: Int,
+    thought_tokens: Option(Int),
+  )
 }
 
 /// One piece of a streamed response.

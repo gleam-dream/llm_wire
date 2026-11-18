@@ -58,7 +58,7 @@ pub fn google_text_streaming_and_stop_completion_test() {
   let assert Ok(#(reducer, progress2)) = google.step(reducer, event(chunk2))
   progress2
   |> should.equal([
-    message.UsageUpdate(message.Usage(5, 3, 8)),
+    message.UsageUpdate(message.Usage(5, 3, 8, None)),
     message.TextDelta(block_id: "0", text: "world!"),
   ])
 
@@ -74,7 +74,7 @@ pub fn google_text_streaming_and_stop_completion_test() {
   |> should.equal(
     Some(stream_types.StreamFinished(
       outcome: stream_types.CompletedText("Hello world!"),
-      usage: Some(message.Usage(5, 3, 8)),
+      usage: Some(message.Usage(5, 3, 8, None)),
     )),
   )
 }
@@ -435,7 +435,7 @@ pub fn google_loopback_integration_text_stream_test() {
     llm_wire.run(owned_http, prepared)
 
   text |> should.equal("Hello Google!")
-  usage |> should.equal(Some(message.Usage(4, 2, 6)))
+  usage |> should.equal(Some(message.Usage(4, 2, 6, None)))
 
   fake_server.stop(server)
 }

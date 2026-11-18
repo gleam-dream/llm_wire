@@ -1,0 +1,48 @@
+{
+  "http_gun": 3,
+  "exchanges": [
+    {
+      "request": {
+        "method": "POST",
+        "scheme": "https",
+        "host": "generativelanguage.googleapis.com",
+        "port": 443,
+        "path": "/v1beta/models/gemini-3.8-flash:streamGenerateContent",
+        "query": "alt=sse",
+        "headers": [
+          ["content-type", "application/json"],
+          ["accept", "text/event-stream"],
+          ["accept-encoding", "identity"]
+        ],
+        "body": {"text": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"Work out 17 multiplied by 23 step by step, then give the result.\"}]}],\"generationConfig\":{\"maxOutputTokens\":64}}"}
+      },
+      "reply": {
+        "kind": "response",
+        "status": 200,
+        "headers": [
+          ["content-type", "text/event-stream"],
+          ["content-disposition", "attachment"],
+          ["vary", "Origin"],
+          ["vary", "X-Origin"],
+          ["vary", "Referer"],
+          ["transfer-encoding", "chunked"],
+          ["date", "Wed, 18 Nov 2026 16:44:59 GMT"],
+          ["server", "scaffolding on HTTPServer2"],
+          ["x-xss-protection", "0"],
+          ["x-frame-options", "SAMEORIGIN"],
+          ["x-content-type-options", "nosniff"],
+          ["server-timing", "gfet4t7; dur=1915"],
+          ["alt-svc", "h3=\":443\"; ma=2592000,h3-29=\":443\"; ma=2592000"]
+        ],
+        "chunks": [
+          {"lines": [
+            "data: {\"candidates\": [{\"content\": {\"parts\": [{\"text\": \"\",\"thoughtSignature\": \"EpMDCpADAWkUfRMWkTVr36zAc512cr7IJ2kp2l6r889a7lhzOQjgHM0Z8ACuWujncVM8UKIq8iSsqjMgkqb5QQEYxs9qBfrxXqGxB4cGGs/5ju1sIjcSMrwjuod/KOkg9dcHDnygrhhvo1wA0mKbFMv2YEn7i+1U9XKUXQUvMjpZ6JRCtFIuDppbcAybPOw/Ihcdes+SsG8JBRodJ8Pwaw9leMKg+F8p68nOU/82nE7+3AbxBjaIYhsyxJLFaMDr85OddP8cWTXuZtNTHgMtnqtKqsTd24H17PtZBfifGXbzk3Ej5chEKCZYdXpf5+oAcPVvXLqbI0q6r8xnnyjq/oNpMd7mPDSecRUoQng/QCejWHrPXxbwBYyNcW6XGRNSaTYtxGlDcU7Llla6O7STVo5kudrBksXSc4V2YZw99e/RfimrVcbkPOgGloiCLzqpj5PiBUkUVQ+ktlLDrN0L3dk5xH0UIgIeaJMhUuv9citsNZDk5mV+JmZ4YrJ5BYuRsZniXbQxaFa/QubDgkYRsZ751rC1wg==\"}],\"role\": \"model\"},\"finishReason\": \"MAX_TOKENS\",\"index\": 0}],\"usageMetadata\": {\"promptTokenCount\": 20,\"totalTokenCount\": 80,\"promptTokensDetails\": [{\"modality\": \"TEXT\",\"tokenCount\": 20}],\"thoughtsTokenCount\": 60,\"serviceTier\": \"standard\"},\"modelVersion\": \"gemini-3.8-flash\",\"responseId\": \"Cdb9atbvOpilytMPqIvfqAw\"}\r",
+            "\r",
+            ""
+          ]}
+        ],
+        "ending": {"kind": "finished", "trailers": []}
+      }
+    }
+  ]
+}

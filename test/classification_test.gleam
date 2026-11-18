@@ -73,7 +73,7 @@ pub fn classification_cassette_round_trip_and_correlated_telemetry_test() {
   answer.answer.yes |> should.equal(0.9)
   answer.requested_model |> should.equal("jev-latest")
   answer.resolved_model |> should.equal("fixture")
-  option.unwrap(answer.usage, message.Usage(0, 0, 0)).total_tokens
+  option.unwrap(answer.usage, message.Usage(0, 0, 0, None)).total_tokens
   |> should.equal(20)
   process.receive(seen, 1000) |> should.equal(Ok(telemetry.Started))
   process.receive(seen, 1000) |> should.equal(Ok(telemetry.RequestSent))
@@ -174,7 +174,7 @@ pub fn forged_native_receipts_cannot_be_encoded_test() {
   let codec = classify.receipt_codec(classify.typesafe(), questions)
   codec.encode(
     codec,
-    runtime.Outcome(..receipt, usage: Some(message.Usage(0, 0, 0))),
+    runtime.Outcome(..receipt, usage: Some(message.Usage(0, 0, 0, None))),
   )
   |> should.be_error
   codec.encode(codec, runtime.Outcome(..receipt, resolved_model: "other"))
@@ -532,7 +532,7 @@ fn check_custom_wire_json_admission(body: String, accepted: Bool) {
 }
 
 pub fn custom_wire_unknown_usage_stays_absent_and_negative_usage_is_rejected_test() {
-  list.each([None, Some(message.Usage(-1, 1, 0))], fn(usage) {
+  list.each([None, Some(message.Usage(-1, 1, 0, None))], fn(usage) {
     let wire =
       classify.wire(
         message.Custom("extension"),

@@ -25,6 +25,9 @@
     pending-entry(title: "Specify advanced interaction lifecycles", kind: "ruling", since: "2026-10-06", adr: [#adr(6)])[
       Richer audio and video, embeddings, realtime and WebSockets, provider batch and background work, interrupted-stream resumption and optional remote cancellation acknowledgement need distinct protocol, state, ownership and compatibility contracts. They are not generation guarantees.
     ],
+    pending-entry(title: "Carry Anthropic thinking through tool rounds", kind: "ruling", since: "2026-11-18", adr: [#adr(20)])[
+      Anthropic requires a tool-requesting turn's thinking blocks and signatures to be sent back with its tool results. The assistant turn does not keep them, so preparation refuses a thinking level on Anthropic while a tool round continues. Settle how the turn's replay data carries the blocks.
+    ],
     pending-entry(title: "Check carried-over usage claims against code", kind: "verify", since: "2026-10-17", adr: [#adr(17)])[
       The defaults and timer composition under Effect timing and deadlines, the extension rules under Provider interpretation and the retry guidance under Failure and retry evidence came from retired guides. The compiled usage examples exercise the defaults, conversation persistence, failure kinds, offline testing, observation and client ownership. The remaining statements in those sections are not yet checked against code.
     ],
@@ -34,7 +37,7 @@
     #subsection(title: "Values and refinements")[
       #entity(id: "generation-request", title: "Generation request", description: [The caller's explicit request and desired native output.], kind: "value-object", owner: "caller", lifecycle: "immutable", domain: "generation")[
         #attribute(name: "Input", type: "model string and ordered List(Message)", provenance: "authored")[Messages hold system/user text, user content parts, assistant turns, assistant content parts or tool results. Content parts are text, remote image URL or inline MIME/base64 image.]
-        #attribute(name: "Options", type: "optional maximum tokens, temperature, top-p and cache reference; stop list", provenance: "authored")[Maximum tokens is positive; temperature is within 0 through 2; top-p within 0 through 1. Model/output name is trimmed and nonempty. Cache references are nonempty and provider-specific.]
+        #attribute(name: "Options", type: "optional maximum tokens, temperature, top-p, thinking level and cache reference; stop list", provenance: "authored")[Maximum tokens is positive; temperature is within 0 through 2; top-p within 0 through 1. Model/output name is trimmed and nonempty. Cache references are nonempty and provider-specific.]
         #attribute(name: "Output", type: "String or Blueprint Codec(o)", provenance: "authored")[Plain text returns String. with_output changes only the output type and retains the remaining request settings.]
         #relates(cardinality: "1 : 0..n")[A request declares zero or more tools and contains an ordered caller-owned conversation.]
       ]
@@ -46,16 +49,39 @@
       #points([Public constructor values are opaque where arbitrary construction could bypass admission. Returned records are read by label; extensible sums use a fallback arm. Generation's Config, Request(o), Prepared(o), Stream(o), tool declaration and Adapter keep private machinery out of caller type parameters. #adr(3) records this facade.])
     ]
     #subsection(title: "Configuration and preparation")[
-      #answers(title: "Reusable generation settings", responsibility: [Retain generation controls independently of a conversation.], interface: [generation.Settings contains optional maximum output tokens, temperature, top-p, stop sequences and one provider cache reference. generation.default leaves optional controls absent and stop sequences empty. with_generation replaces all controls; existing request setters update the same canonical settings.], interactions: [Request retains model, messages, settings, tools and output independently. Preparation derives the existing provider.Request field-label view without changing the custom adapter contract.], invariants: [Settings contain no model identity, messages, tools, credentials, output codec or runtime state. Changing output type or appending conversation preserves settings. Anthropic's default output bound remains an encoding choice.], failure: [Construction does not validate provider compatibility. Existing prepare checks reject invalid controls before encoding or HTTP execution.])
+      #answers(title: "Reusable generation settings", responsibility: [Retain generation controls independently of a conversation.], interface: [generation.Settings contains optional maximum output tokens, temperature, top-p, thinking level, stop sequences and one provider cache reference. generation.default leaves optional controls absent and stop sequences empty. with_generation replaces all controls; existing request setters update the same canonical settings.], interactions: [Request retains model, messages, settings, tools and output independently. Preparation derives the provider.Request field-label view; a custom adapter reads each control by label, the thinking level included, and refuses from its encoder what it cannot carry.], invariants: [Settings contain no model identity, messages, tools, credentials, output codec or runtime state. Changing output type or appending conversation preserves settings. Anthropic's default output bound remains an encoding choice.], failure: [Construction does not validate provider compatibility. Existing prepare checks reject invalid controls before encoding or HTTP execution.])
       #behavior(title: "Generation settings have replacement semantics", area: "Preparation", level: "interface")[#given[A request has generation controls.] #when[The caller applies a Settings value.] #then[All generation controls equal that value.] #then[Model, conversation, tools and output remain unchanged.]]
       #points([A scalar request setter after with_generation overrides only its named control. Applying generation.default later clears all explicit controls. #adr(11)])
+      #answers(title: "Thinking level", responsibility: [Carry the caller's bound on model thinking to the provider in that provider's own form.], interface: [generation.with_thinking_level sets one thinking.Level: Minimal, Low, Medium, High, ExtraHigh or Max, each a value at least two built-in providers share. Usage reports thought tokens beside output tokens.], interactions: [OpenAI writes the level as its reasoning effort, Google as its thinking level and Anthropic as adaptive thinking with an effort that shares one output configuration object with any structured-output format; #adr(20) tables each level's wire value. A custom adapter reads provider.Request.thinking_level.], invariants: [A level is never dropped: a built-in adapter writes it or preparation refuses it, and a model that rejects the value it receives answers with its own status. The library keeps no model table. On every built-in provider the output limit bounds thought and visible tokens together, so a caller can guarantee only that total; a level steers how much of it thinking takes and reserves no visible share. Usage then shows how the limit was spent.], failure: [InvalidRequest(ThinkingUnsupported) names the problem: Max for Google, Minimal for Anthropic, or any level for Anthropic while the conversation's last assistant message is an assistant turn with a tool call, provider or application written. A model's rejection is a Status failure.])
+      #points(
+        [Anthropic needs the thinking blocks and signatures of a tool-requesting turn sent back with its results, which the library does not carry; hence the tool-round refusal above. Preparation cannot see thinking a model does by default without a level; that conversation reaches the provider unchanged.],
+        [Anthropic's default output bound, used when the caller sets no maximum, stays the encoding's choice and is small; a level that thinks within it can leave little visible output, so a caller setting a level on Anthropic sets a maximum. Anthropic's own rules on sampling controls while thinking are its to enforce and answer with its status.],
+        [A token budget is deferred until a caller is on a model that takes only a budget. It would arrive as its own setter and request field, so adding it breaks nothing. #adr(20)],
+      )
+      #behavior(title: "A thinking level reaches the provider in its own form", area: "Preparation", level: "interface")[
+        #given[A built-in provider has a value for the request's thinking level.]
+        #when[The caller prepares a request with that level.]
+        #then[The encoded body carries that value in the provider's thinking field.]
+        #then[A request without a level is encoded as before, with no thinking field.]
+      ]
+      #behavior(title: "A level the provider cannot carry is refused", area: "Preparation", level: "interface")[
+        #given[The selected provider has no value for the level, or Anthropic thinking would continue a tool round.]
+        #when[Preparation checks the level against the provider and the conversation.]
+        #then[Preparation fails with ThinkingUnsupported naming the problem.]
+        #then[Nothing reaches the network.]
+      ]
+      #behavior(title: "A model's rejection of the level stays visible", area: "Preparation", level: "interface")[
+        #given[The provider has a value for the level and the chosen model rejects it.]
+        #when[The prepared request executes.]
+        #then[The call fails with the provider's status.]
+      ]
       #answers(title: "Generation preparation", responsibility: [Validate and encode one request without networking.], interface: [prepare(Config, Request(o)) returns Prepared(o) or PrepareError; request_json reads the encoded body without credentials.], interactions: [Uses adapter validation, endpoint admission, tools, schema projection and the caller's output codec.], invariants: [Selected provider, admitted contracts and native decoder remain together. Invalid local values never reach HTTP.], failure: [InvalidSetting, InvalidRequest, UnsupportedSchema, ToolResultMismatch or RequestTooLarge name the refused boundary. Diagnostic strings are not classification keys.])
       #points(
         [Each built-in provider is selected by its constructor and configuration function (OpenAI, Anthropic, Google), and an endpoint override selects a compatible server.],
         [Built-in settings hold their keys behind reveal closures. OpenAI adds organization/project; Anthropic adds API version; Google adds API version. Common settings own limits, three time bounds and tool-call checking. All bounds must be positive unless an explicit timeout Infinity is selected.],
         [Preparation validates timeouts, adapter settings, positive limits, trimmed nonempty model, historical turns, unique tool names and projected tool/output schemas. It then validates endpoint and common/provider options, calls the encoder, reveals and validates provider headers, validates the joined path and bounds the encoded body.],
         [Generation endpoint admission requires HTTP(S), a host, an admitted port and a path without userinfo, query, fragment or controls. The joined endpoint and encoded path must start with `/` and cannot inject a new authority, controls, spaces, a fragment or a second query. Before the query it refuses `\`, `;`, empty segments other than a trailing one, `.` and `..` segments, and percent-encoding that is malformed or decodes to `/`, `\`, `.`, `%`, a control byte or a non-ASCII byte. The Google adapter places the model in the request path, so its model must be one model-id segment of ASCII letters, digits, `.`, `-`, `_` and `:` other than `.` or `..`; any other model is InvalidSetting(Model). The OpenAI and Anthropic adapters send the model only in the body. Header names/values and reserved common headers are checked; credentials remain inspection-safe but the application must govern logging of prompt bodies.],
-        [OpenAI refuses stop sequences; Anthropic and Google admit finite lists, with Google's maximum five. OpenAI admits remote image URLs; Anthropic and Google require inline image content. Cache references are OpenAI prompt_cache_key or Google cachedContent; other providers reject them.],
+        [OpenAI refuses stop sequences. Thinking levels follow the Thinking level unit above. Anthropic and Google admit finite stop lists, with Google's maximum five. OpenAI admits remote image URLs; Anthropic and Google require inline image content. Cache references are OpenAI prompt_cache_key or Google cachedContent; other providers reject them.],
         [Custom projection/encoding/header callbacks run synchronously during preparation. Their declared purity excludes networking and uncontrolled effects; the type system cannot enforce that promise. Generation header values are captured during prepare, so changing credentials requires preparing again.],
       )
       #behavior(title: "Invalid local input fails before networking", area: "Preparation", level: "interface")[
@@ -124,7 +150,7 @@
         [Progress alternatives are TextDelta, RefusalDelta, ReasoningDelta, ToolArgumentsDelta, UsageUpdate and ProviderExtension. Public extension values retain a bounded event name, not an arbitrary raw payload. A custom adapter returns text, tool_calls, output_limited, refused or failed terminal values.],
         [Built-in reducers track provider routing keys, ordered blocks, completion flags, usage and observed evidence. Deltas after closure, contradictory routing, duplicate starts/ids, malformed arguments or incomplete normal terminal calls fail. Multiple tool calls remain in declaration order despite interleaved completion.],
         [Outcome(o) separates Answer(output, text, usage), NeedsTools(turn, issues, usage), OutputLimited(partial_text, partial_calls, usage), and Refused(reason, usage). OutputLimited data is incomplete evidence and must not enter normal tool dispatch. ContentFiltered is a failure, distinct from a model's own refusal.],
-        [Usage is optional. Anthropic cumulative output updates replace the prior total rather than being summed; Google/OpenAI report their own final or updated counts. No provider usage parity is claimed for detailed cache/reasoning billing.],
+        [Usage is optional. Output tokens count every generated token, thoughts included, on every built-in provider; thought tokens hold the provider's thought count where it reports one and are otherwise None. Google's output is its candidate count plus its thought count, a count Google leaves out reading as zero. Each usage report replaces the previous one: Anthropic cumulative output updates replace the prior total rather than being summed, and Google/OpenAI report their own final or updated counts. No provider usage parity is claimed for cache billing. #adr(20)],
       )
       #state-type(id: "block-state", title: "Provider block state", variants: ("absent", "open", "complete", "invalid"))
       #entity(id: "provider-block", title: "Provider block", description: [A routed text or argument buffer in one reducer.], kind: "entity", owner: "provider reducer", lifecycle: "stateful", domain: "generation")[
@@ -137,7 +163,7 @@
       #md-table(3, (
         [*Provider*], [*Routing and encoding*], [*Terminal and exceptional meaning*],
         [OpenAI Responses], [output_index and item id route text/reasoning/function arguments; application correlation uses call_id; input/output contracts use Responses forms], [completed/incomplete/failed and in-band error are distinct; max_output_tokens is output-limited; content_filter is ContentFiltered; refusal content is Refused],
-        [Anthropic Messages], [content block index routes text/tool_use; tool_use.id is application id; result is user tool_result; system text is separate], [message_stop requires completed blocks; max_tokens is output-limited; refusal stop is ContentFiltered; server_tool_use is tracked separately from application calls],
+        [Anthropic Messages], [content block index routes text/thinking/tool_use; thinking is reasoning progress and never answer text, signatures and redacted thinking are accepted and not kept; tool_use.id is application id; result is user tool_result; system text is separate], [message_stop requires completed blocks; max_tokens is output-limited; refusal stop is ContentFiltered; server_tool_use is tracked separately from application calls],
         [Google GenerateContent], [model path streamGenerateContent with SSE; functionCall ids are retained or locally synthesized; model/user parts carry signed replay content], [STOP completes; MAX_TOKENS is partial; promptFeedback and safety finish reasons become ContentFiltered; provider errors and unknown stop reasons fail explicitly],
       ))
       #points(
@@ -145,6 +171,23 @@
         [Provider-hosted actions can already have effects. Anthropic server-tool observation and ambiguous tool activity strengthen internal uncertainty; these do not authorize application dispatch. A public structured provider-hosted outcome remains an explicit pending contract.],
         [Generation wire JSON uses standard Gleam JSON; duplicate-member rejection is not universally promised for provider envelopes. Tool/output schema values use Blueprint so exact schema numbers do not pass through a Float bridge. #adr(4) and #adr(5) distinguish profile support from measured provider evidence.],
       )
+    ]
+    #behavior(title: "Usage separates thought tokens", area: "Provider reduction", level: "interface")[
+      #given[A provider reports usage for a response.]
+      #when[The reducer accepts the usage, as progress or with the outcome.]
+      #then[Output tokens count every generated token, thoughts included.]
+      #then[Thought tokens hold the provider's thought count, or None when the provider reports none.]
+    ]
+    #behavior(title: "An output-limited result shows how the limit was spent", area: "Provider reduction", level: "interface")[
+      #given[The output limit ends a response that thought, even one with no visible output, and the provider reported usage.]
+      #when[The caller receives OutputLimited.]
+      #then[Its usage shows the tokens generated against the limit and, where the provider reports a thought count, how many of them were thought.]
+    ]
+    #behavior(title: "Anthropic thinking is read as reasoning", area: "Provider reduction", level: "interface")[
+      #given[An Anthropic response contains thinking or redacted thinking blocks.]
+      #when[The reducer reads them.]
+      #then[Thinking text arrives as reasoning progress and is not part of the answer text.]
+      #then[The response ends with the outcome its other blocks and stop reason decide.]
     ]
     #behavior(title: "A protocol failure ends the owned stream", area: "Provider reduction", level: "interface")[
       #given[A provider sends malformed or contradictory events before the stream ends.]

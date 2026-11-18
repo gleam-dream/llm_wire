@@ -16,6 +16,7 @@ import llm_wire/internal/schema
 import llm_wire/internal/sse
 import llm_wire/internal/stream_types
 import llm_wire/message
+import llm_wire/thinking
 
 fn encode_openai_request(
   request: adapter.Request,
@@ -97,7 +98,7 @@ fn encode_anthropic_request(
       #(field.0, json.to_string(field.1))
     })
   let format_fields =
-    list.map(anthropic_output_format(structured_format), fn(field) {
+    list.map(anthropic_output_config(structured_format, request), fn(field) {
       #(field.0, json.to_string(field.1))
     })
   Ok(
@@ -596,25 +597,31 @@ fn openai_output_format(
   }
 }
 
-fn anthropic_output_format(
+/// Anthropic's one `output_config` object: the structured-output format and
+/// the thinking effort share it.
+fn anthropic_output_config(
   structured_format: Option(adapter.OutputFormat),
+  request: adapter.Request,
 ) -> List(#(String, json.Json)) {
-  case structured_format {
+  let format = case structured_format {
     None -> []
     Some(adapter.OutputFormat(_, schema_json)) -> [
       #(
-        "output_config",
+        "format",
         json.object([
-          #(
-            "format",
-            json.object([
-              #("type", json.string("json_schema")),
-              #("schema", schema_json),
-            ]),
-          ),
+          #("type", json.string("json_schema")),
+          #("schema", schema_json),
         ]),
       ),
     ]
+  }
+  let effort = case request.thinking_level {
+    Some(level) -> [#("effort", json.string(thinking.name(level)))]
+    None -> []
+  }
+  case list.append(format, effort) {
+    [] -> []
+    fields -> [#("output_config", json.object(fields))]
   }
 }
 
@@ -660,9 +667,37 @@ fn request_option_fields(
     ]
     _, _ -> []
   }
+  // ADR 0020 tables each level's value; preparation has refused the levels
+  // a provider has no value for. Anthropic's effort joins `output_config`.
+  let thinking_fields = case request.thinking_level, provider {
+    Some(level), message.OpenAI -> [
+      #(
+        "reasoning",
+        json.object([#("effort", json.string(thinking.name(level)))]),
+      ),
+    ]
+    Some(level), message.Google -> [
+      #(
+        "thinkingConfig",
+        json.object([
+          #(
+            "thinkingLevel",
+            json.string(string.uppercase(thinking.name(level))),
+          ),
+        ]),
+      ),
+    ]
+    Some(_), message.Anthropic -> [
+      #("thinking", json.object([#("type", json.string("adaptive"))])),
+    ]
+    _, _ -> []
+  }
   list.append(
     max_tokens,
-    list.append(temperature, list.append(top_p, list.append(stop, cache))),
+    list.append(
+      temperature,
+      list.append(top_p, list.append(stop, list.append(cache, thinking_fields))),
+    ),
   )
 }
 

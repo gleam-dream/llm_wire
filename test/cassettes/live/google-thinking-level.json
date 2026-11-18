@@ -1,0 +1,53 @@
+{
+  "http_gun": 3,
+  "exchanges": [
+    {
+      "request": {
+        "method": "POST",
+        "scheme": "https",
+        "host": "generativelanguage.googleapis.com",
+        "port": 443,
+        "path": "/v1beta/models/gemini-3.8-flash:streamGenerateContent",
+        "query": "alt=sse",
+        "headers": [
+          ["content-type", "application/json"],
+          ["accept", "text/event-stream"],
+          ["accept-encoding", "identity"]
+        ],
+        "body": {"text": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"What is the capital of France? Answer in one word.\"}]}],\"generationConfig\":{\"maxOutputTokens\":2048,\"thinkingConfig\":{\"thinkingLevel\":\"LOW\"}}}"}
+      },
+      "reply": {
+        "kind": "response",
+        "status": 200,
+        "headers": [
+          ["content-type", "text/event-stream"],
+          ["content-disposition", "attachment"],
+          ["vary", "Origin"],
+          ["vary", "X-Origin"],
+          ["vary", "Referer"],
+          ["transfer-encoding", "chunked"],
+          ["date", "Wed, 18 Nov 2026 16:44:57 GMT"],
+          ["server", "scaffolding on HTTPServer2"],
+          ["x-xss-protection", "0"],
+          ["x-frame-options", "SAMEORIGIN"],
+          ["x-content-type-options", "nosniff"],
+          ["server-timing", "gfet4t7; dur=1999"],
+          ["alt-svc", "h3=\":443\"; ma=2592000,h3-29=\":443\"; ma=2592000"]
+        ],
+        "chunks": [
+          {"lines": [
+            "data: {\"candidates\": [{\"content\": {\"parts\": [{\"text\": \"Paris\"}],\"role\": \"model\"},\"index\": 0}],\"usageMetadata\": {\"promptTokenCount\": 13,\"candidatesTokenCount\": 1,\"totalTokenCount\": 14,\"promptTokensDetails\": [{\"modality\": \"TEXT\",\"tokenCount\": 13}],\"serviceTier\": \"standard\"},\"modelVersion\": \"gemini-3.8-flash\",\"responseId\": \"B9b9avnGKvysz7IP-rLwyAs\"}\r",
+            "\r",
+            ""
+          ]},
+          {"lines": [
+            "data: {\"candidates\": [{\"content\": {\"parts\": [{\"text\": \"\",\"thoughtSignature\": \"EpIBCo8BAWkUfROXG8P8gh9Lv+LD/eraZHRgZzHS0JDcyvoHMbZ1eTfadzLPB9tzmXJRsq9qwBdkejnmBf0NoEUxjKDidCHyCZ6/hFiJiBXQ0hF52Rhhk6D3Vim8SRVjycUQFQ00ocqxpCKwBalvCcU8/PrgccMGlQkaB2/tU4XhQ8yEjZfcQg/0q3qkd2fOgmjfqFs=\"}],\"role\": \"model\"},\"finishReason\": \"STOP\",\"index\": 0}],\"usageMetadata\": {\"promptTokenCount\": 13,\"candidatesTokenCount\": 1,\"totalTokenCount\": 14,\"promptTokensDetails\": [{\"modality\": \"TEXT\",\"tokenCount\": 13}],\"serviceTier\": \"standard\"},\"modelVersion\": \"gemini-3.8-flash\",\"responseId\": \"B9b9avnGKvysz7IP-rLwyAs\"}\r",
+            "\r",
+            ""
+          ]}
+        ],
+        "ending": {"kind": "finished", "trailers": []}
+      }
+    }
+  ]
+}

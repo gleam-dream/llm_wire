@@ -3,6 +3,7 @@
 import gleam/option.{type Option, None, Some}
 import llm_wire/internal/adapter
 import llm_wire/message
+import llm_wire/thinking
 
 pub opaque type Settings {
   Settings(
@@ -11,11 +12,12 @@ pub opaque type Settings {
     top_p: Option(Float),
     stop_sequences: List(String),
     prompt_cache: Option(adapter.PromptCache),
+    thinking_level: Option(thinking.Level),
   )
 }
 
 pub fn default() -> Settings {
-  Settings(None, None, None, [], None)
+  Settings(None, None, None, [], None, None)
 }
 
 pub fn request_view(
@@ -31,6 +33,7 @@ pub fn request_view(
     top_p: settings.top_p,
     stop_sequences: settings.stop_sequences,
     prompt_cache: settings.prompt_cache,
+    thinking_level: settings.thinking_level,
   )
 }
 
@@ -65,4 +68,11 @@ pub fn with_google_cached_content(
   name: String,
 ) -> Settings {
   Settings(..settings, prompt_cache: Some(adapter.GoogleCachedContent(name)))
+}
+
+pub fn with_thinking_level(
+  settings: Settings,
+  level: thinking.Level,
+) -> Settings {
+  Settings(..settings, thinking_level: Some(level))
 }

@@ -2,7 +2,9 @@
 
 #let terms = (
   (slug: "term-prepared-generation", title: [Prepared generation], body: [One admitted and encoded generation request with its provider, settings and output decoder. It is a reusable value rather than an executing operation.]),
-  (slug: "term-generation-settings", title: [Generation settings], body: [An immutable value holding optional maximum output tokens, temperature, top-p, stop sequences and one provider cache reference. It holds no model, messages, tools, credentials or output codec.]),
+  (slug: "term-generation-settings", title: [Generation settings], body: [An immutable value holding optional maximum output tokens, temperature, top-p, thinking level, stop sequences and one provider cache reference. It holds no model, messages, tools, credentials or output codec.]),
+  (slug: "term-thinking-level", title: [Thinking level], body: [A caller's bound on how much a model thinks before answering, written in each provider's own form. It steers thinking within the output limit and reserves no visible output.]),
+  (slug: "term-thought-tokens", title: [Thought tokens], body: [The part of a response's generated tokens the provider reports as the model's thinking. Output tokens include them.]),
   (slug: "term-stream-owner", title: [Stream owner], body: [The authoritative process holding one generation execution's framing, reduction, delivery and terminal state. Copied stream handles name the same owner.]),
   (slug: "term-semantic-progress", title: [Semantic progress], body: [Accepted text, refusal, reasoning or tool-argument output from a generation response. Usage reports and extension notifications are not semantic progress.]),
   (slug: "term-assistant-turn", title: [Assistant turn], body: [One response's text, application tool calls, provider identity and message-local replay data. It contains no conversation history or execution capability.]),
