@@ -229,3 +229,27 @@ pub fn gemini_takes_an_optional_field_range_pair_and_any_value_test() {
   extra
   |> should.equal(value.Object([#("unit", value.String("cm"))]))
 }
+
+/// A live recording stores what the provider sent, to the end of the body.
+/// A cut-off ending would mean the client closed the body early (ADR 0019).
+pub fn every_live_cassette_ends_finished_test() {
+  let paths = [
+    "test/cassettes/live/typesafe-classification.json",
+    ..list.map(live_scenarios.all(), live_scenarios.path)
+  ]
+  list.each(paths, fn(path) {
+    let assert Ok(tape) = cassette.load(path, 1_000_000)
+    let endings =
+      list.map(http_testing.exchanges(tape), fn(exchange) {
+        case http_testing.reply(exchange) {
+          http_testing.Respond(ending: http_testing.Finished(_), ..) ->
+            "finished"
+          http_testing.Respond(ending: http_testing.Abandoned, ..) ->
+            "abandoned"
+          http_testing.Respond(ending: http_testing.Aborted(_), ..) -> "aborted"
+          http_testing.Reject(_) -> "rejected"
+        }
+      })
+    #(path, endings) |> should.equal(#(path, ["finished"]))
+  })
+}
