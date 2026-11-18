@@ -1,5 +1,7 @@
-//// Replays the cassettes recorded from the live Gemini and OpenAI APIs on
-//// 2026-10-04 (`dev/record-live`), offline and without keys. Each reply
+//// Replays the cassettes recorded from the live Gemini and OpenAI APIs
+//// (`dev/record-live`) on 2026-10-04, all but `openai-union-written`
+//// recorded again on 2026-11-18 so that each ends `finished`, offline and
+//// without keys. Each reply
 //// decodes through the original codec and is classified as the live call
 //// was: a nested union of strict objects sent as Gemini's
 //// `responseJsonSchema` and OpenAI's strict `json_schema`, Gemini's plain
