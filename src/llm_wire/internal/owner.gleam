@@ -32,8 +32,29 @@ pub opaque type Stream {
   Stream(subject: process.Subject(Message))
 }
 
+/// `read_to_end` asks the worker to read the rest of the body within the
+/// trailing-read bound and report `body_released` once its HTTP scope has
+/// exited; `close` cancels the request.
 pub type TransportPort {
-  TransportPort(request_more: fn() -> Nil, close: fn() -> Nil)
+  TransportPort(
+    request_more: fn() -> Nil,
+    read_to_end: fn() -> Nil,
+    close: fn() -> Nil,
+  )
+}
+
+/// The trailing-read bound (ADR 0019): after a provider terminal the worker
+/// reads the rest of the body for at most this long, one deadline set when
+/// it starts ...
+pub const trailing_read_ms = 1000
+
+/// ... and at most this many bytes.
+pub const trailing_read_bytes = 65_536
+
+/// Longest the owner waits for the worker after asking it to read to the
+/// end: the worker's own bound plus a margin.
+fn read_to_end_backstop_ms() -> Int {
+  trailing_read_ms + 1000
 }
 
 /// Everything one execution's owner needs.
@@ -61,6 +82,8 @@ type Message {
   )
   FeedChunk(chunk: BitArray)
   FeedEof
+  BodyReleased
+  ReadToEndBackstop
   FeedFailure(error.Error, stream_types.RetryEvidence)
   RequestWasSent
   ResponseBytesObserved
@@ -87,7 +110,7 @@ type State {
     whole_call_timer: Option(process.Timer),
     first_token_timer: Option(process.Timer),
     idle_timer: Option(process.Timer),
-    terminal_outcome: Option(TerminalOutcome),
+    ending: Ending,
     request_sent: Bool,
     response_bytes_observed: Bool,
     response_bytes_received: Int,
@@ -98,6 +121,16 @@ type State {
     last_usage: Option(message.Usage),
     consumer_monitor: process.Monitor,
   )
+}
+
+/// Where the stream is in ending. The outcome is latched once, and
+/// delivered only from `Ended`.
+type Ending {
+  Open
+  /// The provider terminal latched `outcome`; the worker is reading the rest
+  /// of the body, and `backstop` bounds the wait for it.
+  ReadingToEnd(outcome: TerminalOutcome, backstop: process.Timer)
+  Ended(outcome: TerminalOutcome)
 }
 
 type PendingRead {
@@ -169,7 +202,7 @@ pub fn start(
           whole_call_timer:,
           first_token_timer:,
           idle_timer: None,
-          terminal_outcome: None,
+          ending: Open,
           request_sent: False,
           response_bytes_observed: False,
           response_bytes_received: 0,
@@ -310,6 +343,11 @@ pub fn feed_eof(stream: Stream) -> Nil {
   process.send(stream.subject, FeedEof)
 }
 
+/// The worker has read to the end, or cut the body, and left its HTTP scope.
+pub fn body_released(stream: Stream) -> Nil {
+  process.send(stream.subject, BodyReleased)
+}
+
 pub fn feed_failure(
   stream: Stream,
   failure: error.Error,
@@ -345,10 +383,11 @@ fn handle_message(state: State, msg: Message) -> actor.Next(State, Message) {
       }
     FeedChunk(chunk) -> handle_chunk(state, chunk)
     FeedEof -> handle_eof(state)
+    BodyReleased | ReadToEndBackstop -> end_reading(state)
     FeedFailure(failure, retry) ->
-      case state.terminal_outcome {
-        Some(_) -> actor.continue(state)
-        None -> {
+      case state.ending {
+        ReadingToEnd(..) | Ended(_) -> actor.continue(state)
+        Open -> {
           let cleaned = perform_cleanup(state)
           let evidence =
             merge_evidence(
@@ -406,13 +445,13 @@ fn handle_next(
           if_needed_request_bytes(updated)
         }
         [] ->
-          case state.terminal_outcome {
-            Some(terminal) -> {
+          case state.ending {
+            Ended(terminal) -> {
               process.send(reply_to, Ok(terminal_result(state, terminal)))
               let _ = perform_cleanup(state)
               actor.stop()
             }
-            None -> {
+            Open | ReadingToEnd(..) -> {
               let monitor = process.monitor(caller_pid)
               let pending = PendingRead(read_id, reply_to, caller_pid, monitor)
               if_needed_request_bytes(
@@ -432,13 +471,22 @@ fn handle_close(
   state: State,
   reply_to: process.Subject(stream_types.CloseOutcome),
 ) -> actor.Next(State, Message) {
-  case state.terminal_outcome {
-    Some(_) -> {
+  case state.ending {
+    Ended(_) -> {
       process.send(reply_to, stream_types.AlreadyTerminal)
       let _ = perform_cleanup(state)
       actor.stop()
     }
-    None -> {
+    ReadingToEnd(outcome, backstop) -> {
+      // The latched outcome still reaches a reader already waiting; the
+      // close is requested, not awaited, as for any close.
+      process.cancel_timer(backstop)
+      let cleaned = perform_cleanup(state)
+      deliver_to_pending(cleaned, outcome)
+      process.send(reply_to, stream_types.AlreadyTerminal)
+      actor.stop()
+    }
+    Open -> {
       let cleaned = perform_cleanup(state)
       observe.emit(state.context, telemetry.Cancelled, telemetry.ConsumerClosed)
       let outcome =
@@ -460,9 +508,9 @@ fn handle_close(
 }
 
 fn handle_chunk(state: State, chunk: BitArray) -> actor.Next(State, Message) {
-  case state.terminal_outcome {
-    Some(_) -> actor.continue(state)
-    None -> {
+  case state.ending {
+    ReadingToEnd(..) | Ended(_) -> actor.continue(state)
+    Open -> {
       let received = state.response_bytes_received + bit_array.byte_size(chunk)
       let with_bytes =
         State(
@@ -482,12 +530,17 @@ fn handle_chunk(state: State, chunk: BitArray) -> actor.Next(State, Message) {
             ),
           )
         False ->
-          case sse.feed(with_bytes.framer, chunk) {
-            Error(problem) -> fail_stream(with_bytes, problem)
-            Ok(#(next_framer, events)) ->
+          // Events framed before a framing failure still count: a provider
+          // terminal among them latches the outcome and the failure, in
+          // bytes after it, is ignored.
+          case sse.feed_partial(with_bytes.framer, chunk) {
+            #(events, Error(problem)) ->
+              process_sse_events(with_bytes, events, Error(problem))
+            #(events, Ok(next_framer)) ->
               process_sse_events(
                 State(..with_bytes, framer: next_framer),
                 events,
+                Ok(Nil),
               )
           }
       }
@@ -495,12 +548,20 @@ fn handle_chunk(state: State, chunk: BitArray) -> actor.Next(State, Message) {
   }
 }
 
+/// Steps the reducer through `events`, then applies `framing`: a failure in
+/// the bytes after them ends the stream unless a provider terminal came
+/// first.
 fn process_sse_events(
   state: State,
   events: List(sse.ServerSentEvent),
+  framing: Result(Nil, error.Error),
 ) -> actor.Next(State, Message) {
   case events {
-    [] -> if_needed_request_bytes(state)
+    [] ->
+      case framing {
+        Ok(Nil) -> if_needed_request_bytes(state)
+        Error(problem) -> fail_stream(state, problem)
+      }
     [event, ..rest] -> {
       // Any provider event, a ping included, shows the stream is alive.
       let state = touch_idle_timer(state)
@@ -513,9 +574,16 @@ fn process_sse_events(
             Error(#(partial, problem)) -> fail_stream(partial, problem)
             Ok(after) ->
               case terminal_provider(after) {
-                Ok(Some(terminal)) -> finish(perform_cleanup(after), terminal)
-                Ok(None) -> process_sse_events(after, rest)
-                Error(problem) -> fail_completed(after, problem)
+                Ok(Some(terminal)) -> read_to_end(after, terminal)
+                Ok(None) -> process_sse_events(after, rest, framing)
+                Error(problem) ->
+                  read_to_end(
+                    after,
+                    stream_types.StreamFailed(
+                      problem,
+                      evidence(after, stream_types.ResponseCompleted),
+                    ),
+                  )
               }
           }
       }
@@ -696,6 +764,11 @@ fn finish(
   state: State,
   terminal: TerminalOutcome,
 ) -> actor.Next(State, Message) {
+  settle(latch(state, terminal), terminal)
+}
+
+/// Records the outcome's usage and observes the terminal.
+fn latch(state: State, terminal: TerminalOutcome) -> State {
   let state = case terminal {
     stream_types.StreamFinished(_, Some(usage)) ->
       State(..state, last_usage: Some(usage))
@@ -706,15 +779,71 @@ fn finish(
     telemetry.Terminal,
     terminal_outcome_name(terminal),
   )
-  let state = State(..state, terminal_outcome: Some(terminal))
+  state
+}
+
+/// Makes the outcome deliverable and delivers it to a waiting reader.
+fn settle(
+  state: State,
+  terminal: TerminalOutcome,
+) -> actor.Next(State, Message) {
+  let state = State(..state, ending: Ended(terminal))
   case state.pending_read {
-    Some(pending) if state.queue == [] -> {
-      process.demonitor_process(pending.monitor)
-      process.send(pending.caller, Ok(terminal_result(state, terminal)))
+    Some(_) if state.queue == [] -> {
+      deliver_to_pending(state, terminal)
       let _ = perform_cleanup(state)
       actor.stop()
     }
     _ -> actor.continue(state)
+  }
+}
+
+fn deliver_to_pending(state: State, terminal: TerminalOutcome) -> Nil {
+  case state.pending_read {
+    Some(pending) if state.queue == [] -> {
+      process.demonitor_process(pending.monitor)
+      process.send(pending.caller, Ok(terminal_result(state, terminal)))
+    }
+    _ -> Nil
+  }
+}
+
+/// A provider terminal latched `terminal` before the end of the body: the
+/// generation timers stop, the worker reads the rest of the body, and the
+/// outcome waits for it (ADR 0019).
+fn read_to_end(
+  state: State,
+  terminal: TerminalOutcome,
+) -> actor.Next(State, Message) {
+  cancel(state.whole_call_timer)
+  cancel(state.first_token_timer)
+  cancel(state.idle_timer)
+  let state =
+    State(
+      ..latch(state, terminal),
+      whole_call_timer: None,
+      first_token_timer: None,
+      idle_timer: None,
+    )
+  state.transport.read_to_end()
+  let backstop =
+    process.send_after(
+      state.self_subject,
+      read_to_end_backstop_ms(),
+      ReadToEndBackstop,
+    )
+  actor.continue(State(..state, ending: ReadingToEnd(terminal, backstop)))
+}
+
+/// The worker left its HTTP scope, or the backstop passed first and the
+/// body is closed now. Either way the latched outcome stands.
+fn end_reading(state: State) -> actor.Next(State, Message) {
+  case state.ending {
+    ReadingToEnd(terminal, backstop) -> {
+      process.cancel_timer(backstop)
+      settle(perform_cleanup(state), terminal)
+    }
+    Open | Ended(_) -> actor.continue(state)
   }
 }
 
@@ -779,9 +908,9 @@ fn merge_evidence(
 }
 
 fn handle_eof(state: State) -> actor.Next(State, Message) {
-  case state.terminal_outcome {
-    Some(_) -> actor.continue(state)
-    None ->
+  case state.ending {
+    ReadingToEnd(..) | Ended(_) -> actor.continue(state)
+    Open ->
       case sse.finish(state.framer) {
         Error(problem) -> fail_stream(state, problem)
         Ok(_) -> end_of_stream(state)
@@ -805,9 +934,9 @@ fn handle_timer(
   state: State,
   timeout: error.Timeout,
 ) -> actor.Next(State, Message) {
-  case state.terminal_outcome {
-    Some(_) -> actor.continue(state)
-    None -> {
+  case state.ending {
+    ReadingToEnd(..) | Ended(_) -> actor.continue(state)
+    Open -> {
       observe.emit(state.context, telemetry.Deadline, case timeout {
         error.WholeCall -> telemetry.WholeCallExpired
         error.FirstToken -> telemetry.FirstTokenExpired
@@ -821,7 +950,15 @@ fn handle_timer(
 fn handle_down(state: State, down: process.Down) -> actor.Next(State, Message) {
   case down {
     process.ProcessDown(..) -> {
-      let _ = perform_cleanup(state)
+      let cleaned = perform_cleanup(state)
+      // A latched outcome still reaches a reader already waiting.
+      case state.ending {
+        ReadingToEnd(outcome, backstop) -> {
+          process.cancel_timer(backstop)
+          deliver_to_pending(cleaned, outcome)
+        }
+        Open | Ended(_) -> Nil
+      }
       actor.stop()
     }
     _ -> actor.continue(state)
@@ -830,8 +967,8 @@ fn handle_down(state: State, down: process.Down) -> actor.Next(State, Message) {
 
 /// Restarts the idle-gap timer once the first progress event arrived.
 fn touch_idle_timer(state: State) -> State {
-  case state.semantic_progress_observed, state.terminal_outcome {
-    True, None -> {
+  case state.semantic_progress_observed, state.ending {
+    True, Open -> {
       cancel(state.idle_timer)
       State(
         ..state,
@@ -892,8 +1029,8 @@ fn terminal_outcome_name(terminal: TerminalOutcome) -> telemetry.Outcome {
 }
 
 fn if_needed_request_bytes(state: State) -> actor.Next(State, Message) {
-  case state.terminal_outcome, state.transport_closed {
-    None, False ->
+  case state.ending, state.transport_closed {
+    Open, False ->
       case
         !state.outstanding_read_credit
         && {
