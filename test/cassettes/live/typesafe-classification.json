@@ -1,18 +1,20 @@
 {
-  "http_gun": 2,
+  "http_gun": 3,
   "exchanges": [
     {
       "request": {
         "method": "POST",
-        "url": "https://api.typesafe.ai/v1/systemone",
+        "scheme": "https",
+        "host": "api.typesafe.ai",
+        "port": null,
+        "path": "/v1/systemone",
+        "query": null,
         "headers": [
           ["content-type", "application/json"],
           ["accept", "application/json"],
           ["accept-encoding", "identity"]
         ],
-        "body": {
-          "text": "{\"model\":\"jev-latest\",\"state\":\"2 + 2 = 4\",\"questions\":{\"correct\":{\"type\":\"noul\",\"instructions\":\"Is the statement correct?\"},\"decision\":{\"type\":\"choice\",\"instructions\":\"What should happen?\",\"criteria\":{\"approve\":\"Correct\",\"revise\":\"Incorrect\"}},\"quality\":{\"type\":\"score\",\"instructions\":\"How correct?\",\"criteria\":[\"incorrect\",\"partial\",\"correct\"]}}}"
-        }
+        "body": {"text": "{\"model\":\"jev-latest\",\"state\":\"2 + 2 = 4\",\"questions\":{\"correct\":{\"type\":\"noul\",\"instructions\":\"Is the statement correct?\"},\"decision\":{\"type\":\"choice\",\"instructions\":\"What should happen?\",\"criteria\":{\"approve\":\"Correct\",\"revise\":\"Incorrect\"}},\"quality\":{\"type\":\"score\",\"instructions\":\"How correct?\",\"criteria\":[\"incorrect\",\"partial\",\"correct\"]}}}"}
       },
       "reply": {
         "kind": "response",
@@ -29,11 +31,9 @@
           ["alt-svc", "h3=\":443\"; ma=86400"]
         ],
         "chunks": [
-          {
-            "text": "{\"model\":\"jev-1.13.0\",\"answers\":{\"correct\":{\"type\":\"noul\",\"noul\":0.99},\"decision\":{\"type\":\"choice\",\"choice\":\"approve\",\"confidence\":1.0,\"probabilities\":{\"revise\":0.0,\"approve\":1.0}},\"quality\":{\"type\":\"score\",\"score\":2.0,\"confidence\":1.0,\"legend\":{\"0\":\"incorrect\",\"1\":\"partial\",\"2\":\"correct\"},\"probabilities\":{\"0\":0.0,\"1\":0.0,\"2\":1.0}}},\"usage\":{\"input_tokens\":358,\"output_tokens\":62}}"
-          }
+          {"text": "{\"model\":\"jev-1.13.0\",\"answers\":{\"correct\":{\"type\":\"noul\",\"noul\":0.99},\"decision\":{\"type\":\"choice\",\"choice\":\"approve\",\"confidence\":1.0,\"probabilities\":{\"revise\":0.0,\"approve\":1.0}},\"quality\":{\"type\":\"score\",\"score\":2.0,\"confidence\":1.0,\"legend\":{\"0\":\"incorrect\",\"1\":\"partial\",\"2\":\"correct\"},\"probabilities\":{\"0\":0.0,\"1\":0.0,\"2\":1.0}}},\"usage\":{\"input_tokens\":358,\"output_tokens\":62}}"}
         ],
-        "ending": { "kind": "finished", "trailers": [] }
+        "ending": {"kind": "finished", "trailers": []}
       }
     }
   ]

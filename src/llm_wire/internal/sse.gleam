@@ -44,14 +44,29 @@ pub fn feed(
   framer: Framer,
   chunk: BitArray,
 ) -> Result(#(Framer, List(ServerSentEvent)), error.Error) {
+  case feed_partial(framer, chunk) {
+    #(events, Ok(next)) -> Ok(#(next, events))
+    #(_, Error(problem)) -> Error(problem)
+  }
+}
+
+/// Like `feed`, but a failure keeps the events framed before it, in order,
+/// so a caller can act on an event that precedes a malformed byte in the
+/// same chunk.
+pub fn feed_partial(
+  framer: Framer,
+  chunk: BitArray,
+) -> #(List(ServerSentEvent), Result(Framer, error.Error)) {
   let chunk_size = bit_array.byte_size(chunk)
   case chunk_size > framer.limits.chunk_bytes_limit {
-    True ->
+    True -> #(
+      [],
       Error(error.LimitExceeded(
         limit.ChunkBytes,
         framer.limits.chunk_bytes_limit,
         chunk_size,
-      ))
+      )),
+    )
     False -> {
       let buf_len = bit_array.byte_size(framer.buffer)
       let pending_line_len = case find_first_terminator_offset(chunk, 0) {
@@ -59,12 +74,14 @@ pub fn feed(
         None -> buf_len + chunk_size
       }
       case pending_line_len > framer.limits.line_bytes_limit {
-        True ->
+        True -> #(
+          [],
           Error(error.LimitExceeded(
             limit.LineBytes,
             framer.limits.line_bytes_limit,
             pending_line_len,
-          ))
+          )),
+        )
         False -> {
           // The buffer holds no line terminator except possibly a trailing
           // CR, so scanning resumes at its last byte. Rescanning the whole
@@ -113,36 +130,39 @@ fn parse_lines(
   emitted: List(ServerSentEvent),
   emitted_count: Int,
   scan_from: Int,
-) -> Result(#(Framer, List(ServerSentEvent)), error.Error) {
+) -> #(List(ServerSentEvent), Result(Framer, error.Error)) {
+  let failed = fn(problem) { #(list.reverse(emitted), Error(problem)) }
   case find_line_terminator(buffer, scan_from) {
     EndOfBuffer(remaining) -> {
       let remaining_size = bit_array.byte_size(remaining)
       case remaining_size > framer.limits.line_bytes_limit {
         True ->
-          Error(error.LimitExceeded(
+          failed(error.LimitExceeded(
             limit.LineBytes,
             framer.limits.line_bytes_limit,
             remaining_size,
           ))
-        False ->
-          Ok(#(Framer(..framer, buffer: remaining), list.reverse(emitted)))
+        False -> #(
+          list.reverse(emitted),
+          Ok(Framer(..framer, buffer: remaining)),
+        )
       }
     }
     LineFound(raw_line, remaining) -> {
       let line_size = bit_array.byte_size(raw_line)
       case line_size > framer.limits.line_bytes_limit {
         True ->
-          Error(error.LimitExceeded(
+          failed(error.LimitExceeded(
             limit.LineBytes,
             framer.limits.line_bytes_limit,
             line_size,
           ))
         False -> {
           case bit_array.to_string(raw_line) {
-            Error(Nil) -> Error(error.Protocol("Invalid UTF-8 in SSE stream"))
+            Error(Nil) -> failed(error.Protocol("Invalid UTF-8 in SSE stream"))
             Ok(line) -> {
               case process_line(framer, line) {
-                Error(e) -> Error(e)
+                Error(e) -> failed(e)
                 Ok(#(next_framer, maybe_event)) -> {
                   let next_emitted = case maybe_event {
                     Some(ev) -> [ev, ..emitted]
@@ -154,7 +174,7 @@ fn parse_lines(
                   }
                   case next_count > framer.limits.queue_count_limit {
                     True ->
-                      Error(error.LimitExceeded(
+                      failed(error.LimitExceeded(
                         limit.QueueCount,
                         framer.limits.queue_count_limit,
                         next_count,

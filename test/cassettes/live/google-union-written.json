@@ -1,18 +1,20 @@
 {
-  "http_gun": 2,
+  "http_gun": 3,
   "exchanges": [
     {
       "request": {
         "method": "POST",
-        "url": "https://generativelanguage.googleapis.com:443/v1beta/models/gemini-3.8-flash:streamGenerateContent?alt=sse",
+        "scheme": "https",
+        "host": "generativelanguage.googleapis.com",
+        "port": 443,
+        "path": "/v1beta/models/gemini-3.8-flash:streamGenerateContent",
+        "query": "alt=sse",
         "headers": [
           ["content-type", "application/json"],
           ["accept", "text/event-stream"],
           ["accept-encoding", "identity"]
         ],
-        "body": {
-          "text": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"Reply with the Written variant: title \\\"Tides\\\", body one short sentence on why ocean tides happen.\"}]}],\"generationConfig\":{\"maxOutputTokens\":2048,\"responseMimeType\":\"application/json\",\"responseJsonSchema\":{\"type\":\"object\",\"properties\":{\"answer\":{\"anyOf\":[{\"type\":\"object\",\"properties\":{\"tag\":{\"type\":\"string\",\"enum\":[\"Written\"]},\"value\":{\"type\":\"object\",\"properties\":{\"title\":{\"type\":\"string\"},\"body\":{\"type\":\"string\"}},\"required\":[\"title\",\"body\"],\"additionalProperties\":false}},\"required\":[\"tag\",\"value\"],\"additionalProperties\":false},{\"type\":\"object\",\"properties\":{\"tag\":{\"type\":\"string\",\"enum\":[\"NoSources\"]},\"value\":{\"type\":\"object\",\"properties\":{\"reason\":{\"type\":\"string\"}},\"required\":[\"reason\"],\"additionalProperties\":false}},\"required\":[\"tag\",\"value\"],\"additionalProperties\":false}]}},\"required\":[\"answer\"],\"additionalProperties\":false}}}"
-        }
+        "body": {"text": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"Reply with the Written variant: title \\\"Tides\\\", body one short sentence on why ocean tides happen.\"}]}],\"generationConfig\":{\"maxOutputTokens\":2048,\"responseMimeType\":\"application/json\",\"responseJsonSchema\":{\"type\":\"object\",\"properties\":{\"answer\":{\"anyOf\":[{\"type\":\"object\",\"properties\":{\"tag\":{\"type\":\"string\",\"enum\":[\"Written\"]},\"value\":{\"type\":\"object\",\"properties\":{\"title\":{\"type\":\"string\"},\"body\":{\"type\":\"string\"}},\"required\":[\"title\",\"body\"],\"additionalProperties\":false}},\"required\":[\"tag\",\"value\"],\"additionalProperties\":false},{\"type\":\"object\",\"properties\":{\"tag\":{\"type\":\"string\",\"enum\":[\"NoSources\"]},\"value\":{\"type\":\"object\",\"properties\":{\"reason\":{\"type\":\"string\"}},\"required\":[\"reason\"],\"additionalProperties\":false}},\"required\":[\"tag\",\"value\"],\"additionalProperties\":false}]}},\"required\":[\"answer\"],\"additionalProperties\":false}}}"}
       },
       "reply": {
         "kind": "response",
@@ -24,33 +26,38 @@
           ["vary", "X-Origin"],
           ["vary", "Referer"],
           ["transfer-encoding", "chunked"],
-          ["date", "Sun, 04 Oct 2026 12:48:57 GMT"],
+          ["date", "Wed, 18 Nov 2026 15:09:47 GMT"],
           ["server", "scaffolding on HTTPServer2"],
           ["x-xss-protection", "0"],
           ["x-frame-options", "SAMEORIGIN"],
           ["x-content-type-options", "nosniff"],
-          ["server-timing", "gfet4t7; dur=1738"],
+          ["server-timing", "gfet4t7; dur=5801"],
           ["alt-svc", "h3=\":443\"; ma=2592000,h3-29=\":443\"; ma=2592000"]
         ],
         "chunks": [
-          {
-            "text": "data: {\"candidates\": [{\"content\": {\"parts\": [{\"text\": \"{\\\"answer\\\":{\\\"tag\\\":\\\"Written\\\",\\\"value\\\":{\\\"title\\\":\\\"Tides\\\",\\\"body\\\":\\\"Ocean tides are\"}],\"role\": \"model\"},\"index\": 0}],\"usageMetadata\": {\"promptTokenCount\": 22,\"candidatesTokenCount\": 19,\"totalTokenCount\": 342,\"promptTokensDetails\": [{\"modality\": \"TEXT\",\"tokenCount\": 22}],\"thoughtsTokenCount\": 301,\"serviceTier\": \"standard\"},\"modelVersion\": \"gemini-3.8-flash\",\"responseId\": \"N0vCatfQOLL4qtsPgY2okAI\"}\r\n\r\n"
-          },
-          {
-            "text": "data: {\"candidates\": [{\"content\": {\"parts\": [{\"text\": \" primarily caused by the gravitational pull of the Moon and the Sun on the Earth's oceans.\\\"}}}\"}],\"role\": \"model\"},\"index\": 0}],\"usageMetadata\": {\"promptTokenCount\": 22,\"candidatesTokenCount\": 39,\"totalTokenCount\": 362,\"promptTokensDetails\": [{\"modality\": \"TEXT\",\"tokenCount\": 22}],\"thoughtsTokenCount\": 301,\"serviceTier\": \"standard\"},\"modelVersion\": \"gemini-3.8-flash\",\"responseId\": \"N0vCatfQOLL4qtsPgY2okAI\"}\r\n\r\n"
-          },
-          {
-            "text": "data: {\"candidates\": [{\"content\": {\"parts\": [{\"text\": \"\",\"thoughtSignature\": \"Es8LCswLAWkUfRPC9OmqY03ghTu3UQc4TW9a0zQvZ5nUV8pLjioB/BC9CuV2knN+5alsjWV/0HMvoI17PS7350JsWHVv34/HMIRldxTHN1UGfYnRB+rOMgXupKdn5M0K1kUz0fregR/I3qA1G1w/THXhqrC3IYWve36p2GRTfApzr/ipT64vXuMejCtRUVUJwQXOMe0RErmEivhqg1rpJHS8/hceX7P0sCy5PwYEJv+JT+L6lAzVnTnEMYN929U1CCgPB/8hX+xsuKBXRBHMW16ZbQpYNALT0TaJdnUpYIVuRvBSFBvrJsT0JLszS5zYat9WuFOkU6WQVljaZ8qYzEgtAIpV9z2b9ly5f4kibtMBaIbpBCZqZEY9MX4smJLBwes19fGnm1ZCkW4Fuo3hHqt4qznmb90AjA2ARudXCC+rlLjUMF/SiArA7A/xGGVmFvVYFV8c52jKekivLSCennRmoEsGF61N/NlT5bodV3HHPVqo1L8pvZMtnZ6oi5C6HDZgFjtxUekAdBPfTSsI5dPHEwvDae9K/wgrjdZKlzdu7sDqWINQKOzfXRva/jI3MaJq3+5RJqMUSJCBTal2w2XYqBh/mmCRk21+O+GwGXwBUEJN/3clRdB9ER/R1IusJa2mCWNA7+krDGFBD/RdmFXLcOBFQtakhRx8/M5ebGocYHomvhVoj/5nowDy24SGcKUna7/vgQJucjE92+QTTQoYJkYYXcgaIEVrHZn84Y14kwHlLcM7NrD2hk6rxgXFG+jSU6CKlTyKOMBAGAlduZxKdfpH7iRJX3MPj0hNOryKueELI5irNkrpWZlnusTWj0StOUMp9z1uCGURjg2bOPcuyu5dNygvumF3p97p5B2aocJ27gBjCQg6kD6kiqtCFIOhq3hArWlsNzp32lQrcf/dGmKx+bpNK+H7S2nltuB8e5/Zt+aypIYbLkFoMQB7w8wgMmLh+ahoHcPfZO8gidMtjpYNlvSqcY49GJqsAv2SjCIOyCPrBeWpU8ASIcikO/JlQ9OW8U449SnZyDOdzI92n7lDWlhb2+pvxxYHowO/aTISWHf7BvZjoeiPY0vPP25fd+vBQm4bXxzy9KL4+E6lFC9YYXqFQPlZixuzLMjFjDiZ50HU9K5rFwKfsqC4wOUGU5PdI2YKgSqxXyvJTcixur89BEH9wa1dyVmmiuqYT9sgMrsZ1XONUh5DTqDdNaGubIIk7ddf0uV8+BA3iGLJ1N6Cws7a4ap4mXsBHy5i/KnEa7EKcWD9s5WUSsxsdt3KsDzxWs79Z6f33ako7sghZUJmPmDQyEMpsQCDV/KkxO4RIgV7AKQQmAMZHMwlmGBanoMr1vdXt4mct7hqBOlqDeOZtSOUN9aJdu1SQ/XeVCnHCjhG7MjseZmrZbhv9ZIUuyaY8Po6lj88TY4nWA9TQF0smWlPjuVAE4OlQ2KfI6+iyo9jy1KEaJrLJR6yRIods00gZiv5BTJMjvIxrlgerf7EQCuYvSW34PqhiXcQkT0Wrbc7C3i7QevNDRM53Ly+71C2eoLl4CRcOOQc4QT1ICXXjfQ5QMRHHfDOJOS0fWfFy45eswPmxs4ea2zLMhb5RfRYCtjkPSm6W7n4LPt0rm5iBmtQKhCIZRVDJgCVm13mULofsmtecV2k2cQoBqwAch2F36z9WikicPc5xOBwc7OkxFqb/r35Gfopuh5/kAkpCqMy3QCeWNpb/ygm1+Pff94MpK97Ha04nHt2JrUIc7QG10vl7XKh0iMYBAYmf/P9NhPokxn/5of0vpxqwC4mVgZHrpmrWVTfxapDXY8KR1dINJ78elsIZ+Hd54M1xi+hDo5qTBP6CDwSX1lSrLpZ1uAprbotQ9gD5vXUlk7L5QrRC+NRYClWBu+snI3i42QEZ2skxQSNZRxSuCNlZqUXJD+9t2kuSXNLumBc4xwoifFNRB/g/LI5J2YYKcSrL7v+XN61OihqNql33hw0HmQ=\"}],\"role\": \"model\"},\"finishReason\": \"STOP\",\"index\": 0}],\"usageMetadata\": {\"promptTokenCount\": 22,\"candidatesTokenCount\": 39,\"totalTokenCount\": 362,\"promptTokensDetails\": [{\"modality\": \"TEXT\",\"tokenCount\": 22}],\"thoughtsTokenCount\": 301,\"serviceTier\": \"standard\"},\"modelVersion\": \"gemini-3.8-flash\",\"responseId\": \"N0vCatfQOLL4qtsPgY2okAI\"}\r\n\r\n"
-          }
+          {"lines": [
+            "data: {\"candidates\": [{\"content\": {\"parts\": [{\"text\": \"{\\\"\"}],\"role\": \"model\"},\"index\": 0}],\"usageMetadata\": {\"promptTokenCount\": 22,\"candidatesTokenCount\": 1,\"totalTokenCount\": 265,\"promptTokensDetails\": [{\"modality\": \"TEXT\",\"tokenCount\": 22}],\"thoughtsTokenCount\": 242,\"serviceTier\": \"standard\"},\"modelVersion\": \"gemini-3.8-flash\",\"responseId\": \"tb_9auGOII7i5NoPocey4QE\"}\r",
+            "\r",
+            ""
+          ]},
+          {"lines": [
+            "data: {\"candidates\": [{\"content\": {\"parts\": [{\"text\": \"answer\\\":{\\\"tag\\\":\\\"Written\\\",\\\"value\\\":{\\\"title\\\":\\\"Tides\\\",\\\"body\\\":\\\"Ocean tides are caused by the gravitational forces exerted\"}],\"role\": \"model\"},\"index\": 0}],\"usageMetadata\": {\"promptTokenCount\": 22,\"candidatesTokenCount\": 25,\"totalTokenCount\": 289,\"promptTokensDetails\": [{\"modality\": \"TEXT\",\"tokenCount\": 22}],\"thoughtsTokenCount\": 242,\"serviceTier\": \"standard\"},\"modelVersion\": \"gemini-3.8-flash\",\"responseId\": \"tb_9auGOII7i5NoPocey4QE\"}\r",
+            "\r",
+            ""
+          ]},
+          {"lines": [
+            "data: {\"candidates\": [{\"content\": {\"parts\": [{\"text\": \" by the Moon and the Sun combined with Earth's rotation.\\\"}}}\"}],\"role\": \"model\"},\"index\": 0}],\"usageMetadata\": {\"promptTokenCount\": 22,\"candidatesTokenCount\": 39,\"totalTokenCount\": 303,\"promptTokensDetails\": [{\"modality\": \"TEXT\",\"tokenCount\": 22}],\"thoughtsTokenCount\": 242,\"serviceTier\": \"standard\"},\"modelVersion\": \"gemini-3.8-flash\",\"responseId\": \"tb_9auGOII7i5NoPocey4QE\"}\r",
+            "\r",
+            ""
+          ]},
+          {"text": "data: {\"candidates\": [{\"content\": {\"parts\": [{\"text\": \"\",\"thoughtSignature\": \"EowKCokKAWkUfRMxmgLH0+6kOHkZsj/EGxn91TizC1vMOpL5teGIu/LatmYokYYiq3wBuTQuf3LbVxmazF+uoL+uCQGgdaGNSbrz4MFLVZm3w/vLxRl9jZAXz1Go1j2wRrJ7Yf4VFyfxVIep5GMu4/SHB9jolNTgHeLoH+/E80sflLnpCBotGoNnbdTqfT3arlFUSk48Ex/gD5Vsigyj+kZkD8NrPsWzsgGt2PKIxU31zD2CeiDfsV6yJkmAz5VI8J4srodWeUQryMOyhTBbnyff6Bfa4u44qLH63o0wT6n2cyoD9nP6XyPP6IJnIgMFIXQaVVkuel0dWA5nuEKu9wn7Pv5CT/PNOrMBdONnAFbvkrd3+KINoSw8Igg363T+WlpE19N7g6IAPT1QzdH0xezFRPYVcw6Nx81+XKvLvtrtB0fLSpKSkCrxE2fGGvuUjZ6nHt9d5rTNOKHwIIOIuw/HE62zmTPhCTL9Hy6GYKq9Zq/u9oXi9ZrfP/uP8LHIWrv58Byp4zAAjMkO8HzJu7RSCT6yKF5cNaOILjERkvvZnEYgrvCVgRjQC0WLrBdLeSo0oHcwxCrNSXWGWJCXPnBLxvvCfDxx7UijxXNAeWC7PNFjlA6mg4V9qzhJ9ekgHwjKpDBhyQERmNuBZ3hRDti9eo0Lz3wWq3GzVmaWDs01nnrjLM5bMRKmXaBhGS68G4/oPugp1f8nvIq02WsvaqayVbirHcrBwvT5glVLMKFVt+v7xwwihb72buj2KPQZWfWmsH2ISJJlmCscfIDMWrZrx0UY+d+lJNnlwUBsiKHyJedPwjK7q0r9h0SOes9ZdLAihe9c8ZzBZ5I5/4+4VsE8eAruuf8nLG9jxwfvWRtn2aOUPe9lgRJZVVJRSM084yjLWl5IryWB+soCOdtF8U8LbjpOpnQ7LxJn2/7achb/OO8TOPNuOwIqVIPb4R2huVA4j0F1WiUgt9ltbp3LhQ8xgmw76lTWSvZ/ZeYeZTYHRmYc5yt7G3cRherWNv3MhA3TYy1RhUQMKWbbBOXfTDFyBTNkPRopAB1YNotHhsI/zmhL/ILtxCRFugDhsLNUnIZdr/yaOGjZkfQUajJRzJuzbryRfJxjn1CXRUJA+sYRtqwi/XYDj/LA9f0STcCp1jBOKnnnpP6mM8ePh7gLa24A/B9bVhCMlkFg5VHNhN7AP2W+bcZAVslwMD72nvdKoEuhDwSFQ/6JBfmF8kGmaR+l/A/aVvDUJYAE7XNCd1+4tFsp87jHMWabB4D1DiIy3/U8Pg4ERbQ4EfS"},
+          {"lines": [
+            "kH939Ao0KyzlWB60RMrEyDZ+ahIEfxAKSno87QRsWpD1pnJ8U5lq118EEhqvSY0VOlcmVaYh6PKrldrTatmZXoPdX6iu/MM/n/5nNOBuQZcoLORcW4d08NEgcMIfxuQSDn1LxbWd8YT4OnC8bV0LyK9LWebZ9N3ZbrpcdrOd3Tbv0dd2+TZ3PFl4/dqR/V4EShx1tyA6yWi6f5FI4d4S3wnFF8A2t3DbcjQ77udfv3gLgZ4AyCEC+BKF28ODwzcZ0vP/0Uhz/xNsIlebnmJlMfRck8rLNeZaCmssATWNKBybFAPWVG3wQeXjdVBH8ouYtAwYtefXRC/4Zew2Qc0Cw5fgFkjV2prbNXvSROe6qldwKUYS1D6Id1MkY0maf9K7wADEA3VrFyfryjQYb+CHHWXwqsBHWnIeR3ivmc++0AOXZpB4=\"}],\"role\": \"model\"},\"finishReason\": \"STOP\",\"index\": 0}],\"usageMetadata\": {\"promptTokenCount\": 22,\"candidatesTokenCount\": 39,\"totalTokenCount\": 303,\"promptTokensDetails\": [{\"modality\": \"TEXT\",\"tokenCount\": 22}],\"thoughtsTokenCount\": 242,\"serviceTier\": \"standard\"},\"modelVersion\": \"gemini-3.8-flash\",\"responseId\": \"tb_9auGOII7i5NoPocey4QE\"}\r",
+            "\r",
+            ""
+          ]}
         ],
-        "ending": {
-          "kind": "aborted",
-          "failure": {
-            "name": "cancelled",
-            "evidence": "maybe_sent",
-            "status": 200
-          }
-        }
+        "ending": {"kind": "finished", "trailers": []}
       }
     }
   ]

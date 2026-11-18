@@ -15,7 +15,7 @@ gleam_erlang = ">= 1.0.0 and < 2.0.0"
 gleam_otp = ">= 1.0.0 and < 2.0.0"
 json_blueprint = ">= 2.0.0 and < 3.0.0"
 sinal = ">= 0.1.0 and < 0.2.0"
-http_gun = ">= 0.1.0 and < 0.2.0"
+http_gun = { git = "https://github.com/gleam-dream/http_gun.git", ref = "3719b72732b646d2685b78b23c7a3cab20a3c5e2" }
 gleam_http = ">= 4.4.0 and < 5.0.0"
 gleam_time = ">= 1.11.0 and < 2.0.0"
 

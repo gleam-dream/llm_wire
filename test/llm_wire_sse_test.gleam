@@ -301,3 +301,42 @@ pub fn long_line_in_small_chunks_is_scanned_in_linear_time_test() {
   ])
   { elapsed < 1000 } |> should.be_true
 }
+
+pub fn feed_partial_keeps_events_before_invalid_utf8_test() {
+  let framer = sse.new(limits.default())
+  let #(events, result) =
+    sse.feed_partial(framer, <<"data: one\n\ndata: ":utf8, 0xff, "\n\n":utf8>>)
+  events
+  |> should.equal([
+    sse.ServerSentEvent(event: None, data: "one", id: None, retry: None),
+  ])
+  result |> should.equal(Error(error.Protocol("Invalid UTF-8 in SSE stream")))
+}
+
+pub fn feed_partial_keeps_events_before_an_over_long_tail_test() {
+  let framer = sse.new(limits.set(limits.default(), limit.LineBytes, 16))
+  let #(events, result) =
+    sse.feed_partial(framer, <<
+      "data: one\n\n":utf8,
+      string.repeat("x", 32):utf8,
+    >>)
+  list.length(events) |> should.equal(1)
+  let assert Error(error.LimitExceeded(limit.LineBytes, 16, _)) = result
+}
+
+pub fn feed_partial_keeps_events_up_to_the_event_count_bound_test() {
+  let framer = sse.new(limits.set(limits.default(), limit.QueueCount, 1))
+  let #(events, result) =
+    sse.feed_partial(framer, <<"data: one\n\ndata: two\n\n":utf8>>)
+  list.length(events) |> should.equal(1)
+  result |> should.equal(Error(error.LimitExceeded(limit.QueueCount, 1, 2)))
+}
+
+pub fn feed_partial_matches_feed_on_success_test() {
+  let framer = sse.new(limits.default())
+  let chunk = <<"event: a\ndata: one\n\ndata: tw":utf8>>
+  let #(events, result) = sse.feed_partial(framer, chunk)
+  let assert Ok(#(_, fed)) = sse.feed(framer, chunk)
+  events |> should.equal(fed)
+  result |> should.be_ok
+}

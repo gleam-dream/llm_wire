@@ -169,7 +169,11 @@ pub fn finding_8_anthropic_hosted_effect_is_unknown_after_failure_test() {
 }
 
 fn idle_transport() -> owner.TransportPort {
-  owner.TransportPort(request_more: fn() { Nil }, close: fn() { Nil })
+  owner.TransportPort(
+    request_more: fn() { Nil },
+    read_to_end: fn() { Nil },
+    close: fn() { Nil },
+  )
 }
 
 // Finding 5A: Owner timed-out read must not cause ConcurrentReadConflict on next read

@@ -1,3 +1,4 @@
+import gleam/bit_array
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
@@ -15,7 +16,11 @@ import owner_provider_helper
 import tool_fixtures
 
 fn idle_port() -> owner.TransportPort {
-  owner.TransportPort(request_more: fn() { Nil }, close: fn() { Nil })
+  owner.TransportPort(
+    request_more: fn() { Nil },
+    read_to_end: fn() { Nil },
+    close: fn() { Nil },
+  )
 }
 
 fn item_added() -> BitArray {
@@ -217,9 +222,11 @@ pub fn owner_overall_deadline_test() {
 pub fn owner_cleanup_called_once_test() {
   let close_counter = process.new_subject()
   let port =
-    owner.TransportPort(request_more: fn() { Nil }, close: fn() {
-      process.send(close_counter, 1)
-    })
+    owner.TransportPort(
+      request_more: fn() { Nil },
+      read_to_end: fn() { Nil },
+      close: fn() { process.send(close_counter, 1) },
+    )
   let assert Ok(stream) =
     owner_provider_helper.start_openai_stream(
       limits.default(),
@@ -240,9 +247,11 @@ pub fn owner_monitors_consumer_between_reads_test() {
   let stream_subject = process.new_subject()
   process.spawn_unlinked(fn() {
     let transport =
-      owner.TransportPort(request_more: fn() { Nil }, close: fn() {
-        process.send(close_counter, Nil)
-      })
+      owner.TransportPort(
+        request_more: fn() { Nil },
+        read_to_end: fn() { Nil },
+        close: fn() { process.send(close_counter, Nil) },
+      )
     let assert Ok(stream) =
       owner_provider_helper.start_openai_stream(
         limits.default(),
@@ -279,6 +288,7 @@ pub fn owner_keeps_one_outstanding_transport_credit_test() {
   let transport =
     owner.TransportPort(
       request_more: fn() { process.send(credit_counter, Nil) },
+      read_to_end: fn() { Nil },
       close: fn() { Nil },
     )
   let assert Ok(stream) =
@@ -419,4 +429,88 @@ fn read_to_terminal(
     Ok(stream_types.StreamTerminal(terminal, _)) -> Ok(terminal)
     Error(problem) -> Error(problem)
   }
+}
+
+fn completed() -> BitArray {
+  <<
+    "event: response.output_item.done\ndata: {\"output_index\": 0, \"item\": {\"id\": \"item_1\", \"type\": \"message\"}}\n\n":utf8,
+    "event: response.completed\ndata: {\"response\": {\"id\": \"r1\", \"status\": \"completed\"}}\n\n":utf8,
+  >>
+}
+
+pub fn a_worker_that_never_releases_the_body_meets_the_backstop_test() {
+  let closes = process.new_subject()
+  let asked = process.new_subject()
+  let port =
+    owner.TransportPort(
+      request_more: fn() { Nil },
+      read_to_end: fn() { process.send(asked, Nil) },
+      close: fn() { process.send(closes, Nil) },
+    )
+  let assert Ok(stream) =
+    owner_provider_helper.start_openai_stream_holding_body(
+      limits.default(),
+      config.default_timeouts(),
+      port,
+    )
+  owner.feed_chunk(stream, item_added())
+  owner.feed_chunk(stream, text_delta("Hi!"))
+  owner.feed_chunk(stream, completed())
+  let assert Ok(stream_types.NextProgress(_)) = owner.next(stream, Some(1000))
+  let assert Ok(Nil) = process.receive(asked, 1000)
+  // The outcome waits for the body ...
+  owner.next(stream, Some(owner.trailing_read_ms))
+  |> should.equal(Error(stream_types.ReadTimeout))
+  // ... until the backstop closes it and delivers the latched outcome.
+  let assert Ok(stream_types.StreamTerminal(
+    stream_types.StreamFinished(stream_types.CompletedText("Hi!"), _),
+    _,
+  )) = owner.next(stream, Some(2000))
+  let assert Ok(Nil) = process.receive(closes, 100)
+  process.receive(closes, 50) |> should.be_error
+}
+
+pub fn malformed_bytes_after_the_terminal_in_its_chunk_keep_the_outcome_test() {
+  let assert Ok(stream) =
+    owner_provider_helper.start_openai_stream(
+      limits.default(),
+      config.default_timeouts(),
+      idle_port(),
+    )
+  let chunk =
+    bit_array.concat([
+      item_added(),
+      text_delta("Hi!"),
+      completed(),
+      <<"data: ":utf8, 0xff, 0xfe, "\n\n":utf8>>,
+    ])
+  owner.feed_chunk(stream, chunk)
+  let assert Ok(stream_types.NextProgress(_)) = owner.next(stream, Some(1000))
+  let assert Ok(stream_types.StreamTerminal(
+    stream_types.StreamFinished(stream_types.CompletedText("Hi!"), _),
+    _,
+  )) = owner.next(stream, Some(1000))
+}
+
+pub fn events_before_a_framing_failure_are_delivered_before_it_test() {
+  let assert Ok(stream) =
+    owner_provider_helper.start_openai_stream(
+      limits.default(),
+      config.default_timeouts(),
+      idle_port(),
+    )
+  let chunk =
+    bit_array.concat([
+      item_added(),
+      text_delta("Hi!"),
+      <<"data: ":utf8, 0xff, 0xfe, "\n\n":utf8>>,
+    ])
+  owner.feed_chunk(stream, chunk)
+  let assert Ok(stream_types.NextProgress(message.TextDelta(_, "Hi!"))) =
+    owner.next(stream, Some(1000))
+  let assert Ok(stream_types.StreamTerminal(
+    stream_types.StreamFailed(error.Protocol(_), evidence),
+    _,
+  )) = owner.next(stream, Some(1000))
+  evidence.semantic_progress_observed |> should.be_true
 }

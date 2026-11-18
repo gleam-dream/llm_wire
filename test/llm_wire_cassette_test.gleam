@@ -198,13 +198,19 @@ pub fn required_schema_fields_and_tags_are_checked_test() {
   list.each(
     [
       "method",
-      "url",
+      "scheme",
+      "host",
+      "port",
+      "path",
+      "query",
       "headers",
       "body",
       "text",
       "chunks",
+      "lines",
       "status",
       "ending",
+      "trailers",
     ],
     fn(field) {
       cassette.parse(

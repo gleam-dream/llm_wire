@@ -10,7 +10,7 @@
     #no-goal(title: "Own conversations or application effects")[The caller owns history, tool execution, authorization, approvals, retries, round budgets, durable recovery and duplicate-effect protection. Generation owns no workflow checkpoint or background agent.]
     #invariant(title: "Preparation opens no package-owned resource", enforcement: "mechanism")[Preparation performs local validation and encoding before transport. It starts no owner, timer or socket and emits no execution observation. Extension callbacks must respect their declared pure contract.]
     #invariant(title: "Incomplete arguments never become executable calls", enforcement: "mechanism")[Argument deltas are progress only. A normal tool-request terminal requires a complete admitted batch; output-limited calls remain explicitly partial.]
-    #invariant(title: "One owner decides each stream terminal", enforcement: "mechanism")[All handles share terminal state. Terminal processing closes local transport; a later event cannot replace the outcome.]
+    #invariant(title: "One owner decides each stream terminal", enforcement: "mechanism")[All handles share terminal state. A later event cannot replace the outcome. An outcome decided at or after the provider terminal is delivered only after the worker has left its HTTP scope, with the body read to its end or cut at the trailing-read bound, or once the owner's backstop beyond that bound passes. Any other outcome, and close or creator death at any point, requests the close of local transport before delivery and does not wait for it.]
     #principle(title: "Keep policies with their actual authority")[Adapters encode and interpret provider protocols. Shared runtimes keep admission, limits, correlation and resource cleanup. Applications decide whether another interaction is justified.]
     #principle(title: "Reject unsupported requests before effects")[A valid schema outside the selected provider profile fails explicitly. Unsupported requested features must not be silently discarded.]
   ])
@@ -171,9 +171,9 @@
     ),
     edges: (
       (from: "creator", to: "owner", relation: "call", label: "read / close"),
-      (from: "owner", to: "worker", relation: "dependency", label: "lifetime + one credit"),
-      (from: "worker", to: "body", relation: "call", label: "open / next / close scope"),
-      (from: "worker", to: "owner", relation: "dataflow", label: "one chunk then wait"),
+      (from: "owner", to: "worker", relation: "dependency", label: "lifetime + one credit / read to end"),
+      (from: "worker", to: "body", relation: "call", label: "open / next / bounded read / close scope"),
+      (from: "worker", to: "owner", relation: "dataflow", label: "one chunk then wait / body released"),
       (from: "owner", to: "framer", relation: "call", label: "admit / interpret"),
     ), caption: [The stream handle names the owner. The worker alone opens and reads the HTTP body; cancellation covers its whole scope.],
   ), body: [
@@ -184,18 +184,20 @@
       )
     ]
     #subsection(title: "State and delivery")[
-      #state-type(id: "stream-state", title: "Stream state", variants: ("unstarted", "open", "terminal-pending", "ended"))
+      #state-type(id: "stream-state", title: "Stream state", variants: ("unstarted", "open", "reading-to-end", "terminal-pending", "ended"))
       #entity(id: "stream-execution", title: "Stream execution", description: [One authoritative process for one started generation.], kind: "aggregate", owner: "stream owner", lifecycle: "stateful", domain: "execution")[
         #attribute(id: "state", name: "State", type: "Stream state", provenance: "derived", state-type: "stream-state", state-machine: "stream-lifecycle")[The terminal slot latches the first outcome. Accepted queued progress precedes that terminal unless explicit local close ends delivery.]
         #attribute(name: "Delivery", type: "bounded FIFO, one optional pending read and read identity", provenance: "derived")[Count/byte counters track the FIFO. Read timeout arbitration decides whether cancellation or delivery won; waiting readers are monitored.]
         #attribute(name: "Resource and evidence", type: "transport port, credit, timer handles, monotone evidence, last usage", provenance: "derived")[Creator death cancels the call. The transport-closed flag guards normal-path local cleanup.]
         #relates(cardinality: "1 : 1")[Each started owner holds one linked transport worker and one private reducer.]
       ]
-      #state-machine(id: "stream-lifecycle", subject: "stream-execution", state-field: "state", state-type: "stream-state", title: "A terminal closes transport before delivery ends", initial: "unstarted", accepting: ("ended",), states: ("unstarted", "open", "terminal-pending", "ended"), transitions: (("unstarted", "open", "start succeeds"), ("unstarted", "ended", "startup failure"), ("open", "open", "accepted progress / timed-out read"), ("open", "terminal-pending", "provider terminal / failure / timer"), ("terminal-pending", "ended", "deliver terminal"), ("open", "ended", "close / creator death"), ("terminal-pending", "ended", "close / creator death")), caption: [Terminal pending retains already queued progress but no live HTTP scope. There is no transition back to open; a prepared value starts a new owner.])
-      #answers(title: "Read and close protocol", responsibility: [Serialize delivery and terminate locally when requested.], interface: [stream returns before HTTP headers; next waits, next_within adds a local wait, collect discards progress; close returns Closed or AlreadyEnded.], interactions: [Reads share one owner and FIFO. Close latches cancellation; pending-reader death clears only its read. Creating-caller death releases the whole execution.], invariants: [One pending read; one terminal; copied handles share closure. A read timeout leaves the stream readable.], failure: [ReadError is StreamEnded, ConcurrentRead, OwnerGone or TimedOut. Owner startup fails as Stopped/NotSent; loss while collecting returns conservative Stopped/MaybeSent evidence.])
+      #state-machine(id: "stream-lifecycle", subject: "stream-execution", state-field: "state", state-type: "stream-state", title: "The HTTP body ends before the outcome is delivered", initial: "unstarted", accepting: ("ended",), states: ("unstarted", "open", "reading-to-end", "terminal-pending", "ended"), transitions: (("unstarted", "open", "start succeeds"), ("unstarted", "ended", "startup failure"), ("open", "open", "accepted progress / timed-out read"), ("open", "reading-to-end", "provider terminal"), ("open", "terminal-pending", "end of body / failure before the terminal / timer"), ("reading-to-end", "reading-to-end", "timed-out read"), ("reading-to-end", "terminal-pending", "end of body / bound passed / transport failure"), ("terminal-pending", "ended", "deliver terminal"), ("open", "ended", "close / creator death"), ("reading-to-end", "ended", "close / creator death"), ("terminal-pending", "ended", "close / creator death")), caption: [Reading to the end latches the outcome and delivers queued progress, but not the outcome. Close or a normal creator exit during it still hands the latched outcome to a reader already waiting; an abnormal creator exit ends the owner through their link. Terminal pending retains queued progress but no live HTTP scope. There is no transition back to open; a prepared value starts a new owner.])
+      #answers(title: "Read and close protocol", responsibility: [Serialize delivery and terminate locally when requested.], interface: [stream returns before HTTP headers; next waits, next_within adds a local wait, collect discards progress; close returns Closed, or AlreadyEnded once an outcome is latched, whether or not it was delivered.], interactions: [Reads share one owner and FIFO. Close latches cancellation; pending-reader death clears only its read. Creating-caller death releases the whole execution.], invariants: [One pending read; one terminal; copied handles share closure. A read timeout leaves the stream readable.], failure: [ReadError is StreamEnded, ConcurrentRead, OwnerGone or TimedOut. Owner startup fails as Stopped/NotSent; loss while collecting returns conservative Stopped/MaybeSent evidence.])
+      #answers(title: "Reading to the end", responsibility: [Finish the HTTP body of an outcome already latched at the provider terminal, so the exchange completes and its connection can be reused.], interface: [The owner asks the worker to read to the end; the worker answers once it has left its HTTP scope.], interactions: [The trailing-read bound is one deadline of 1 s set when the worker starts reading, and 64 KiB of trailing bytes; the time includes HTTP Gun's recording writes. The worker reads with HTTP Gun's bounded read under the call's request deadline, which already carries the whole-call and application deadlines. The owner replaces its generation timers at the latch with one backstop timer beyond the bound. Terminal is observed at the latch and Cleanup at the release.], invariants: [Applies to every outcome decided at or after the provider terminal: an answer, refusal, tool batch, output limit, provider-reported failure or a failure found while admitting the terminal. The outcome is delivered only after the worker's answer; queued progress is delivered meanwhile. Trailing bytes reach neither framer nor reducer and count toward no other limit.], failure: [Past the bound, on an oversize trailing chunk or on a read failure the worker closes the body before it answers and the latched outcome stands; an HTTP Gun recording then stores a cut-off ending. If the worker has not answered by the backstop, the owner requests the close and delivers. Close and creator death request the close at once; the body then ends asynchronously, as for any close. A worker that exits abnormally ends the owner through their link, as at any other point. The outcome can arrive up to the bound later than the terminal, so a caller whose own read budget ends inside that wait and then closes loses an answer the provider completed.])
       #points(
         [The owner accepts cross-process reads and rejects another pending reader; its public comment declares creator-only reads. Lifetime ownership and read authority are distinct. The pending ruling preserves this conflict.],
-        [Close and owner exit settle against pending delivery. A terminal already delivered wins; repeated close is idempotent even when the owner has exited. A queued provider terminal cannot be replaced by late HTTP events. Early provider completion closes transport without draining to HTTP EOF.],
+        [Close and owner exit settle against pending delivery. A terminal already delivered wins, and a reader already waiting when close or a normal creator exit ends reading-to-end receives the latched outcome. After close, later reads report StreamEnded. Repeated close is idempotent even when the owner has exited. A queued provider terminal cannot be replaced by late HTTP events.],
+        [A provider terminal always precedes the end of the body, because the worker reads the end only after the owner grants credit. A terminal the reducer decides only at the end of the body has nothing left to read. Events framed before a framing failure in the same chunk are interpreted before the failure: their progress is delivered first, and a provider terminal among them latches the outcome, which the failure then does not replace. Events after a provider terminal are dropped and later chunks are read uninterpreted. The size limits that judge a whole chunk, ChunkBytes and ResponseBodyBytes, still judge that chunk with its trailing bytes and fail it before the terminal. #adr(19) records the bound and the choice to delay the outcome rather than outlive the call.],
         [Normal cleanup cancels timers, closes the transport once and clears pending monitors. Abnormal owner death terminates its linked worker; HTTP Gun observes opener death. Command cardinality does not prove exactly-once cleanup effects under arbitrary process loss.],
       )
       #behavior(title: "A read wait expires without cancelling generation", area: "Read delivery", level: "interface")[
@@ -215,6 +217,34 @@
         #when[Its exit is observed.]
         #then[The interaction cancels and releases its local connection resource.]
       ]
+      #behavior(title: "A completed response is read to the end of its body", area: "Body ending", level: "boundary")[
+        #given[A provider terminal arrived before the end of the response body.]
+        #when[The body ends within the bound.]
+        #then[The response is received to its end, as a complete exchange, before the outcome is delivered.]
+        #then[The outcome is the one decided at the provider terminal.]
+      ]
+      #behavior(title: "Only the outcome waits for the end of the body", area: "Body ending", level: "interface")[
+        #given[A caller reads a stream whose provider terminal arrived before the end of the body.]
+        #when[The caller reads while the rest of the body is outstanding.]
+        #then[Progress accepted before the terminal is delivered without waiting.]
+        #then[The outcome is delivered once the body ends or reading it stops.]
+      ]
+      #behavior(title: "A body that does not end in time is closed", area: "Body ending", level: "boundary")[
+        #given[A provider terminal arrived and the rest of the body is outstanding.]
+        #when[The time or byte bound passes, or reading fails, including on the whole-call or application deadline.]
+        #then[Local transport closes and the caller receives the outcome decided at the provider terminal.]
+      ]
+      #behavior(title: "Bytes after the terminal never change the outcome", area: "Body ending", level: "boundary")[
+        #given[The body carries more bytes after the provider terminal, in its chunk or in later chunks, including further events and malformed bytes.]
+        #when[The owner reads them.]
+        #then[They are discarded uninterpreted and raise no failure.]
+      ]
+      #behavior(title: "Close ends the wait for the end of the body", area: "Body ending", level: "interface")[
+        #given[A stream is reading the rest of its body after a provider terminal.]
+        #when[A caller closes a handle or the creating process exits.]
+        #then[The close of local transport is requested at once and close reports that the stream had already ended.]
+        #then[A reader already waiting receives the outcome decided at the provider terminal, unless the creating process ended abnormally.]
+      ]
     ]
     #subsection(title: "Effect timing and deadlines")[
       #md-table(3, (
@@ -224,7 +254,7 @@
         [owner setup], [linked worker plus first-progress timer and creator monitor], [startup wait is bounded by actor/worker setup; synchronous adapter factory is not preempted],
         [HTTP opening], [worker token scope; HTTP Gun admission/connect/headers consume whole-call budget], [typed HTTP failure or WholeCall deadline],
         [SSE interpretation], [first semantic progress cancels FirstToken and starts IdleGap; every framed event then resets idle], [comments/bytes alone do not reset semantic idle],
-        [terminal], [local cancellation/close immediately; queued delivery may follow], [no remote rollback or cancellation guarantee],
+        [terminal], [provider terminal: the worker reads the rest of the body within the trailing-read bound, then leaves its scope and the outcome is delivered; failure before the terminal or timer: close immediately; queued delivery may follow], [outcome up to the trailing-read bound later than the terminal; no remote rollback or cancellation guarantee; a body that outlasts the bound is closed and the outcome stands],
         [structured decoding], [caller-side output validation after semantic terminal and HTTP cleanup], [InvalidOutput; synchronous codec callback has no independent preemption],
       ))
       #points(

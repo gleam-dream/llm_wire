@@ -27,6 +27,21 @@ import llm_wire/limit
 type Control {
   More
   Stop
+  /// The outcome is latched at the provider terminal: read the rest of the
+  /// body within the trailing-read bound, then leave the HTTP scope.
+  ReadToEnd
+}
+
+/// How the worker left the response body, reported to the owner only once
+/// the HTTP scope has exited, so the body has ended or been closed.
+type Left {
+  /// The body ended while the owner was still reading it.
+  BodyEnded
+  /// The owner asked to read to the end; the body ended or was cut.
+  TrailingReadDone
+  /// The owner needs no message: the worker already reported to it, or the
+  /// owner stopped the read itself.
+  Reported
 }
 
 /// Opens the call. The call's whole-call budget replaces the client's
@@ -118,7 +133,7 @@ fn start(
                     200 ->
                       case validate_headers(response.headers) {
                         Ok(Nil) -> read(response.body, control, stream, setup)
-                        Error(problem) ->
+                        Error(problem) -> {
                           owner.feed_failure(
                             stream,
                             problem,
@@ -128,8 +143,10 @@ fn start(
                               False,
                             ),
                           )
+                          Reported
+                        }
                       }
-                    status ->
+                    status -> {
                       error_body(
                         response.body,
                         response.headers,
@@ -139,16 +156,21 @@ fn start(
                         [],
                         0,
                       )
+                      Reported
+                    }
                   }
-                  Ok(Nil)
+                  |> Ok
                 },
               )
+            // The scope has exited: the body has ended or been closed.
             case outcome {
-              Ok(_) -> Nil
+              Ok(BodyEnded) -> owner.feed_eof(stream)
+              Ok(TrailingReadDone) -> owner.body_released(stream)
+              Ok(Reported) -> Nil
               Error(failure) -> fail(stream, failure, False)
             }
           }
-          Ok(Stop) -> Nil
+          Ok(Stop) | Ok(ReadToEnd) -> Nil
           Error(Nil) ->
             owner.feed_failure(
               stream,
@@ -162,6 +184,7 @@ fn start(
     Ok(#(control, token)) ->
       owner.TransportPort(
         request_more: fn() { process.send(control, More) },
+        read_to_end: fn() { process.send(control, ReadToEnd) },
         close: fn() {
           cancellation.cancel(token)
           process.send(control, Stop)
@@ -174,7 +197,7 @@ fn start(
         error.Stopped,
         stream_types.initial_retry_evidence(),
       )
-      owner.TransportPort(fn() { Nil }, fn() { Nil })
+      owner.TransportPort(fn() { Nil }, fn() { Nil }, fn() { Nil })
     }
   }
 }
@@ -186,11 +209,11 @@ fn read(
   control: process.Subject(Control),
   stream: owner.Stream,
   setup: owner.Setup,
-) -> Nil {
+) -> Left {
   case body.next(source) {
     Ok(body.Chunk(bytes)) ->
       case bit_array.byte_size(bytes) > setup.limits.chunk_bytes_limit {
-        True ->
+        True -> {
           owner.feed_failure(
             stream,
             error.LimitExceeded(
@@ -204,16 +227,55 @@ fn read(
               False,
             ),
           )
+          Reported
+        }
         False -> {
           owner.feed_chunk(stream, bytes)
           case process.receive_forever(control) {
             More -> read(source, control, stream, setup)
-            Stop -> Nil
+            Stop -> Reported
+            ReadToEnd -> {
+              let bound =
+                deadline.after(duration.milliseconds(owner.trailing_read_ms))
+              read_to_end(source, bound, 0, setup.limits.chunk_bytes_limit)
+            }
           }
         }
       }
-    Ok(body.End(_)) -> owner.feed_eof(stream)
-    Error(failure) -> fail(stream, failure, False)
+    Ok(body.End(_)) -> BodyEnded
+    Error(failure) -> {
+      fail(stream, failure, False)
+      Reported
+    }
+  }
+}
+
+/// Reads and discards the rest of the body until it ends, the deadline set
+/// when reading started passes, the trailing bytes exceed their bound or a
+/// chunk exceeds `chunk_limit`, or the read fails. HTTP Gun's request
+/// deadline also fails the read. Leaving the scope then ends or closes the
+/// body; the latched outcome stands either way.
+fn read_to_end(
+  source: body.Body,
+  bound: deadline.Deadline,
+  bytes_read: Int,
+  chunk_limit: Int,
+) -> Left {
+  let left = deadline.remaining(bound)
+  let waited = case duration.to_milliseconds(left) > 0 {
+    True -> body.next_within(source, left)
+    False -> Ok(None)
+  }
+  case waited {
+    Ok(Some(body.Chunk(bytes))) -> {
+      let size = bit_array.byte_size(bytes)
+      let total = bytes_read + size
+      case size > chunk_limit || total > owner.trailing_read_bytes {
+        True -> TrailingReadDone
+        False -> read_to_end(source, bound, total, chunk_limit)
+      }
+    }
+    Ok(Some(body.End(_))) | Ok(None) | Error(_) -> TrailingReadDone
   }
 }
 
