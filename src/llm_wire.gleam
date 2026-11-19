@@ -28,7 +28,7 @@
 //// `Done`. A prepared call can run again, for a retry. Structured output is
 //// one more request step, `with_output(name, codec)`: the `Answer` then
 //// holds the decoded value, and invalid output fails with
-//// `error.InvalidOutput`, keeping the raw text.
+//// `error.InvalidOutput`, keeping the answer text.
 ////
 //// The caller owns the conversation and the tool loop: on `NeedsTools`,
 //// append the turn and one `tool_result` per call, and prepare the next
@@ -305,8 +305,9 @@ pub fn request(model: String, messages: List(Message)) -> Request(String) {
 ///
 /// For every provider, a `null` the model writes for an optional field
 /// whose own codec is not `nullable` is removed before decoding, so it
-/// decodes as absent. `Answer.text` is then that cleaned JSON, which the
-/// same codec decodes again; otherwise it is the model's text unchanged.
+/// decodes as absent. `Answer.text`, and `InvalidOutput.raw_output` when the
+/// text is JSON, is then that cleaned JSON, which the same codec decodes
+/// again; otherwise it is the model's text unchanged.
 ///
 /// The call the owner and HTTP worker receive holds only the codec's
 /// schema, so the codec is not copied to them. The codec itself stays in the
@@ -346,6 +347,7 @@ pub fn with_output(
             codec.decode_json(output, text)
             |> map_decode_error
             |> result.map(fn(decoded) { #(decoded, text) })
+            |> result.map_error(fn(failure) { #(failure, text) })
         }
       },
     ),
@@ -645,7 +647,7 @@ fn outcome(
     stream_types.StreamFinished(stream_types.CompletedText(text), usage) ->
       case call.decode(stream, text) {
         Ok(#(output, text)) -> Ok(Answer(output:, text:, usage:))
-        Error(problem) ->
+        Error(#(problem, text)) ->
           Error(Failure(
             error.InvalidOutput(text, problem),
             Completed,

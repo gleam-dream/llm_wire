@@ -839,9 +839,34 @@ fn openai_content_parts(
   })
 }
 
-/// Refuses, on every built-in provider, a file part with an image media
-/// type, and a file media type `accepts` does not take. Media types are
-/// compared without case and parameters (ADR 0021).
+/// A file part whose media type is an image is sent as an inline image
+/// part with the same media type and data, on every built-in provider; no
+/// provider has a field for an image's name. Media types are compared
+/// without case and parameters (ADR 0021).
+fn images_as_images(messages: List(message.Message)) -> List(message.Message) {
+  let convert = fn(parts) {
+    list.map(parts, fn(part) {
+      case part {
+        message.InlineFilePart(mime_type:, base64_data:, ..) ->
+          case is_image(mime_type) {
+            True -> message.InlineImagePart(mime_type:, base64_data:)
+            False -> part
+          }
+        _ -> part
+      }
+    })
+  }
+  list.map(messages, fn(msg) {
+    case msg {
+      message.UserParts(parts) -> message.UserParts(convert(parts))
+      message.AssistantParts(parts) -> message.AssistantParts(convert(parts))
+      _ -> msg
+    }
+  })
+}
+
+/// Refuses a file part whose media type `accepts` does not take, after
+/// `images_as_images`.
 fn admit_files(
   messages: List(message.Message),
   accepts: fn(String) -> Bool,
@@ -851,24 +876,24 @@ fn admit_files(
       message.UserParts(parts) | message.AssistantParts(parts) ->
         list.try_each(parts, fn(part) {
           case part {
-            message.InlineFilePart(mime_type:, ..) -> {
-              let essence = media_essence(mime_type)
-              case string.starts_with(essence, "image/"), accepts(essence) {
-                True, _ ->
-                  Error(error.InvalidRequest(error.ImageInFilePart(mime_type)))
-                False, False ->
+            message.InlineFilePart(mime_type:, ..) ->
+              case accepts(media_essence(mime_type)) {
+                True -> Ok(Nil)
+                False ->
                   Error(
                     error.InvalidRequest(error.FileTypeUnsupported(mime_type)),
                   )
-                False, True -> Ok(Nil)
               }
-            }
             _ -> Ok(Nil)
           }
         })
       _ -> Ok(Nil)
     }
   })
+}
+
+fn is_image(mime_type: String) -> Bool {
+  string.starts_with(media_essence(mime_type), "image/")
 }
 
 /// The media type without parameters, trimmed and lowercased.
@@ -878,10 +903,6 @@ fn media_essence(mime_type: String) -> String {
     Error(Nil) -> mime_type
   }
   string.lowercase(string.trim(base))
-}
-
-fn any_file(_essence: String) -> Bool {
-  True
 }
 
 fn pdf_only(essence: String) -> Bool {
@@ -916,7 +937,8 @@ pub fn openai_adapter(
     },
     validate: fn() { require_key(key) },
     encode: fn(request, tools, format) {
-      use Nil <- result.try(admit_files(request.messages, any_file))
+      let request =
+        adapter.Request(..request, messages: images_as_images(request.messages))
       use _ <- result.try(
         list.try_map(request.messages, fn(msg) {
           case msg {
@@ -953,6 +975,8 @@ pub fn anthropic_adapter(
     headers: fn() { [#("x-api-key", key()), version_header] },
     validate: fn() { require_key(key) },
     encode: fn(request, tools, format) {
+      let request =
+        adapter.Request(..request, messages: images_as_images(request.messages))
       use Nil <- result.try(admit_files(request.messages, pdf_only))
       use body <- result.try(encode_anthropic_request(
         request,
@@ -982,7 +1006,8 @@ pub fn google_adapter(
     validate: fn() { require_key(key) },
     encode: fn(request, tools, format) {
       use Nil <- result.try(admit_google_model(request.model))
-      use Nil <- result.try(admit_files(request.messages, any_file))
+      let request =
+        adapter.Request(..request, messages: images_as_images(request.messages))
       use body <- result.try(encode_google_request(
         request,
         projected_tool_json(message.Google, tools),
@@ -1056,9 +1081,16 @@ fn projected_tool_json(
     ]
     case identity {
       message.OpenAI ->
+        // Without `strict`, OpenAI normalizes a schema into strict mode
+        // when it can, which would make optional arguments required. The
+        // caller's schema is sent as given and the arguments are checked
+        // against it locally (ADR 0021).
         json.object([
           #("type", json.string("function")),
-          ..list.append(common, [#("parameters", tool.schema)])
+          ..list.append(common, [
+            #("parameters", tool.schema),
+            #("strict", json.bool(False)),
+          ])
         ])
       message.Anthropic ->
         json.object(list.append(common, [#("input_schema", tool.schema)]))

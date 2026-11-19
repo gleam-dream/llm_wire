@@ -265,10 +265,25 @@ pub fn a_null_for_a_required_property_stays_invalid_output_test() {
   raw_output |> should.equal(reply)
 }
 
-pub fn invalid_output_keeps_the_raw_text_after_a_removal_test() {
+/// The text of an invalid answer is cleaned too, so an application that
+/// hands it back for a correction decodes it with the same codec.
+pub fn invalid_output_carries_the_cleaned_text_test() {
   use #(provider, config) <- list.each(wires())
   let reply =
-    "{\"title\":null,\"lines\":[{\"sku\":1}],\"contact\":{},\"source\":{\"tag\":\"Manual\"}}"
+    "{\"title\":null,\"lines\":[{\"sku\":1,\"note\":null}],\"contact\":{},\"source\":{\"tag\":\"Scanned\",\"value\":{\"page\":null}}}"
+  let assert Error(llm_wire.Failure(
+    error: error.InvalidOutput(raw_output:, ..),
+    ..,
+  )) = run(provider, config, reply)
+  raw_output
+  |> should.equal(
+    "{\"lines\":[{\"sku\":1}],\"contact\":{},\"source\":{\"tag\":\"Scanned\",\"value\":{}}}",
+  )
+}
+
+pub fn text_that_is_not_json_stays_as_sent_test() {
+  use #(provider, config) <- list.each(wires())
+  let reply = "{\"title\": null,"
   let assert Error(llm_wire.Failure(
     error: error.InvalidOutput(raw_output:, ..),
     ..,

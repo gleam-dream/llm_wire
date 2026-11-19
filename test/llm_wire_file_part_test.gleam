@@ -1,7 +1,7 @@
-//// An inline file part: a document the provider reads as a file, such as a
-//// PDF. Each built-in provider writes it in its own form, and an image
-//// media type is refused, because an image belongs in an inline image part
-//// (ADR 0021).
+//// An inline file part: a stored file with its media type and name. Each
+//// built-in provider writes a document in its own file form and an image
+//// in its own image form, so a caller can send every stored original as one
+//// kind of part (ADR 0021).
 
 import gleam/json
 import gleam/list
@@ -90,29 +90,44 @@ pub fn a_media_type_is_compared_without_case_or_parameters_test() {
       anthropic.new("test-key") |> anthropic.config,
       request([upper]),
     )
-  let image = message.InlineFilePart("IMAGE/png; q=1", "a.png", "iVBO")
-  use config <- list.each(configs())
-  llm_wire.prepare(config, request([image]))
-  |> should.equal(
-    Error(error.InvalidRequest(error.ImageInFilePart("IMAGE/png; q=1"))),
-  )
-}
-
-pub fn every_provider_refuses_an_image_in_a_file_part_test() {
-  let image = message.InlineFilePart("image/png", "photo.png", "iVBO")
-  use config <- list.each(configs())
-  llm_wire.prepare(config, request([message.TextPart("look"), image]))
-  |> should.equal(
-    Error(error.InvalidRequest(error.ImageInFilePart("image/png"))),
-  )
-}
-
-pub fn the_refusals_are_described_test() {
-  error.describe_prepare_error(
-    error.InvalidRequest(error.ImageInFilePart("image/png")),
-  )
-  |> string.contains("inline image part")
+  let image = message.InlineFilePart("IMAGE/JPEG; q=1", "a.jpg", "/9j/")
+  body(openai.new("test-key") |> openai.config, [image])
+  |> string.contains("\"type\":\"input_image\"")
   |> should.be_true
+}
+
+/// An image file part is encoded exactly as an inline image part with the
+/// same media type and data; no provider has a field for an image's name.
+pub fn every_provider_sends_an_image_file_part_as_an_image_test() {
+  let file = message.InlineFilePart("image/png", "photo.png", "iVBO")
+  let image = message.InlineImagePart("image/png", "iVBO")
+  use config <- list.each(configs())
+  let sent = body(config, [message.TextPart("look"), file])
+  sent |> should.equal(body(config, [message.TextPart("look"), image]))
+  string.contains(sent, "photo.png") |> should.be_false
+}
+
+pub fn openai_sends_an_image_file_part_as_an_input_image_test() {
+  body(openai.new("test-key") |> openai.config, [
+    message.InlineFilePart("image/png", "photo.png", "iVBO"),
+  ])
+  |> string.contains(
+    "{\"type\":\"input_image\",\"image_url\":\"data:image/png;base64,iVBO\"}",
+  )
+  |> should.be_true
+}
+
+pub fn anthropic_sends_an_image_file_part_as_an_image_block_test() {
+  body(anthropic.new("test-key") |> anthropic.config, [
+    message.InlineFilePart("image/jpeg", "scan.jpg", "/9j/"),
+  ])
+  |> string.contains(
+    "{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":\"image/jpeg\",\"data\":\"/9j/\"}}",
+  )
+  |> should.be_true
+}
+
+pub fn the_refusal_is_described_test() {
   error.describe_prepare_error(
     error.InvalidRequest(error.FileTypeUnsupported("text/csv")),
   )

@@ -97,30 +97,31 @@ pub fn check_arguments(
 
 /// Parse structured output within `max_bytes`, remove each `null` the
 /// schema allows only as absence (`schema.drop_absent_nulls`), then validate
-/// and decode it. Returns the output and the answer text: the cleaned JSON
-/// when a member was removed, `text` unchanged otherwise.
+/// and decode it. The answer text, returned with the output or the failure,
+/// is the cleaned JSON when a member was removed and `text` unchanged
+/// otherwise, including when `text` is not JSON.
 pub fn decode_output(
   output_contract: contract.Contract,
   schema: codec.Schema,
   output_codec: codec.Codec(a),
   text: String,
   max_bytes: Int,
-) -> Result(#(a, String), error.ValueFailure) {
+) -> Result(#(a, String), #(error.ValueFailure, String)) {
   let bounds = value.default_limits() |> value.with_max_bytes(max_bytes)
   case value.parse(text, bounds) {
-    Error(problem) -> Error(error.InvalidJson(problem))
+    Error(problem) -> Error(#(error.InvalidJson(problem), text))
     Ok(parsed) -> {
       let #(cleaned, removed) = output_schema.drop_absent_nulls(schema, parsed)
+      let reported = case removed {
+        True -> value.to_string(cleaned)
+        False -> text
+      }
       case contract.validate(output_contract, cleaned) {
-        Error(problem) -> Error(error.SchemaRejected(problem))
+        Error(problem) -> Error(#(error.SchemaRejected(problem), reported))
         Ok(validated) ->
           case contract.decode(output_codec, validated) {
-            Error(problem) -> Error(error.DecodeRejected(problem))
-            Ok(decoded) ->
-              case removed {
-                True -> Ok(#(decoded, value.to_string(cleaned)))
-                False -> Ok(#(decoded, text))
-              }
+            Error(problem) -> Error(#(error.DecodeRejected(problem), reported))
+            Ok(decoded) -> Ok(#(decoded, reported))
           }
       }
     }

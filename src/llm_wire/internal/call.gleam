@@ -13,11 +13,12 @@ import llm_wire/internal/owner
 import llm_wire/internal/tool_def.{type Tool}
 import llm_wire/message
 
-/// Decodes the final text into the output and the text the answer reports,
-/// which structured output may have cleaned (ADR 0021).
+/// Decodes the final text into the output and the text the outcome
+/// reports, which structured output may have cleaned (ADR 0021). A failure
+/// carries the reported text too.
 pub type Decode(o) =
   fn(Option(contract.Contract), String, Int) ->
-    Result(#(o, String), ValueFailure)
+    Result(#(o, String), #(ValueFailure, String))
 
 /// How a request's final text becomes its output.
 pub type Output(o) {
@@ -130,14 +131,14 @@ pub opaque type Stream(o) {
   Stream(
     source: owner.Stream,
     provider: message.Provider,
-    decode: fn(String) -> Result(#(o, String), ValueFailure),
+    decode: fn(String) -> Result(#(o, String), #(ValueFailure, String)),
   )
 }
 
 pub fn stream(
   source: owner.Stream,
   provider: message.Provider,
-  decode: fn(String) -> Result(#(o, String), ValueFailure),
+  decode: fn(String) -> Result(#(o, String), #(ValueFailure, String)),
 ) -> Stream(o) {
   Stream(source:, provider:, decode:)
 }
@@ -153,6 +154,6 @@ pub fn provider(stream: Stream(o)) -> message.Provider {
 pub fn decode(
   stream: Stream(o),
   text: String,
-) -> Result(#(o, String), ValueFailure) {
+) -> Result(#(o, String), #(ValueFailure, String)) {
   stream.decode(text)
 }

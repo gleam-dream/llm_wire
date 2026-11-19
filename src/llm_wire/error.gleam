@@ -57,7 +57,9 @@ pub type Error {
   DeadlineExceeded(timeout: Timeout)
   /// The caller closed the stream or cancelled the call.
   Cancelled
-  /// The model's final text is not valid structured output.
+  /// The model's final text is not valid structured output. `raw_output`
+  /// is that text, without the `null` members `llm_wire.with_output`
+  /// removes for optional fields when the text is JSON.
   InvalidOutput(raw_output: String, failure: ValueFailure)
   /// The process that owned the call stopped before a result, for example
   /// because it could not start.
@@ -170,9 +172,6 @@ pub type RequestProblem {
   TooManyStopSequences(maximum: Int)
   /// This provider refuses remote image URLs; send inline image data.
   ImageUrlUnsupported
-  /// A file part has an image media type; send an image as
-  /// `message.InlineImagePart`.
-  ImageInFilePart(media_type: String)
   /// This provider cannot take a file of this media type: Anthropic takes
   /// only `application/pdf`.
   FileTypeUnsupported(media_type: String)
@@ -378,10 +377,6 @@ fn describe_problem(problem: RequestProblem) -> String {
     TooManyStopSequences(maximum) ->
       "at most " <> int.to_string(maximum) <> " stop sequences are accepted"
     ImageUrlUnsupported -> "image URLs are not supported; send inline data"
-    ImageInFilePart(media_type) ->
-      "a file part has the image media type "
-      <> media_type
-      <> "; send it as an inline image part"
     FileTypeUnsupported(media_type) ->
       "this provider does not accept files of media type " <> media_type
     DuplicateToolName(name) -> "duplicate tool name " <> name

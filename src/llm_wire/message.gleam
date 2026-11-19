@@ -51,8 +51,9 @@ pub type Content {
   InlineImagePart(mime_type: String, base64_data: String)
   /// A document the provider reads as a file, such as a PDF. OpenAI sends it
   /// as `input_file` with `file_name`; Google as inline data; Anthropic as a
-  /// `document`, which takes only `application/pdf`. An image media type is
-  /// refused during preparation: send an image as `InlineImagePart`.
+  /// `document`, which takes only `application/pdf`. A file with an image
+  /// media type is sent as the provider's image, as `InlineImagePart` is;
+  /// no provider has a field for an image's name.
   InlineFilePart(mime_type: String, file_name: String, base64_data: String)
 }
 

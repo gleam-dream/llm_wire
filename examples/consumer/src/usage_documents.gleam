@@ -7,6 +7,7 @@ import gleam/option.{type Option, None}
 import gleam/string
 import json/blueprint/codec
 import llm_wire
+import llm_wire/anthropic
 import llm_wire/error
 import llm_wire/limit
 import llm_wire/message
@@ -59,7 +60,8 @@ pub fn main() -> Nil {
     |> openai.config
     |> llm_wire.with_limit(limit.RequestBytes, 50_000_000)
 
-  // A PDF goes in a file part with its name; an image goes in an image part.
+  // A stored original goes in a file part with its name: a PDF is sent as a
+  // file, a photo as the provider's image.
   let pdf =
     message.InlineFilePart(
       mime_type: "application/pdf",
@@ -95,12 +97,20 @@ pub fn main() -> Nil {
   let assert Ok(again) = codec.decode_json(invoice_codec(), text)
   let assert True = again == output
 
-  // An image in a file part is refused before anything is sent.
+  // A photo in a file part is sent as an image.
   let photo = message.InlineFilePart("image/png", "photo.png", "iVBORw0K")
-  let assert Error(error.InvalidRequest(error.ImageInFilePart("image/png"))) =
+  let photo_call =
+    prepared(config, llm_wire.request("gpt-5", [message.UserParts([photo])]))
+  let assert True =
+    string.contains(llm_wire.request_json(photo_call), "\"input_image\"")
+
+  // Anthropic takes only PDFs and images as files.
+  let assert Error(error.InvalidRequest(error.FileTypeUnsupported(_))) =
     llm_wire.prepare(
-      config,
-      llm_wire.request("gpt-5", [message.UserParts([photo])]),
+      anthropic.new("sk-example") |> anthropic.config,
+      llm_wire.request("claude-test", [
+        message.UserParts([message.InlineFilePart("text/csv", "a.csv", "YQ==")]),
+      ]),
     )
   io.println("invoice " <> output.number <> " read from a PDF")
 }
