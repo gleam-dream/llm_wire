@@ -28,6 +28,12 @@
     pending-entry(title: "Carry Anthropic thinking through tool rounds", kind: "ruling", since: "2026-11-18", adr: [#adr(20)])[
       Anthropic requires a tool-requesting turn's thinking blocks and signatures to be sent back with its tool results. The assistant turn does not keep them, so preparation refuses a thinking level on Anthropic while a tool round continues. Settle how the turn's replay data carries the blocks.
     ],
+    pending-entry(title: "Replay OpenAI reasoning without stored responses", kind: "ruling", since: "2026-11-19", adr: [#adr(21)])[
+      Under store false, OpenAI returns a turn's reasoning only as encrypted content the request asks for with include reasoning.encrypted_content, and expects it back before the tool calls it preceded. The OpenAI reducer keeps no reasoning item and the assistant turn has no place for one, so a tool round without stored responses works but the model loses its earlier reasoning. Settle this with the Anthropic thinking replay, which needs the same place in the turn's replay data.
+    ],
+    pending-entry(title: "Decide the OpenAI store default", kind: "ruling", since: "2026-11-19", adr: [#adr(21)])[
+      openai.with_store sends store explicitly; without it the field is left out and OpenAI stores the response. LLM Wire never reads a stored response, so false could become the default. Flipping it silently changes existing callers' stored data, so it waits for the next breaking release.
+    ],
     pending-entry(title: "Check carried-over usage claims against code", kind: "verify", since: "2026-10-17", adr: [#adr(17)])[
       The defaults and timer composition under Effect timing and deadlines, the extension rules under Provider interpretation and the retry guidance under Failure and retry evidence came from retired guides. The compiled usage examples exercise the defaults, conversation persistence, failure kinds, offline testing, observation and client ownership. The remaining statements in those sections are not yet checked against code.
     ],
@@ -36,7 +42,7 @@
   #section(title: "Generation admission", lead: "A reusable prepared value binds one encoded request to its output decoder.", body: [
     #subsection(title: "Values and refinements")[
       #entity(id: "generation-request", title: "Generation request", description: [The caller's explicit request and desired native output.], kind: "value-object", owner: "caller", lifecycle: "immutable", domain: "generation")[
-        #attribute(name: "Input", type: "model string and ordered List(Message)", provenance: "authored")[Messages hold system/user text, user content parts, assistant turns, assistant content parts or tool results. Content parts are text, remote image URL or inline MIME/base64 image.]
+        #attribute(name: "Input", type: "model string and ordered List(Message)", provenance: "authored")[Messages hold system/user text, user content parts, assistant turns, assistant content parts or tool results. Content parts are text, remote image URL, inline MIME/base64 image or inline file with MIME type, file name and base64 data.]
         #attribute(name: "Options", type: "optional maximum tokens, temperature, top-p, thinking level and cache reference; stop list", provenance: "authored")[Maximum tokens is positive; temperature is within 0 through 2; top-p within 0 through 1. Model/output name is trimmed and nonempty. Cache references are nonempty and provider-specific.]
         #attribute(name: "Output", type: "String or Blueprint Codec(o)", provenance: "authored")[Plain text returns String. with_output changes only the output type and retains the remaining request settings.]
         #relates(cardinality: "1 : 0..n")[A request declares zero or more tools and contains an ordered caller-owned conversation.]
@@ -78,12 +84,18 @@
       #answers(title: "Generation preparation", responsibility: [Validate and encode one request without networking.], interface: [prepare(Config, Request(o)) returns Prepared(o) or PrepareError; request_json reads the encoded body without credentials.], interactions: [Uses adapter validation, endpoint admission, tools, schema projection and the caller's output codec.], invariants: [Selected provider, admitted contracts and native decoder remain together. Invalid local values never reach HTTP.], failure: [InvalidSetting, InvalidRequest, UnsupportedSchema, ToolResultMismatch or RequestTooLarge name the refused boundary. Diagnostic strings are not classification keys.])
       #points(
         [Each built-in provider is selected by its constructor and configuration function (OpenAI, Anthropic, Google), and an endpoint override selects a compatible server.],
-        [Built-in settings hold their keys behind reveal closures. OpenAI adds organization/project; Anthropic adds API version; Google adds API version. Common settings own limits, three time bounds and tool-call checking. All bounds must be positive unless an explicit timeout Infinity is selected.],
+        [Built-in settings hold their keys behind reveal closures. OpenAI adds organization/project and an optional store flag, sent as store on every Responses request when set and left out otherwise; Anthropic adds API version; Google adds API version. Common settings own limits, three time bounds and tool-call checking. All bounds must be positive unless an explicit timeout Infinity is selected.],
         [Preparation validates timeouts, adapter settings, positive limits, trimmed nonempty model, historical turns, unique tool names and projected tool/output schemas. It then validates endpoint and common/provider options, calls the encoder, reveals and validates provider headers, validates the joined path and bounds the encoded body.],
         [Generation endpoint admission requires HTTP(S), a host, an admitted port and a path without userinfo, query, fragment or controls. The joined endpoint and encoded path must start with `/` and cannot inject a new authority, controls, spaces, a fragment or a second query. Before the query it refuses `\`, `;`, empty segments other than a trailing one, `.` and `..` segments, and percent-encoding that is malformed or decodes to `/`, `\`, `.`, `%`, a control byte or a non-ASCII byte. The Google adapter places the model in the request path, so its model must be one model-id segment of ASCII letters, digits, `.`, `-`, `_` and `:` other than `.` or `..`; any other model is InvalidSetting(Model). The OpenAI and Anthropic adapters send the model only in the body. Header names/values and reserved common headers are checked; credentials remain inspection-safe but the application must govern logging of prompt bodies.],
-        [OpenAI refuses stop sequences. Thinking levels follow the Thinking level unit above. Anthropic and Google admit finite stop lists, with Google's maximum five. OpenAI admits remote image URLs; Anthropic and Google require inline image content. Cache references are OpenAI prompt_cache_key or Google cachedContent; other providers reject them.],
+        [OpenAI refuses stop sequences. Thinking levels follow the Thinking level unit above. Anthropic and Google admit finite stop lists, with Google's maximum five. OpenAI admits remote image URLs; Anthropic and Google require inline image content. An inline file is OpenAI input_file with its file name and a base64 data URL, Google inlineData and Anthropic a base64 document titled with its file name; Anthropic admits only application/pdf, and every provider refuses an image media type in a file part, which belongs in an inline image part. An inline image's media type is not checked. #adr(21) Cache references are OpenAI prompt_cache_key or Google cachedContent; other providers reject them.],
         [Custom projection/encoding/header callbacks run synchronously during preparation. Their declared purity excludes networking and uncontrolled effects; the type system cannot enforce that promise. Generation header values are captured during prepare, so changing credentials requires preparing again.],
       )
+      #behavior(title: "A file part reaches the provider as a file", area: "Preparation", level: "interface")[
+        #given[A user message holds an inline file whose media type is not an image.]
+        #when[Preparation encodes the message for a built-in provider.]
+        #then[The encoded body carries the file in the provider's file form with its data, and with its name where the provider has a field for one.]
+        #then[Anthropic refuses a media type other than application/pdf with FileTypeUnsupported, and every provider refuses an image media type with ImageInFilePart, before anything is sent.]
+      ]
       #behavior(title: "Invalid local input fails before networking", area: "Preparation", level: "interface")[
         #given[A generation request has an invalid configuration, option, schema or tool-result association.]
         #when[The caller prepares the request.]
@@ -95,15 +107,24 @@
       #md-table(3, (
         [*Schema location*], [*Admitted shapes*], [*Refused shapes*],
         [Built-in tool parameters], [string/enum, integer/range, number, bool, any; recursive list, nullable, object], [pair, union, number range, unknown kind],
-        [OpenAI/Anthropic output], [record root; required closed nested objects, lists, nullable, enums, integers/ranges and nested tagged union], [non-record root, optional property, pair, number range, any, unknown kind],
+        [OpenAI/Anthropic output], [record root; closed nested objects, lists, nullable, enums, integers/ranges and nested tagged union; an optional property is sent required and nullable], [non-record root, pair, number range, any, unknown kind],
         [Google output], [record root; also optional fields, pair, number range and any below root], [non-record root and unknown kind],
         [Custom adapter], [its explicit projection callbacks; Blueprint's canonical schema by default], [whatever its projection returns as unsupported],
       ))
       #points(
         [Nested Blueprint unions become anyOf of closed variant objects; each tag is a one-element string enum. The original codec still decodes the response, so this projection cannot bless a different native value. Google's field is generationConfig.responseJsonSchema; tool declarations use parametersJsonSchema. Anthropic documents that enum and const capitalization is not guaranteed, so the codec's decoding is the final check on a tag. #adr(4) records protocol-specific evidence.],
         [tool.new is for authored declarations and panics with the tool name when its name/schema is invalid. Runtime from_contract/from_json_schema returns ToolError. Tool names match ASCII letters, digits, underscore or hyphen, with length 1 through 64. Schema-only MCP input needs no Relay type or runtime dependency.],
+        [The strict projection lists every property in required and turns an optional property's schema into anyOf of null and that schema, Blueprint's nullable form; a property already nullable keeps its schema. It applies to nested records, list items and union payloads. Google's projection keeps optional properties optional. #adr(21)],
+        [Before validation, for every provider, the parsed answer is walked against the output schema and a null member is removed where the property is optional and its schema admits no null, being neither nullable nor any. A null there can only mean absence and the original codec refuses it. Answer text is the cleaned JSON, written compactly with exact numbers, when a member was removed and the provider's text otherwise; InvalidOutput keeps the provider's text. #adr(21)],
         [Schema-only admission inherits Blueprint's supported profile and loader failures. It is not general JSON Schema support; unsupported external MCP schemas remain explicitly refused. Native tool arguments and final output are parsed within byte bounds, validated against the original contract, then decoded. Schema-invalid values never enter codec mapping callbacks.],
       )
+      #behavior(title: "A null for an optional field reads as absent", area: "Output validation", level: "interface")[
+        #given[A structured request's codec has an optional property whose schema admits no null.]
+        #when[The answer holds null for that property, at any depth.]
+        #then[The member is removed before validation and the codec decodes the property as absent.]
+        #then[Answer text is the cleaned JSON, which the original codec decodes to the same output.]
+        #then[A null for a nullable property, or for a required one, is left for validation as before.]
+      ]
       #behavior(title: "Unusable structured output retains its evidence", area: "Output validation", level: "interface")[
         #given[An admitted structured request receives final text that is malformed JSON, schema-invalid or rejected by its codec.]
         #when[The completed output is decoded for the caller.]

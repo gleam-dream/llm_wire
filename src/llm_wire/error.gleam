@@ -170,6 +170,12 @@ pub type RequestProblem {
   TooManyStopSequences(maximum: Int)
   /// This provider refuses remote image URLs; send inline image data.
   ImageUrlUnsupported
+  /// A file part has an image media type; send an image as
+  /// `message.InlineImagePart`.
+  ImageInFilePart(media_type: String)
+  /// This provider cannot take a file of this media type: Anthropic takes
+  /// only `application/pdf`.
+  FileTypeUnsupported(media_type: String)
   DuplicateToolName(name: String)
   /// A call in the conversation has an empty id or a duplicate id.
   InvalidCallId(call_id: String)
@@ -372,6 +378,12 @@ fn describe_problem(problem: RequestProblem) -> String {
     TooManyStopSequences(maximum) ->
       "at most " <> int.to_string(maximum) <> " stop sequences are accepted"
     ImageUrlUnsupported -> "image URLs are not supported; send inline data"
+    ImageInFilePart(media_type) ->
+      "a file part has the image media type "
+      <> media_type
+      <> "; send it as an inline image part"
+    FileTypeUnsupported(media_type) ->
+      "this provider does not accept files of media type " <> media_type
     DuplicateToolName(name) -> "duplicate tool name " <> name
     InvalidCallId(call_id) ->
       "invalid or duplicate call id \"" <> call_id <> "\""

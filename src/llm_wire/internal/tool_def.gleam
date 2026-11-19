@@ -4,6 +4,7 @@ import json/blueprint/codec
 import json/blueprint/contract
 import json/blueprint/value
 import llm_wire/error
+import llm_wire/internal/schema as output_schema
 
 /// An admitted tool declaration. Built only by `llm_wire/tool`.
 pub opaque type Tool {
@@ -94,24 +95,34 @@ pub fn check_arguments(
   }
 }
 
-/// Parse, validate and decode JSON text with a codec and its contract.
-pub fn decode_value(
+/// Parse structured output within `max_bytes`, remove each `null` the
+/// schema allows only as absence (`schema.drop_absent_nulls`), then validate
+/// and decode it. Returns the output and the answer text: the cleaned JSON
+/// when a member was removed, `text` unchanged otherwise.
+pub fn decode_output(
   output_contract: contract.Contract,
+  schema: codec.Schema,
   output_codec: codec.Codec(a),
   text: String,
   max_bytes: Int,
-) -> Result(a, error.ValueFailure) {
+) -> Result(#(a, String), error.ValueFailure) {
   let bounds = value.default_limits() |> value.with_max_bytes(max_bytes)
   case value.parse(text, bounds) {
     Error(problem) -> Error(error.InvalidJson(problem))
-    Ok(parsed) ->
-      case contract.validate(output_contract, parsed) {
+    Ok(parsed) -> {
+      let #(cleaned, removed) = output_schema.drop_absent_nulls(schema, parsed)
+      case contract.validate(output_contract, cleaned) {
         Error(problem) -> Error(error.SchemaRejected(problem))
         Ok(validated) ->
           case contract.decode(output_codec, validated) {
-            Ok(decoded) -> Ok(decoded)
             Error(problem) -> Error(error.DecodeRejected(problem))
+            Ok(decoded) ->
+              case removed {
+                True -> Ok(#(decoded, value.to_string(cleaned)))
+                False -> Ok(#(decoded, text))
+              }
           }
       }
+    }
   }
 }

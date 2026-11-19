@@ -760,6 +760,12 @@ fn role_parts(role: String, parts: List(message.Content)) -> json.Json {
               #("mime_type", json.string(mime_type)),
               #("data", json.string(data)),
             ])
+          message.InlineFilePart(mime_type, file_name, data) ->
+            json.object([
+              #("mime_type", json.string(mime_type)),
+              #("file_name", json.string(file_name)),
+              #("data", json.string(data)),
+            ])
         }
       }),
     ),

@@ -81,7 +81,9 @@ pub fn google_function_parameters_schema(
 }
 
 /// Strict structured-output schemas require a closed object at the root and
-/// closed, fully required object properties recursively. A union below the
+/// closed, fully required object properties recursively. An optional
+/// property is sent required and nullable (see `require_all`); the answer's
+/// `null` for it is removed again by `drop_absent_nulls`. A union below the
 /// root is sent as `anyOf` of strict objects, each with its tag as a
 /// single-value `enum` (see `strict_unions`); a union at the root is refused,
 /// because OpenAI's strict mode rejects an `anyOf` root and the other
@@ -114,17 +116,16 @@ fn object_root(schema: codec.Schema) -> Bool {
 
 fn strict_schema(schema: codec.Schema) -> Result(json.Json, String) {
   use Nil <- result.try(validate_strict_schema(schema))
-  strict_unions_json(schema)
+  codec.schema_value(schema) |> require_all |> strict_unions |> provider_json
 }
 
 fn google_strict_schema(schema: codec.Schema) -> Result(json.Json, String) {
   use Nil <- result.try(validate_google_strict_schema(schema))
-  strict_unions_json(schema)
+  codec.schema_value(schema) |> strict_unions |> provider_json
 }
 
-fn strict_unions_json(schema: codec.Schema) -> Result(json.Json, String) {
-  codec.schema_value(schema)
-  |> strict_unions
+fn provider_json(document: value.Value) -> Result(json.Json, String) {
+  document
   |> value.to_json
   |> result.replace_error(
     "Number schema bound cannot be represented exactly as a JSON number",
@@ -161,6 +162,156 @@ fn strict_unions(document: value.Value) -> value.Value {
       }
     value.Array(items) -> value.Array(list.map(items, strict_unions))
     other -> other
+  }
+}
+
+/// Lists every property of each closed object Blueprint renders in its
+/// `required`, and makes each property that was not required nullable, in
+/// Blueprint's own nullable form `{"anyOf": [{"type": "null"}, schema]}`. A
+/// property already nullable keeps its schema. Applied before
+/// `strict_unions`, it reaches union payloads too, since Blueprint renders a
+/// variant as a closed object.
+fn require_all(document: value.Value) -> value.Value {
+  case document {
+    value.Object(members) ->
+      case
+        list.key_find(members, "type"),
+        list.key_find(members, "properties"),
+        list.key_find(members, "required")
+      {
+        Ok(value.String("object")),
+          Ok(value.Object(properties)),
+          Ok(value.Array(required))
+        -> {
+          let properties =
+            list.map(properties, fn(property) {
+              let #(name, schema) = property
+              let schema = require_all(schema)
+              case list.contains(required, value.String(name)) {
+                True -> #(name, schema)
+                False -> #(name, nullable(schema))
+              }
+            })
+          let names =
+            list.map(properties, fn(property) { value.String(property.0) })
+          value.Object(
+            list.map(members, fn(member) {
+              case member.0 {
+                "properties" -> #("properties", value.Object(properties))
+                "required" -> #("required", value.Array(names))
+                _ -> #(member.0, require_all(member.1))
+              }
+            }),
+          )
+        }
+        _, _, _ ->
+          value.Object(
+            list.map(members, fn(member) { #(member.0, require_all(member.1)) }),
+          )
+      }
+    value.Array(items) -> value.Array(list.map(items, require_all))
+    other -> other
+  }
+}
+
+fn nullable(schema: value.Value) -> value.Value {
+  let null = value.Object([#("type", value.String("null"))])
+  let admits_null = case schema {
+    value.Object(members) ->
+      case list.key_find(members, "anyOf") {
+        Ok(value.Array(choices)) -> list.contains(choices, null)
+        _ -> False
+      }
+    _ -> False
+  }
+  case admits_null {
+    True -> schema
+    False -> value.Object([#("anyOf", value.Array([null, schema]))])
+  }
+}
+
+/// Removes, recursively, each `null` member of `document` where `schema`
+/// declares the property optional and the property's own schema admits no
+/// `null` (it is neither nullable nor `codec.value()`). Such a `null` can
+/// only mean absence, and the original codec refuses it. Returns the value
+/// and whether anything was removed; anything the schema does not describe
+/// is left for validation.
+pub fn drop_absent_nulls(
+  schema: codec.Schema,
+  document: value.Value,
+) -> #(value.Value, Bool) {
+  case codec.view(schema), document {
+    // Members are written in the schema's property order, the order a
+    // strict schema asks the model for; the native parser keeps none.
+    // Members the schema does not name follow, for validation to refuse.
+    codec.ObjectSchema(properties), value.Object(members) -> {
+      let #(kept, removed) =
+        list.fold(properties, #([], False), fn(acc, property) {
+          let #(kept, removed) = acc
+          case list.key_find(members, property.name) {
+            Error(Nil) -> acc
+            Ok(item) ->
+              case item, property.required, admits_null(property.schema) {
+                value.Null, False, False -> #(kept, True)
+                _, _, _ -> {
+                  let #(item, changed) =
+                    drop_absent_nulls(property.schema, item)
+                  #([#(property.name, item), ..kept], removed || changed)
+                }
+              }
+          }
+        })
+      let unknown =
+        list.filter(members, fn(member) {
+          !list.any(properties, fn(property) { property.name == member.0 })
+        })
+      #(value.Object(list.append(list.reverse(kept), unknown)), removed)
+    }
+    codec.NullableSchema(inner), item -> drop_absent_nulls(inner, item)
+    codec.ListSchema(items), value.Array(elements) -> {
+      let #(elements, removed) =
+        list.fold(elements, #([], False), fn(acc, element) {
+          let #(element, changed) = drop_absent_nulls(items, element)
+          #([element, ..acc.0], acc.1 || changed)
+        })
+      #(value.Array(list.reverse(elements)), removed)
+    }
+    codec.PairSchema(left, right), value.Array([first, second]) -> {
+      let #(first, left_changed) = drop_absent_nulls(left, first)
+      let #(second, right_changed) = drop_absent_nulls(right, second)
+      #(value.Array([first, second]), left_changed || right_changed)
+    }
+    codec.UnionSchema(variants), value.Object(members) ->
+      case list.key_find(members, "tag"), list.key_find(members, "value") {
+        Ok(value.String(tag)), Ok(payload) ->
+          case list.find(variants, fn(variant) { variant.tag == tag }) {
+            Ok(codec.VariantSchema(payload: Some(payload_schema), ..)) -> {
+              let #(payload, changed) =
+                drop_absent_nulls(payload_schema, payload)
+              #(
+                value.Object(
+                  list.map(members, fn(member) {
+                    case member.0 {
+                      "value" -> #("value", payload)
+                      _ -> member
+                    }
+                  }),
+                ),
+                changed,
+              )
+            }
+            _ -> #(document, False)
+          }
+        _, _ -> #(document, False)
+      }
+    _, _ -> #(document, False)
+  }
+}
+
+fn admits_null(schema: codec.Schema) -> Bool {
+  case codec.view(schema) {
+    codec.NullableSchema(_) | codec.AnySchema | codec.OtherSchema(_) -> True
+    _ -> False
   }
 }
 
@@ -205,19 +356,10 @@ fn validate_strict_schema(schema: codec.Schema) -> Result(Nil, String) {
     | codec.BoolSchema -> Ok(Nil)
     codec.ListSchema(item) | codec.NullableSchema(item) ->
       validate_strict_schema(item)
-    codec.ObjectSchema(properties) -> {
-      case list.any(properties, fn(property) { !property.required }) {
-        True ->
-          Error(
-            "Strict structured output requires every object property to be required",
-          )
-        False ->
-          list.fold(properties, Ok(Nil), fn(acc, property) {
-            use Nil <- result.try(acc)
-            validate_strict_schema(property.schema)
-          })
-      }
-    }
+    codec.ObjectSchema(properties) ->
+      list.try_each(properties, fn(property) {
+        validate_strict_schema(property.schema)
+      })
     codec.UnionSchema(variants) ->
       validate_variants(variants, validate_strict_schema)
     // Strict mode needs a `type`: `{}` and an unknown kind cannot give one.

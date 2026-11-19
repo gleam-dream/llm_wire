@@ -22,6 +22,7 @@ fn encode_openai_request(
   request: adapter.Request,
   tools: List(json.Json),
   structured_format: Option(adapter.OutputFormat),
+  store: Option(Bool),
 ) -> Result(json.Json, error.PrepareError) {
   let empty: Result(List(json.Json), error.PrepareError) = Ok([])
   use input_items <- result.try(
@@ -35,7 +36,12 @@ fn encode_openai_request(
     #("input", json.array(input_items, fn(value) { value })),
     #("stream", json.bool(True)),
   ]
-  let options = request_option_fields(request, message.OpenAI)
+  let store_fields = case store {
+    Some(value) -> [#("store", json.bool(value))]
+    None -> []
+  }
+  let options =
+    list.append(store_fields, request_option_fields(request, message.OpenAI))
   let tool_fields = case tools {
     [] -> []
     _ -> [#("tools", json.array(tools, fn(value) { value }))]
@@ -367,6 +373,16 @@ fn google_content_parts(
             <> "}}",
           ]),
         )
+      message.InlineFilePart(mime_type, _, base64_data) ->
+        Ok(
+          list.append(prior, [
+            "{\"inlineData\":{\"mimeType\":"
+            <> json.to_string(json.string(mime_type))
+            <> ",\"data\":"
+            <> json.to_string(json.string(base64_data))
+            <> "}}",
+          ]),
+        )
       message.ImageUrlPart(_) ->
         Error(error.InvalidRequest(error.ImageUrlUnsupported))
     }
@@ -548,6 +564,23 @@ fn anthropic_content_json(
                     #("data", json.string(base64_data)),
                   ]),
                 ),
+              ]),
+            ]),
+          )
+        message.InlineFilePart(mime_type, file_name, base64_data) ->
+          Ok(
+            list.append(prior, [
+              json.object([
+                #("type", json.string("document")),
+                #(
+                  "source",
+                  json.object([
+                    #("type", json.string("base64")),
+                    #("media_type", json.string(mime_type)),
+                    #("data", json.string(base64_data)),
+                  ]),
+                ),
+                #("title", json.string(file_name)),
               ]),
             ]),
           )
@@ -793,8 +826,66 @@ fn openai_content_parts(
             json.string("data:" <> mime_type <> ";base64," <> base64_data),
           ),
         ])
+      message.InlineFilePart(mime_type, file_name, base64_data) ->
+        json.object([
+          #("type", json.string("input_file")),
+          #("filename", json.string(file_name)),
+          #(
+            "file_data",
+            json.string("data:" <> mime_type <> ";base64," <> base64_data),
+          ),
+        ])
     }
   })
+}
+
+/// Refuses, on every built-in provider, a file part with an image media
+/// type, and a file media type `accepts` does not take. Media types are
+/// compared without case and parameters (ADR 0021).
+fn admit_files(
+  messages: List(message.Message),
+  accepts: fn(String) -> Bool,
+) -> Result(Nil, error.PrepareError) {
+  list.try_each(messages, fn(msg) {
+    case msg {
+      message.UserParts(parts) | message.AssistantParts(parts) ->
+        list.try_each(parts, fn(part) {
+          case part {
+            message.InlineFilePart(mime_type:, ..) -> {
+              let essence = media_essence(mime_type)
+              case string.starts_with(essence, "image/"), accepts(essence) {
+                True, _ ->
+                  Error(error.InvalidRequest(error.ImageInFilePart(mime_type)))
+                False, False ->
+                  Error(
+                    error.InvalidRequest(error.FileTypeUnsupported(mime_type)),
+                  )
+                False, True -> Ok(Nil)
+              }
+            }
+            _ -> Ok(Nil)
+          }
+        })
+      _ -> Ok(Nil)
+    }
+  })
+}
+
+/// The media type without parameters, trimmed and lowercased.
+fn media_essence(mime_type: String) -> String {
+  let base = case string.split_once(mime_type, ";") {
+    Ok(#(base, _)) -> base
+    Error(Nil) -> mime_type
+  }
+  string.lowercase(string.trim(base))
+}
+
+fn any_file(_essence: String) -> Bool {
+  True
+}
+
+fn pdf_only(essence: String) -> Bool {
+  essence == "application/pdf"
 }
 
 /// Built-in profiles enter exactly the same request/reducer boundary as an
@@ -804,6 +895,7 @@ pub fn openai_adapter(
   key: fn() -> String,
   organization: Option(String),
   project: Option(String),
+  store: Option(Bool),
 ) -> adapter.Adapter {
   let optional_headers =
     list.append(
@@ -824,6 +916,7 @@ pub fn openai_adapter(
     },
     validate: fn() { require_key(key) },
     encode: fn(request, tools, format) {
+      use Nil <- result.try(admit_files(request.messages, any_file))
       use _ <- result.try(
         list.try_map(request.messages, fn(msg) {
           case msg {
@@ -836,6 +929,7 @@ pub fn openai_adapter(
         request,
         projected_tool_json(message.OpenAI, tools),
         format,
+        store,
       ))
       Ok(adapter.Encoded("/responses", json.to_string(body)))
     },
@@ -859,6 +953,7 @@ pub fn anthropic_adapter(
     headers: fn() { [#("x-api-key", key()), version_header] },
     validate: fn() { require_key(key) },
     encode: fn(request, tools, format) {
+      use Nil <- result.try(admit_files(request.messages, pdf_only))
       use body <- result.try(encode_anthropic_request(
         request,
         projected_tool_json(message.Anthropic, tools),
@@ -887,6 +982,7 @@ pub fn google_adapter(
     validate: fn() { require_key(key) },
     encode: fn(request, tools, format) {
       use Nil <- result.try(admit_google_model(request.model))
+      use Nil <- result.try(admit_files(request.messages, any_file))
       use body <- result.try(encode_google_request(
         request,
         projected_tool_json(message.Google, tools),
