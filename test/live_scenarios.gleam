@@ -5,7 +5,9 @@
 //// headers are never stored and never compared.
 
 import gleam/list
-import gleam/option.{type Option}
+import gleam/option.{type Option, None, Some}
+import gleam/result
+import http_gun
 import http_gun/config as http_config
 import http_gun/redaction
 import json/blueprint/codec
@@ -13,6 +15,7 @@ import json/blueprint/number
 import json/blueprint/value.{type Value}
 import llm_wire
 import llm_wire/google
+import llm_wire/message
 import llm_wire/openai
 import llm_wire/thinking
 import llm_wire/tool
@@ -175,6 +178,11 @@ pub type Scenario {
   GoogleThinkingLevel
   GoogleThoughtLimit
   OpenAiThinkingLevel
+  OpenAiFilePdf
+  OpenAiOptionalNull
+  OpenAiOptionalValue
+  OpenAiStoreFalse
+  OpenAiToolRound
 }
 
 pub fn all() -> List(Scenario) {
@@ -191,6 +199,23 @@ pub fn all() -> List(Scenario) {
     GoogleThinkingLevel,
     GoogleThoughtLimit,
     OpenAiThinkingLevel,
+    OpenAiFilePdf,
+    OpenAiOptionalNull,
+    OpenAiOptionalValue,
+    OpenAiStoreFalse,
+    OpenAiToolRound,
+  ]
+}
+
+/// Scenarios defined for recording whose cassettes are not committed yet.
+/// The replay checks skip them until `dev/record-live` has recorded them.
+pub fn awaiting_recording() -> List(Scenario) {
+  [
+    OpenAiFilePdf,
+    OpenAiOptionalNull,
+    OpenAiOptionalValue,
+    OpenAiStoreFalse,
+    OpenAiToolRound,
   ]
 }
 
@@ -208,6 +233,11 @@ pub fn name(scenario: Scenario) -> String {
     GoogleThinkingLevel -> "google-thinking-level"
     GoogleThoughtLimit -> "google-thought-limit"
     OpenAiThinkingLevel -> "openai-thinking-level"
+    OpenAiFilePdf -> "openai-file-pdf"
+    OpenAiOptionalNull -> "openai-optional-null"
+    OpenAiOptionalValue -> "openai-optional-value"
+    OpenAiStoreFalse -> "openai-store-false"
+    OpenAiToolRound -> "openai-tool-round"
   }
 }
 
@@ -230,7 +260,14 @@ pub fn is_google(scenario: Scenario) -> Bool {
     | GoogleWideSchema
     | GoogleThinkingLevel
     | GoogleThoughtLimit -> True
-    OpenAiWritten | OpenAiNoSources | OpenAiThinkingLevel -> False
+    OpenAiWritten
+    | OpenAiNoSources
+    | OpenAiThinkingLevel
+    | OpenAiFilePdf
+    | OpenAiOptionalNull
+    | OpenAiOptionalValue
+    | OpenAiStoreFalse
+    | OpenAiToolRound -> False
   }
 }
 
@@ -381,4 +418,158 @@ pub fn thinking_call(
   }
   let assert Ok(prepared) = llm_wire.prepare(config, request)
   prepared
+}
+
+// --- OpenAI Responses on dash-crm's model (ADR 0021) -------------------------
+
+/// The model dash-crm's agents use. OpenAI says to leave out `temperature`
+/// and `top_p` for it, so no scenario sets them.
+pub const openai_sol_model = "gpt-6.2-sol"
+
+/// dash-crm's OpenAI configuration: responses are not stored.
+pub fn sol_config(key: String) -> llm_wire.Config {
+  openai.new(key) |> openai.with_store(False) |> openai.config
+}
+
+fn sol_request(prompt: List(message.Content)) -> llm_wire.Request(String) {
+  llm_wire.request(openai_sol_model, [message.UserParts(prompt)])
+  |> llm_wire.with_max_tokens(4096)
+}
+
+/// A one-page PDF of 622 bytes reading "Invoice A-17" and "Total due: 42.50
+/// EUR", written by hand so it carries nothing else.
+pub const invoice_pdf =
+  "JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA2MTIgNzkyXSAvUmVzb3VyY2VzIDw8IC9Gb250IDw8IC9GMSA1IDAgUiA+PiA+PiAvQ29udGVudHMgNCAwIFIgPj4KZW5kb2JqCjQgMCBvYmoKPDwgL0xlbmd0aCA3OCA+PgpzdHJlYW0KQlQgL0YxIDE4IFRmIDcyIDcyMCBUZCAoSW52b2ljZSBBLTE3KSBUaiAwIC0yOCBUZCAoVG90YWwgZHVlOiA0Mi41MCBFVVIpIFRqIEVUCmVuZHN0cmVhbQplbmRvYmoKNSAwIG9iago8PCAvVHlwZSAvRm9udCAvU3VidHlwZSAvVHlwZTEgL0Jhc2VGb250IC9IZWx2ZXRpY2EgPj4KZW5kb2JqCnhyZWYKMCA2CjAwMDAwMDAwMDAgNjU1MzUgZiAKMDAwMDAwMDAwOSAwMDAwMCBuIAowMDAwMDAwMDU4IDAwMDAwIG4gCjAwMDAwMDAxMTUgMDAwMDAgbiAKMDAwMDAwMDI0MSAwMDAwMCBuIAowMDAwMDAwMzY5IDAwMDAwIG4gCnRyYWlsZXIKPDwgL1NpemUgNiAvUm9vdCAxIDAgUiA+PgpzdGFydHhyZWYKNDM5CiUlRU9GCg=="
+
+pub type Invoice {
+  Invoice(number: String, total: String, currency: String)
+}
+
+pub fn invoice_output() -> codec.Codec(Invoice) {
+  use number <- codec.field("number", codec.string(), get: fn(i: Invoice) {
+    i.number
+  })
+  use total <- codec.field("total", codec.string(), get: fn(i: Invoice) {
+    i.total
+  })
+  use currency <- codec.field("currency", codec.string(), get: fn(i: Invoice) {
+    i.currency
+  })
+  codec.success(Invoice(number:, total:, currency:))
+}
+
+/// A PDF in an `InlineFilePart`, read into a structured answer.
+pub fn pdf_call(key: String) -> llm_wire.Prepared(Invoice) {
+  let request =
+    sol_request([
+      message.TextPart(
+        "Read the attached invoice. Give its number, the total due as written, without the currency, and the currency code.",
+      ),
+      message.InlineFilePart("application/pdf", "invoice.pdf", invoice_pdf),
+    ])
+    |> llm_wire.with_output("invoice", invoice_output())
+  let assert Ok(prepared) = llm_wire.prepare(sol_config(key), request)
+  prepared
+}
+
+/// `{"person": {"name": String, "nickname"?: String}}`: an optional field
+/// below the root, sent to OpenAI as required and nullable.
+pub type Person {
+  Person(name: String, nickname: Option(String))
+}
+
+pub fn person_output() -> codec.Codec(Person) {
+  let person = {
+    use name <- codec.field("name", codec.string(), get: fn(p: Person) {
+      p.name
+    })
+    use nickname <- codec.optional_field(
+      "nickname",
+      codec.string(),
+      get: fn(p: Person) { p.nickname },
+    )
+    codec.success(Person(name:, nickname:))
+  }
+  use person <- codec.field("person", person, get: fn(p) { p })
+  codec.success(person)
+}
+
+const optional_null_prompt =
+  "Fill in the person Ada Lovelace. She has no nickname, so give no nickname."
+
+const optional_value_prompt =
+  "Fill in the person Robert Stone. His nickname is Bobby."
+
+/// An optional field answered absent and answered present.
+pub fn optional_call(
+  scenario: Scenario,
+  key: String,
+) -> llm_wire.Prepared(Person) {
+  let prompt = case scenario {
+    OpenAiOptionalNull -> optional_null_prompt
+    OpenAiOptionalValue -> optional_value_prompt
+    _ -> panic as "not an optional-field scenario"
+  }
+  let request =
+    sol_request([message.TextPart(prompt)])
+    |> llm_wire.with_output("person", person_output())
+  let assert Ok(prepared) = llm_wire.prepare(sol_config(key), request)
+  prepared
+}
+
+/// A plain answer with `"store": false`.
+pub fn store_call(key: String) -> llm_wire.Prepared(String) {
+  let assert Ok(prepared) =
+    llm_wire.prepare(
+      sol_config(key),
+      sol_request([message.TextPart(thinking_prompt)]),
+    )
+  prepared
+}
+
+/// The first request of the tool round: medium reasoning, unstored, with
+/// the weather tool.
+pub fn tool_round_request() -> llm_wire.Request(String) {
+  sol_request([
+    message.TextPart(
+      "What is the weather in Paris? Call get_weather, then answer in one sentence.",
+    ),
+  ])
+  |> llm_wire.with_thinking_level(thinking.Medium)
+  |> llm_wire.with_tools([weather_tool()])
+}
+
+/// The tool's output the scenario answers every call with.
+pub const forecast = "{\"forecast\":\"sunny, 21 C\"}"
+
+/// The two exchanges of the tool round: the call, then its output and the
+/// final answer. The follow-up replays the turn's calls as `function_call`
+/// items with `call_id` only and no reasoning item, since encrypted
+/// reasoning is not carried (ADR 0021). The second outcome is `None` when
+/// the first did not ask for a tool.
+pub fn tool_round(
+  client: http_gun.Client,
+  key: String,
+) -> Result(
+  #(llm_wire.Outcome(String), Option(llm_wire.Outcome(String))),
+  llm_wire.Failure,
+) {
+  let config = sol_config(key)
+  let assert Ok(first) = llm_wire.prepare(config, tool_round_request())
+  use outcome <- result.try(llm_wire.run(client, first))
+  case outcome {
+    llm_wire.NeedsTools(turn:, ..) -> {
+      let results =
+        list.map(turn.calls, fn(call) { llm_wire.tool_result(call, forecast) })
+      let follow_up =
+        llm_wire.append(tool_round_request(), [
+          message.Assistant(turn),
+          ..results
+        ])
+      let assert Ok(second) = llm_wire.prepare(config, follow_up)
+      llm_wire.run(client, second)
+      |> result.map(fn(answer) { #(outcome, Some(answer)) })
+    }
+    _ -> Ok(#(outcome, None))
+  }
 }

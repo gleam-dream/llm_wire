@@ -39,9 +39,9 @@ This release lets an application use OpenAI's Responses API with documents, code
   - Its agent codecs with optional fields now prepare on OpenAI, and `Answer.text` and `InvalidOutput.raw_output` decode with the same codec.
   - Its tools are sent non-strict on OpenAI, so optional arguments stay optional.
 
-### Not yet
+### Limits
 
-- Reasoning items are not replayed across tool turns under `store: false`: tool calls go back as new input without the reasoning that preceded them, so the model loses its earlier reasoning. Carrying it needs `include: ["reasoning.encrypted_content"]` and the reasoning item in the turn's replay data. The design records it as pending, beside the same gap for Anthropic thinking.
+- OpenAI's encrypted reasoning is not carried, by decision. Under `store: false`, a tool round replays its calls as new input without the earlier reasoning items, and the model loses that reasoning.
 
 ## 0.2.0
 

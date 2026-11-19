@@ -48,11 +48,9 @@ pub fn with_project(options: Options, project: String) -> Options {
 /// setting the field is left out and OpenAI's default applies.
 ///
 /// LLM Wire replays the whole conversation and never reads a stored
-/// response. It does not replay reasoning items, though: with
-/// `with_store(False)` a tool round is sent back without the model's
-/// earlier reasoning, which the model then no longer sees. Carrying it
-/// needs `include: ["reasoning.encrypted_content"]` and the reasoning item
-/// in the turn's replay data, which this release does not build.
+/// response. By decision it does not carry OpenAI's encrypted reasoning:
+/// with `with_store(False)` a tool round replays its calls without the
+/// earlier reasoning items, and the model loses that reasoning.
 pub fn with_store(options: Options, store: Bool) -> Options {
   Options(..options, store: Some(store))
 }

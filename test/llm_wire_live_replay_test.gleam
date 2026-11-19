@@ -235,7 +235,7 @@ pub fn gemini_takes_an_optional_field_range_pair_and_any_value_test() {
 pub fn every_live_cassette_ends_finished_test() {
   let paths = [
     "test/cassettes/live/typesafe-classification.json",
-    ..list.map(live_scenarios.all(), live_scenarios.path)
+    ..list.map(recorded(), live_scenarios.path)
   ]
   list.each(paths, fn(path) {
     let assert Ok(tape) = cassette.load(path, 1_000_000)
@@ -250,8 +250,19 @@ pub fn every_live_cassette_ends_finished_test() {
           http_testing.Reject(_) -> "rejected"
         }
       })
-    #(path, endings) |> should.equal(#(path, ["finished"]))
+    let expected = case
+      path == live_scenarios.path(live_scenarios.OpenAiToolRound)
+    {
+      True -> ["finished", "finished"]
+      False -> ["finished"]
+    }
+    #(path, endings) |> should.equal(#(path, expected))
   })
+}
+
+fn recorded() -> List(Scenario) {
+  let awaiting = live_scenarios.awaiting_recording()
+  list.filter(live_scenarios.all(), fn(s) { !list.contains(awaiting, s) })
 }
 
 fn thinking_run(scenario: Scenario) {
@@ -305,4 +316,56 @@ pub fn openai_takes_a_reasoning_effort_test() {
     usage: Some(message.Usage(thought_tokens: Some(_), ..)),
     ..,
   )) = outcome
+}
+
+// --- OpenAI Responses on gpt-6.2-sol (ADR 0021) -------------------------------
+// Request shapes; they need no cassette.
+
+fn sol_body(prepared: llm_wire.Prepared(o)) -> String {
+  let body = llm_wire.request_json(prepared)
+  string.contains(body, "\"model\":\"gpt-6.2-sol\"") |> should.be_true
+  string.contains(body, "\"store\":false") |> should.be_true
+  string.contains(body, "\"temperature\"") |> should.be_false
+  string.contains(body, "\"top_p\"") |> should.be_false
+  body
+}
+
+pub fn sol_pdf_is_sent_as_an_input_file_test() {
+  let body = sol_body(live_scenarios.pdf_call(key))
+  string.contains(
+    body,
+    "{\"type\":\"input_file\",\"filename\":\"invoice.pdf\",\"file_data\":\"data:application/pdf;base64,JVBERi0xLjQK",
+  )
+  |> should.be_true
+}
+
+pub fn sol_optional_field_is_sent_required_and_nullable_test() {
+  use scenario <- list.each([
+    live_scenarios.OpenAiOptionalNull,
+    live_scenarios.OpenAiOptionalValue,
+  ])
+  let body = sol_body(live_scenarios.optional_call(scenario, key))
+  string.contains(
+    body,
+    "\"nickname\":{\"anyOf\":[{\"type\":\"null\"},{\"type\":\"string\"}]}},\"required\":[\"name\",\"nickname\"]",
+  )
+  |> should.be_true
+}
+
+pub fn sol_store_false_is_sent_test() {
+  let _ = sol_body(live_scenarios.store_call(key))
+  Nil
+}
+
+pub fn sol_tool_round_asks_medium_reasoning_and_a_non_strict_tool_test() {
+  let assert Ok(prepared) =
+    llm_wire.prepare(
+      live_scenarios.sol_config(key),
+      live_scenarios.tool_round_request(),
+    )
+  let body = sol_body(prepared)
+  string.contains(body, "\"reasoning\":{\"effort\":\"medium\"}")
+  |> should.be_true
+  string.contains(body, "\"strict\":false") |> should.be_true
+  string.contains(body, "\"include\"") |> should.be_false
 }
