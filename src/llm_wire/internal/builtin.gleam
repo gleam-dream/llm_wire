@@ -560,7 +560,9 @@ fn anthropic_content_json(
                   "source",
                   json.object([
                     #("type", json.string("base64")),
-                    #("media_type", json.string(mime_type)),
+                    // Anthropic takes only literal media types such as
+                    // `image/jpeg`, so case and parameters are dropped.
+                    #("media_type", json.string(media_essence(mime_type))),
                     #("data", json.string(base64_data)),
                   ]),
                 ),
@@ -576,7 +578,9 @@ fn anthropic_content_json(
                   "source",
                   json.object([
                     #("type", json.string("base64")),
-                    #("media_type", json.string(mime_type)),
+                    // Anthropic takes only literal media types such as
+                    // `image/jpeg`, so case and parameters are dropped.
+                    #("media_type", json.string(media_essence(mime_type))),
                     #("data", json.string(base64_data)),
                   ]),
                 ),

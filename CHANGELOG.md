@@ -41,7 +41,7 @@ This release lets an application use OpenAI's Responses API with documents, code
 
 ### Not yet
 
-- Reasoning items are not replayed across tool turns under `store: false`: a tool round works, but the model does not see its earlier reasoning. The design records it as pending, beside the same gap for Anthropic thinking.
+- Reasoning items are not replayed across tool turns under `store: false`: tool calls go back as new input without the reasoning that preceded them, so the model loses its earlier reasoning. Carrying it needs `include: ["reasoning.encrypted_content"]` and the reasoning item in the turn's replay data. The design records it as pending, beside the same gap for Anthropic thinking.
 
 ## 0.2.0
 

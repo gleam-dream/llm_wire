@@ -52,7 +52,7 @@ pub fn invoice_codec() -> codec.Codec(Invoice) {
 }
 
 pub fn main() -> Nil {
-  // `with_store(False)` sends `"store": false`, so OpenAI keeps no copy of
+  // `with_store(False)` sends `"store": false`, so OpenAI does not store
   // the response. Files make large bodies: raise the request bound.
   let config =
     openai.new("sk-example")

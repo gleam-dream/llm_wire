@@ -43,11 +43,16 @@ pub fn with_project(options: Options, project: String) -> Options {
   Options(..options, project: Some(project))
 }
 
-/// Send `"store": store` on every Responses request. OpenAI keeps a
-/// response for 30 days unless a request sends `store: false`; LLM Wire
-/// replays the whole conversation and never reads a stored response, so
-/// `with_store(False)` loses nothing here. Without this setting the field
-/// is left out and OpenAI's default applies.
+/// Send `"store": store` on every Responses request. OpenAI stores a
+/// response for 30 days unless a request sends `store: false`. Without this
+/// setting the field is left out and OpenAI's default applies.
+///
+/// LLM Wire replays the whole conversation and never reads a stored
+/// response. It does not replay reasoning items, though: with
+/// `with_store(False)` a tool round is sent back without the model's
+/// earlier reasoning, which the model then no longer sees. Carrying it
+/// needs `include: ["reasoning.encrypted_content"]` and the reasoning item
+/// in the turn's replay data, which this release does not build.
 pub fn with_store(options: Options, store: Bool) -> Options {
   Options(..options, store: Some(store))
 }

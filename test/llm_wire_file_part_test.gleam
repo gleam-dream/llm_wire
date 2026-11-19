@@ -145,3 +145,20 @@ pub fn a_file_part_round_trips_through_the_message_codec_test() {
   |> should.be_true
   json.parse(encoded, message.decoder()) |> should.equal(Ok(stored))
 }
+
+/// Anthropic takes only literal media types such as `application/pdf` and
+/// `image/jpeg`, so an admitted media type is sent without case or
+/// parameters. The stored message keeps what the caller wrote.
+pub fn anthropic_sends_media_types_without_case_or_parameters_test() {
+  let sent =
+    body(anthropic.new("test-key") |> anthropic.config, [
+      message.InlineFilePart("Application/PDF", "a.pdf", "JVBERi0="),
+      message.InlineFilePart("IMAGE/JPEG; q=1", "a.jpg", "/9j/"),
+      message.InlineImagePart("Image/PNG", "iVBO"),
+    ])
+  string.contains(sent, "\"media_type\":\"application/pdf\"") |> should.be_true
+  string.contains(sent, "\"media_type\":\"image/jpeg\"") |> should.be_true
+  string.contains(sent, "\"media_type\":\"image/png\"") |> should.be_true
+  string.contains(sent, "Application/PDF") |> should.be_false
+  string.contains(sent, "q=1") |> should.be_false
+}
