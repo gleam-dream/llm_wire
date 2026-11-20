@@ -183,6 +183,7 @@ pub type Scenario {
   OpenAiOptionalValue
   OpenAiStoreFalse
   OpenAiToolRound
+  OpenAiToolRoundHigh
 }
 
 pub fn all() -> List(Scenario) {
@@ -204,6 +205,7 @@ pub fn all() -> List(Scenario) {
     OpenAiOptionalValue,
     OpenAiStoreFalse,
     OpenAiToolRound,
+    OpenAiToolRoundHigh,
   ]
 }
 
@@ -226,6 +228,7 @@ pub fn name(scenario: Scenario) -> String {
     OpenAiOptionalValue -> "openai-optional-value"
     OpenAiStoreFalse -> "openai-store-false"
     OpenAiToolRound -> "openai-tool-round"
+    OpenAiToolRoundHigh -> "openai-tool-round-high"
   }
 }
 
@@ -255,7 +258,8 @@ pub fn is_google(scenario: Scenario) -> Bool {
     | OpenAiOptionalNull
     | OpenAiOptionalValue
     | OpenAiStoreFalse
-    | OpenAiToolRound -> False
+    | OpenAiToolRound
+    | OpenAiToolRoundHigh -> False
   }
 }
 
@@ -515,29 +519,36 @@ pub fn store_call(key: String) -> llm_wire.Prepared(String) {
   prepared
 }
 
-/// The first request of the tool round: medium reasoning, unstored, with
-/// the weather tool. The puzzle makes the model reason before it calls the
-/// tool, so the first response carries a reasoning item the follow-up
-/// leaves out.
-pub fn tool_round_request() -> llm_wire.Request(String) {
+/// The first request of a tool round: unstored, with the weather tool, at
+/// medium (`openai-tool-round`) or high (`openai-tool-round-high`)
+/// reasoning effort. The puzzle asks the model to reason before it calls
+/// the tool, so the first response may carry a reasoning item the
+/// follow-up leaves out.
+pub fn tool_round_request(scenario: Scenario) -> llm_wire.Request(String) {
+  let level = case scenario {
+    OpenAiToolRound -> thinking.Medium
+    OpenAiToolRoundHigh -> thinking.High
+    _ -> panic as "not a tool-round scenario"
+  }
   sol_request([
     message.TextPart(
       "Which European capital is an anagram of the letters S, I, R, P, A? Reason it out, call get_weather for that city, then answer in one sentence.",
     ),
   ])
-  |> llm_wire.with_thinking_level(thinking.Medium)
+  |> llm_wire.with_thinking_level(level)
   |> llm_wire.with_tools([weather_tool()])
 }
 
 /// The tool's output the scenario answers every call with.
 pub const forecast = "{\"forecast\":\"sunny, 21 C\"}"
 
-/// The two exchanges of the tool round: the call, then its output and the
+/// The two exchanges of a tool round: the call, then its output and the
 /// final answer. The follow-up replays the turn's calls as `function_call`
 /// items with `call_id` only and no reasoning item, since encrypted
 /// reasoning is not carried (ADR 0021). The second outcome is `None` when
 /// the first did not ask for a tool.
 pub fn tool_round(
+  scenario: Scenario,
   client: http_gun.Client,
   key: String,
 ) -> Result(
@@ -545,14 +556,14 @@ pub fn tool_round(
   llm_wire.Failure,
 ) {
   let config = sol_config(key)
-  let assert Ok(first) = llm_wire.prepare(config, tool_round_request())
+  let assert Ok(first) = llm_wire.prepare(config, tool_round_request(scenario))
   use outcome <- result.try(llm_wire.run(client, first))
   case outcome {
     llm_wire.NeedsTools(turn:, ..) -> {
       let results =
         list.map(turn.calls, fn(call) { llm_wire.tool_result(call, forecast) })
       let follow_up =
-        llm_wire.append(tool_round_request(), [
+        llm_wire.append(tool_round_request(scenario), [
           message.Assistant(turn),
           ..results
         ])

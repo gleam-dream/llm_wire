@@ -98,8 +98,8 @@ fn record(scenario: Scenario) -> Result(Nil, Nil) {
     live_scenarios.OpenAiStoreFalse ->
       llm_wire.run(recorded.client, live_scenarios.store_call(key))
       |> result.map(summary)
-    live_scenarios.OpenAiToolRound ->
-      live_scenarios.tool_round(recorded.client, key)
+    live_scenarios.OpenAiToolRound | live_scenarios.OpenAiToolRoundHigh ->
+      live_scenarios.tool_round(scenario, recorded.client, key)
       |> result.map(fn(round) {
         case round {
           #(first, Some(second)) ->

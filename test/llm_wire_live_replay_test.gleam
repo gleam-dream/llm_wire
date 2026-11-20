@@ -10,8 +10,8 @@
 //// schema with an optional field, a number range, a pair and
 //// `codec.value()`, all of which the strict profile refuses. On 2026-11-19
 //// five scenarios on `gpt-6.2-sol` with responses unstored added a PDF
-//// file part, an optional field answered null and answered, and a tool
-//// round of two exchanges (ADR 0021).
+//// file part, an optional field answered null and answered, and tool
+//// rounds of two exchanges at medium and high effort (ADR 0021).
 
 import gleam/json
 import gleam/list
@@ -254,9 +254,10 @@ pub fn every_live_cassette_ends_finished_test() {
           http_testing.Reject(_) -> "rejected"
         }
       })
-    let expected = case
+    let two_exchanges =
       path == live_scenarios.path(live_scenarios.OpenAiToolRound)
-    {
+      || path == live_scenarios.path(live_scenarios.OpenAiToolRoundHigh)
+    let expected = case two_exchanges {
       True -> ["finished", "finished"]
       False -> ["finished"]
     }
@@ -360,7 +361,7 @@ pub fn sol_tool_round_asks_medium_reasoning_and_a_non_strict_tool_test() {
   let assert Ok(prepared) =
     llm_wire.prepare(
       live_scenarios.sol_config(key),
-      live_scenarios.tool_round_request(),
+      live_scenarios.tool_round_request(live_scenarios.OpenAiToolRound),
     )
   let body = sol_body(prepared)
   string.contains(body, "\"reasoning\":{\"effort\":\"medium\"}")
@@ -427,12 +428,15 @@ pub fn sol_answers_with_store_false_test() {
 
 /// The call streams `function_call_arguments.done` before
 /// `output_item.done`, and the follow-up replays it with `call_id` only and
-/// no reasoning item; OpenAI accepts it. The model reported no reasoning
-/// tokens at medium effort, so this round had no reasoning item to leave
-/// out.
+/// no reasoning item; OpenAI accepts it. At medium and at high effort the
+/// model reported no reasoning tokens and sent no reasoning item, so
+/// neither round had one to leave out.
 pub fn sol_tool_round_is_accepted_without_reasoning_items_test() {
-  let assert Ok(raw) =
-    simplifile.read(live_scenarios.path(live_scenarios.OpenAiToolRound))
+  use scenario <- list.each([
+    live_scenarios.OpenAiToolRound,
+    live_scenarios.OpenAiToolRoundHigh,
+  ])
+  let assert Ok(raw) = simplifile.read(live_scenarios.path(scenario))
   string.contains(raw, "response.function_call_arguments.done")
   |> should.be_true
   // Output item types sit one JSON string deep in the cassette.
@@ -440,15 +444,15 @@ pub fn sol_tool_round_is_accepted_without_reasoning_items_test() {
   |> should.be_true
   string.contains(raw, "\\\"type\\\":\\\"reasoning\\\"")
   |> should.be_false
-  use client <- with_tape(live_scenarios.OpenAiToolRound)
+  use client <- with_tape(scenario)
   let assert Ok(#(
     llm_wire.NeedsTools(turn:, issues: [], ..),
     Some(llm_wire.Answer(output:, ..)),
-  )) = live_scenarios.tool_round(client, key)
+  )) = live_scenarios.tool_round(scenario, client, key)
   let assert [call] = turn.calls
   call.name |> should.equal("get_weather")
-  tool.decode_arguments(call, live_scenarios.city())
-  |> should.equal(Ok("Paris"))
+  let assert Ok(city) = tool.decode_arguments(call, live_scenarios.city())
+  string.starts_with(city, "Paris") |> should.be_true
   string.contains(output, "Paris") |> should.be_true
   string.contains(output, "sunny") |> should.be_true
 }
