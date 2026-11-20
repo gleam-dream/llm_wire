@@ -18,6 +18,15 @@
 //// `from_contract` and `from_json_schema` take runtime data and return a
 //// typed `ToolError` instead.
 ////
+//// Cost of a codec. Every call copies its admitted tools into the call's
+//// owner process. A tool from `new` carries a decode function that holds
+//// its input codec, so that codec is copied on each call; `from_contract`
+//// and `from_json_schema` tools carry only schema data. Keep `new` codecs
+//// small: a generated codec for a fixed shape, with child codecs built
+//// inside their fields rather than `let`-bound and captured. See the
+//// [codec practice guide](https://github.com/lostbean/json_blueprint/blob/main/docs/CODEC-PRACTICE.md) for the codec side and
+//// the README section "Codecs and process copies" for LLM Wire's part.
+////
 //// A returned call is admitted against its declaration before the caller
 //// sees it. By default an unknown tool or invalid arguments fail the
 //// response; with `llm_wire.with_tool_call_checks(config,

@@ -102,6 +102,17 @@ pub fn ask(
 - Structured-output codecs must fit the selected provider's admitted schema profile. Preparation reports unsupported schemas before execution.
 - Keep transport trust and destination policy on the application-owned HTTP Gun client; use HTTPS for remote endpoints.
 
+## Codecs and process copies
+
+LLM Wire requires `json_blueprint` 2.1.1 or later. Which codec shape to use, and why, is in the
+[JSON Blueprint codec practice guide](https://github.com/lostbean/json_blueprint/blob/main/docs/CODEC-PRACTICE.md); this section states only what LLM Wire copies.
+
+Each call runs in its own owner process, and the BEAM copies whatever a message or process start carries, expanding shared terms. The owner receives the call's admitted tools: for each one its schema, its contract and, when built with `tool.new`, a decode function that holds the input codec. That codec is copied again on every call, so it should be small. Tools built with `tool.from_contract` or `tool.from_json_schema` hold no codec and copy only schema data. The output codec of `with_output` is not copied: it stays in the calling process, and only its schema goes into the prepared request.
+
+- Build `tool.new` codecs once, from generated codecs when the shape is fixed, and keep a child codec inside its field instead of binding it with `let` and capturing it. In one measurement on 2.1.1 (`erts_debug:flat_size`), a four-field record over a three-field child cost 781 words with the child built inside each field and 3253 with one `let`-bound child captured by all four, against 383 for a contract-only tool.
+- When a tool's input is known only at run time, or you already hold its JSON Schema, declare it with `tool.from_json_schema` or `tool.from_contract` and decode arguments in your own code.
+- Do not send a built codec, a `Tool` or a `Request` to other processes per operation; build them where they are used.
+
 ## Examples and references
 
 The [public consumer examples](examples/consumer/README.md) are compiled offline programs covering structured output, tool rounds, streaming, retry advice, classification, transcription, client ownership, testing, and observation. The [design overview](docs/design/design-layer.pdf) describes behavior and ownership. [Benchmark notes](docs/BENCHMARKS.md) retain a dated local HTTP measurement and its limits; they make no provider-latency claim.
