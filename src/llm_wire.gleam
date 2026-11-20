@@ -300,6 +300,14 @@ pub fn request(model: String, messages: List(Message)) -> Request(String) {
 /// Anthropic take a strict schema (every field required; no pair, number
 /// range or `codec.value()`); Gemini takes all of these too. `prepare`
 /// refuses what the provider cannot take with `error.UnsupportedSchema`.
+///
+/// The call the owner and HTTP worker receive holds only the codec's
+/// schema, so the codec is not copied to them. The codec itself stays in the
+/// returned `Request`, in the `Prepared` that `prepare` builds from it and in
+/// the `Stream`, whose decode functions hold it; the answer is decoded in the
+/// process that reads it. Sending a `Request`, a `Prepared` or a `Stream` to
+/// another process copies the codec, so build and prepare it where it is
+/// used. Tool codecs differ: see `llm_wire/tool`.
 pub fn with_output(
   request: Request(a),
   name: String,

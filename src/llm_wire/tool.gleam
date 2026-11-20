@@ -18,6 +18,19 @@
 //// `from_contract` and `from_json_schema` take runtime data and return a
 //// typed `ToolError` instead.
 ////
+//// Cost of a codec. A call copies its tool list about five times (three
+//// into its owner process, two into its HTTP worker), and a tool from `new`
+//// carries a decode function that holds its input codec, so every copy
+//// includes that codec; `from_contract` and `from_json_schema` tools carry
+//// only schema data. Measured, ten tools of 783 words cost about 39,900
+//// words per call, 5.1 times the list. Keep `new` codecs small: a generated
+//// codec for a fixed shape, with child codecs built inside their fields
+//// rather than `let`-bound and captured. Check a tool with
+//// `erts_debug:flat_size` of the `Tool` times five, as a starting bound at
+//// most 1,000 words (8 KB) per tool. See the [codec practice guide](https://github.com/lostbean/json_blueprint/blob/main/docs/CODEC-PRACTICE.md)
+//// for the codec side and the README section "Codecs and process copies"
+//// for LLM Wire's part.
+////
 //// A returned call is admitted against its declaration before the caller
 //// sees it. By default an unknown tool or invalid arguments fail the
 //// response; with `llm_wire.with_tool_call_checks(config,
