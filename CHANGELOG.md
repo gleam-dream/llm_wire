@@ -25,6 +25,10 @@ This release lets an application use OpenAI's Responses API with documents, code
   - `error.InvalidOutput.raw_output` is cleaned the same way when the text is JSON, so a correction turn can decode it with the same codec. Text that is not JSON stays as the provider sent it.
 - **OpenAI function tools are sent with `"strict": false`.** Before, the field was absent and OpenAI normalized a tool schema into strict mode when it could. Now the caller's schema is used as given: optional arguments stay optional, and arguments reach the caller exactly as the model wrote them.
 
+### Fixed
+
+- **OpenAI tool calls no longer fail as "Duplicate tool block completion".** OpenAI streams `response.function_call_arguments.done` before `response.output_item.done` for every function call, and 0.2.0 treated both as the call's completion, so every real OpenAI tool call failed with a protocol error. The arguments event now only confirms the arguments, and the scripted OpenAI replies of `llm_wire/testing` send it as OpenAI does.
+
 ### Compatibility
 
 - `message.Content` and `error.RequestProblem` each gain variants. Both are documented to gain variants and to be matched with a `_` arm; a `case` over either without one stops compiling. Fabric 0.4.0 and dash-crm have none.

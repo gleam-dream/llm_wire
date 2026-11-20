@@ -181,7 +181,7 @@
     #subsection(title: "Built-in protocol families")[
       #md-table(3, (
         [*Provider*], [*Routing and encoding*], [*Terminal and exceptional meaning*],
-        [OpenAI Responses], [output_index and item id route text/reasoning/function arguments; application correlation uses call_id; input/output contracts use Responses forms], [completed/incomplete/failed and in-band error are distinct; max_output_tokens is output-limited; content_filter is ContentFiltered; refusal content is Refused],
+        [OpenAI Responses], [output_index and item id route text/reasoning/function arguments; function_call_arguments.done confirms or supplies a call's arguments and output_item.done alone closes the call; application correlation uses call_id; input/output contracts use Responses forms], [completed/incomplete/failed and in-band error are distinct; max_output_tokens is output-limited; content_filter is ContentFiltered; refusal content is Refused],
         [Anthropic Messages], [content block index routes text/thinking/tool_use; thinking is reasoning progress and never answer text, signatures and redacted thinking are accepted and not kept; tool_use.id is application id; result is user tool_result; system text is separate], [message_stop requires completed blocks; max_tokens is output-limited; refusal stop is ContentFiltered; server_tool_use is tracked separately from application calls],
         [Google GenerateContent], [model path streamGenerateContent with SSE; functionCall ids are retained or locally synthesized; model/user parts carry signed replay content], [STOP completes; MAX_TOKENS is partial; promptFeedback and safety finish reasons become ContentFiltered; provider errors and unknown stop reasons fail explicitly],
       ))

@@ -116,8 +116,10 @@ pub fn step(
         Some("response.function_call_arguments.delta") ->
           handle_function_arguments_delta(with_bytes, event.data)
 
-        Some("response.function_call_arguments.done")
-        | Some("response.output_item.done") ->
+        Some("response.function_call_arguments.done") ->
+          handle_function_arguments_done(with_bytes, event.data)
+
+        Some("response.output_item.done") ->
           handle_output_item_done(with_bytes, event.data)
 
         // `response.incomplete` carries the same response object with
@@ -678,70 +680,126 @@ fn handle_function_arguments_delta(
                   Error(error.Protocol(
                     "Delta received after tool call block completion",
                   ))
-                False -> {
-                  let delta_bytes = string.byte_size(payload.delta)
-                  let tool_bytes =
-                    string.byte_size(tool.arguments) + delta_bytes
-                  let total_bytes = reducer.total_argument_bytes + delta_bytes
-
-                  case
-                    tool_bytes > reducer.limits.argument_bytes_per_call_limit
-                  {
-                    True ->
-                      Error(error.LimitExceeded(
-                        limit.ArgumentBytesPerCall,
-                        reducer.limits.argument_bytes_per_call_limit,
-                        tool_bytes,
-                      ))
-                    False ->
-                      case
-                        total_bytes > reducer.limits.total_argument_bytes_limit
-                      {
-                        True ->
-                          Error(error.LimitExceeded(
-                            limit.TotalArgumentBytes,
-                            reducer.limits.total_argument_bytes_limit,
-                            total_bytes,
-                          ))
-                        False -> {
-                          let updated_tool =
-                            ToolBuffer(
-                              ..tool,
-                              arguments: tool.arguments <> payload.delta,
-                            )
-                          let updated_buffers =
-                            dict.insert(
-                              reducer.tool_buffers,
-                              item_id,
-                              updated_tool,
-                            )
-                          Ok(
-                            #(
-                              Reducer(
-                                ..reducer,
-                                tool_buffers: updated_buffers,
-                                total_argument_bytes: total_bytes,
-                                semantic_progress_observed: True,
-                              ),
-                              case payload.delta {
-                                "" -> []
-                                delta -> [
-                                  message.ToolArgumentsDelta(
-                                    tool.call_id,
-                                    delta,
-                                  ),
-                                ]
-                              },
-                            ),
-                          )
-                        }
-                      }
-                  }
-                }
+                False -> add_arguments(reducer, item_id, tool, payload.delta)
               }
             }
           }
         }
+      }
+    }
+  }
+}
+
+/// Appends argument text to a call within the per-call and total argument
+/// bounds, reporting it as progress.
+fn add_arguments(
+  reducer: Reducer,
+  item_id: String,
+  tool: ToolBuffer,
+  delta: String,
+) -> Result(#(Reducer, List(message.Progress)), error.Error) {
+  let delta_bytes = string.byte_size(delta)
+  let tool_bytes = string.byte_size(tool.arguments) + delta_bytes
+  let total_bytes = reducer.total_argument_bytes + delta_bytes
+  case tool_bytes > reducer.limits.argument_bytes_per_call_limit {
+    True ->
+      Error(error.LimitExceeded(
+        limit.ArgumentBytesPerCall,
+        reducer.limits.argument_bytes_per_call_limit,
+        tool_bytes,
+      ))
+    False ->
+      case total_bytes > reducer.limits.total_argument_bytes_limit {
+        True ->
+          Error(error.LimitExceeded(
+            limit.TotalArgumentBytes,
+            reducer.limits.total_argument_bytes_limit,
+            total_bytes,
+          ))
+        False -> {
+          let updated_tool =
+            ToolBuffer(..tool, arguments: tool.arguments <> delta)
+          Ok(
+            #(
+              Reducer(
+                ..reducer,
+                tool_buffers: dict.insert(
+                  reducer.tool_buffers,
+                  item_id,
+                  updated_tool,
+                ),
+                total_argument_bytes: total_bytes,
+                semantic_progress_observed: True,
+              ),
+              case delta {
+                "" -> []
+                text -> [message.ToolArgumentsDelta(tool.call_id, text)]
+              },
+            ),
+          )
+        }
+      }
+  }
+}
+
+type ArgumentsDone {
+  ArgumentsDone(
+    output_index: Option(Int),
+    item_id: Option(String),
+    arguments: String,
+  )
+}
+
+fn decode_arguments_done() -> decode.Decoder(ArgumentsDone) {
+  use output_index <- decode.optional_field(
+    "output_index",
+    None,
+    decode.optional(decode.int),
+  )
+  use item_id <- decode.optional_field(
+    "item_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use arguments <- decode.field("arguments", decode.string)
+  decode.success(ArgumentsDone(output_index, item_id, arguments))
+}
+
+/// `response.function_call_arguments.done` carries a call's whole
+/// arguments before `response.output_item.done` closes the item. It does
+/// not close the call itself. Its arguments must equal the streamed ones;
+/// when no delta came, they are the call's arguments.
+fn handle_function_arguments_done(
+  reducer: Reducer,
+  data: String,
+) -> Result(#(Reducer, List(message.Progress)), error.Error) {
+  case json.parse(data, decode_arguments_done()) {
+    Error(_) ->
+      Error(error.Protocol("Malformed function_call_arguments.done payload"))
+    Ok(payload) -> {
+      use item_id <- result.try(resolve_item_id(
+        reducer,
+        payload.item_id,
+        payload.output_index,
+      ))
+      case dict.get(reducer.tool_buffers, item_id) {
+        Error(Nil) ->
+          Error(error.Protocol("Unknown tool call block id: " <> item_id))
+        Ok(ToolBuffer(is_done: True, ..)) ->
+          Error(error.Protocol(
+            "Arguments completed after tool call block completion",
+          ))
+        Ok(tool) ->
+          case tool.arguments == payload.arguments, tool.arguments {
+            True, _ -> Ok(#(reducer, []))
+            False, "" ->
+              add_arguments(reducer, item_id, tool, payload.arguments)
+            False, _ ->
+              Error(error.Protocol(
+                "Completed arguments disagree with the streamed arguments of "
+                <> tool.call_id,
+              ))
+          }
       }
     }
   }

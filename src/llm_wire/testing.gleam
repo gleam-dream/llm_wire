@@ -1060,6 +1060,23 @@ fn openai_events(script: Script) -> List(String) {
             #("delta", json.string(call.arguments_json)),
           ]),
         ),
+        // OpenAI repeats the whole arguments before it closes the item,
+        // except when the output limit cut the call off.
+        ..case script.stop {
+          "length" -> []
+          _ -> [
+            event(
+              "response.function_call_arguments.done",
+              json.object([
+                #("output_index", json.int(at)),
+                #("item_id", json.string(item)),
+                #("arguments", json.string(call.arguments_json)),
+              ]),
+            ),
+          ]
+        }
+      ]
+      |> list.append([
         event(
           "response.output_item.done",
           json.object([
@@ -1067,7 +1084,7 @@ fn openai_events(script: Script) -> List(String) {
             #("item", json.object([#("id", json.string(item))])),
           ]),
         ),
-      ]
+      ])
     })
     |> list.flatten
   // An incomplete response ends with `response.incomplete`, whose
