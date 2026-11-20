@@ -303,8 +303,8 @@ pub fn request(model: String, messages: List(Message)) -> Request(String) {
 ///
 /// Only the codec's schema enters the prepared call. The codec itself stays
 /// in the calling process and decodes the answer there, so it is not copied
-/// to the call's owner process; build it once where it is used. Tool codecs
-/// differ: see `llm_wire/tool`.
+/// to the call's owner process or its HTTP worker; build it once where it
+/// is used. Tool codecs differ: see `llm_wire/tool`.
 pub fn with_output(
   request: Request(a),
   name: String,
