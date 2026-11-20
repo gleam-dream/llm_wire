@@ -40,7 +40,15 @@ transport worker change what they capture.
   start closure environment together stays under 1.5 times the flat size of
   the tool list plus a fixed allowance for everything else (the no-tools
   value above, with headroom).
-- The same test with zero tools bounds the total under the fixed allowance.
+- The same test traces the sends of the calling process and of every process
+  it spawns, through the start and a scripted answer, and sums the flat size
+  of every message sent. The sum with ten tools may exceed the sum with no
+  tools by at most half the flat size of the tool list, so a later change
+  that sends the tools once more by message fails the test. (Measured today:
+  the two sums are equal, 6,541 words each over the start, so no message
+  carries the tools.)
+- The same test with zero tools bounds the start environments under the
+  fixed allowance.
 - The full gate passes, including the H1, TLS and H2 harness cases.
 - The README section "Codecs and process copies" and the `llm_wire/tool`
   module doc state the new per-call cost (one copy of the tool list into the

@@ -301,10 +301,13 @@ pub fn request(model: String, messages: List(Message)) -> Request(String) {
 /// range or `codec.value()`); Gemini takes all of these too. `prepare`
 /// refuses what the provider cannot take with `error.UnsupportedSchema`.
 ///
-/// Only the codec's schema enters the prepared call. The codec itself stays
-/// in the calling process and decodes the answer there, so it is not copied
-/// to the call's owner process or its HTTP worker; build it once where it
-/// is used. Tool codecs differ: see `llm_wire/tool`.
+/// The call the owner and HTTP worker receive holds only the codec's
+/// schema, so the codec is not copied to them. The codec itself stays in the
+/// returned `Request`, in the `Prepared` that `prepare` builds from it and in
+/// the `Stream`, whose decode functions hold it; the answer is decoded in the
+/// process that reads it. Sending a `Request`, a `Prepared` or a `Stream` to
+/// another process copies the codec, so build and prepare it where it is
+/// used. Tool codecs differ: see `llm_wire/tool`.
 pub fn with_output(
   request: Request(a),
   name: String,
