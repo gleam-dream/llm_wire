@@ -207,18 +207,6 @@ pub fn all() -> List(Scenario) {
   ]
 }
 
-/// Scenarios defined for recording whose cassettes are not committed yet.
-/// The replay checks skip them until `dev/record-live` has recorded them.
-pub fn awaiting_recording() -> List(Scenario) {
-  [
-    OpenAiFilePdf,
-    OpenAiOptionalNull,
-    OpenAiOptionalValue,
-    OpenAiStoreFalse,
-    OpenAiToolRound,
-  ]
-}
-
 pub fn name(scenario: Scenario) -> String {
   case scenario {
     GoogleWritten -> "google-union-written"
@@ -528,11 +516,13 @@ pub fn store_call(key: String) -> llm_wire.Prepared(String) {
 }
 
 /// The first request of the tool round: medium reasoning, unstored, with
-/// the weather tool.
+/// the weather tool. The puzzle makes the model reason before it calls the
+/// tool, so the first response carries a reasoning item the follow-up
+/// leaves out.
 pub fn tool_round_request() -> llm_wire.Request(String) {
   sol_request([
     message.TextPart(
-      "What is the weather in Paris? Call get_weather, then answer in one sentence.",
+      "Which European capital is an anagram of the letters S, I, R, P, A? Reason it out, call get_weather for that city, then answer in one sentence.",
     ),
   ])
   |> llm_wire.with_thinking_level(thinking.Medium)
