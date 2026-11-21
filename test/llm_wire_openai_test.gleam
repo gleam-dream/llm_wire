@@ -1,4 +1,8 @@
+import gleam/json
+import gleam/list
 import gleam/option.{None, Some}
+import gleam/result
+import gleam/string
 import gleeunit/should
 import llm_wire/error
 import llm_wire/internal/limits
@@ -450,4 +454,113 @@ pub fn openai_future_extension_test() {
       event_name: "response.some_new_feature",
     ),
   ])
+}
+
+/// OpenAI's own order for one call: the item, its argument deltas, then
+/// `response.function_call_arguments.done` with the whole arguments and
+/// `response.output_item.done` with the whole item. Both done events close
+/// the same call, and neither is a second completion.
+fn real_tool_call_events(
+  deltas: List(String),
+  arguments_done: String,
+) -> List(sse.ServerSentEvent) {
+  [
+    event(
+      "response.output_item.added",
+      "{\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"status\":\"in_progress\",\"arguments\":\"\",\"call_id\":\"call_1\",\"name\":\"get_weather\"}}",
+    ),
+    ..list.append(
+      list.map(deltas, fn(delta) {
+        event(
+          "response.function_call_arguments.delta",
+          "{\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_1\",\"output_index\":1,\"delta\":"
+            <> json.to_string(json.string(delta))
+            <> "}",
+        )
+      }),
+      [
+        event(
+          "response.function_call_arguments.done",
+          "{\"type\":\"response.function_call_arguments.done\",\"item_id\":\"fc_1\",\"output_index\":1,\"arguments\":"
+            <> json.to_string(json.string(arguments_done))
+            <> "}",
+        ),
+        event(
+          "response.output_item.done",
+          "{\"type\":\"response.output_item.done\",\"output_index\":1,\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"status\":\"completed\",\"arguments\":"
+            <> json.to_string(json.string(arguments_done))
+            <> ",\"call_id\":\"call_1\",\"name\":\"get_weather\"}}",
+        ),
+        event(
+          "response.completed",
+          "{\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"status\":\"completed\",\"usage\":{\"input_tokens\":20,\"output_tokens\":30,\"total_tokens\":50}}}",
+        ),
+      ],
+    )
+  ]
+}
+
+fn run_events(
+  events: List(sse.ServerSentEvent),
+) -> Result(openai.Reducer, error.Error) {
+  // The reasoning item OpenAI streams before the call, at index 0.
+  let reasoning = [
+    event(
+      "response.output_item.added",
+      "{\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"id\":\"rs_1\",\"type\":\"reasoning\",\"summary\":[]}}",
+    ),
+    event(
+      "response.output_item.done",
+      "{\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"id\":\"rs_1\",\"type\":\"reasoning\",\"summary\":[]}}",
+    ),
+  ]
+  list.try_fold(
+    list.append(reasoning, events),
+    openai.new(limits.default()),
+    fn(reducer, next) {
+      openai.step(reducer, next) |> result.map(fn(stepped) { stepped.0 })
+    },
+  )
+}
+
+fn completed_calls(reducer: openai.Reducer) -> List(message.ToolCall) {
+  let assert Some(stream_types.StreamFinished(
+    stream_types.CompletedToolCalls(_, calls, _, []),
+    _,
+  )) = openai.terminal(reducer)
+  calls
+}
+
+pub fn openai_arguments_done_and_item_done_complete_one_call_test() {
+  let assert Ok(reducer) =
+    run_events(real_tool_call_events(
+      ["{\"city\":", "\"Paris\"}"],
+      "{\"city\":\"Paris\"}",
+    ))
+  let assert [call] = completed_calls(reducer)
+  call.id |> should.equal("call_1")
+  call.arguments_json |> should.equal("{\"city\":\"Paris\"}")
+}
+
+pub fn openai_arguments_done_without_deltas_supplies_the_arguments_test() {
+  let assert Ok(reducer) =
+    run_events(real_tool_call_events([], "{\"city\":\"Paris\"}"))
+  let assert [call] = completed_calls(reducer)
+  call.arguments_json |> should.equal("{\"city\":\"Paris\"}")
+}
+
+pub fn openai_arguments_done_that_contradicts_the_deltas_fails_test() {
+  let assert Error(error.Protocol(detail)) =
+    run_events(real_tool_call_events(
+      ["{\"city\":\"Paris\"}"],
+      "{\"city\":\"Rome\"}",
+    ))
+  string.contains(detail, "arguments") |> should.be_true
+}
+
+pub fn openai_a_second_item_done_is_still_a_duplicate_test() {
+  let events = real_tool_call_events(["{}"], "{}")
+  let assert [added, delta, arguments_done, item_done, completed] = events
+  let assert Error(error.Protocol("Duplicate tool block completion")) =
+    run_events([added, delta, arguments_done, item_done, item_done, completed])
 }

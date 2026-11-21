@@ -498,7 +498,7 @@ pub fn structured_output_is_admitted_and_decoded_with_native_codec_test() {
   failure.sent |> should.equal(llm_wire.Completed)
 }
 
-pub fn structured_output_rejects_optional_strict_schema_test() {
+pub fn structured_output_admits_optional_strict_schema_test() {
   let config =
     openai.new("test-key")
     |> openai.config
@@ -512,8 +512,10 @@ pub fn structured_output_rejects_optional_strict_schema_test() {
   let request =
     llm_wire.request("gpt-test", [llm_wire.user("hello")])
     |> llm_wire.with_output("optional_shape", output_codec)
-  let assert Error(error.UnsupportedSchema(error.Output, _)) =
-    llm_wire.prepare(config, request)
+  let assert Ok(prepared) = llm_wire.prepare(config, request)
+  llm_wire.request_json(prepared)
+  |> string.contains("\"required\":[\"note\"]")
+  |> should.be_true
 }
 
 pub fn lifecycle_observation_contains_only_fixed_metadata_test() {

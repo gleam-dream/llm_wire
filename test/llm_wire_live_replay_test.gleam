@@ -8,7 +8,10 @@
 //// text stream and a Gemini tool call with its signed part. Round 7 added
 //// Gemini's nested `codec.nullable` (a null and a non-null reply) and one
 //// schema with an optional field, a number range, a pair and
-//// `codec.value()`, all of which the strict profile refuses.
+//// `codec.value()`, all of which the strict profile refuses. On 2026-11-19
+//// five scenarios on `gpt-6.2-sol` with responses unstored added a PDF
+//// file part, an optional field answered null and answered, and tool
+//// rounds of two exchanges at medium and high effort (ADR 0021).
 
 import gleam/json
 import gleam/list
@@ -27,6 +30,7 @@ import live_scenarios.{
 import llm_wire
 import llm_wire/message
 import llm_wire/tool
+import simplifile
 
 /// Credentials are neither stored nor compared, so any key replays.
 const key = "replay-placeholder-key"
@@ -250,7 +254,14 @@ pub fn every_live_cassette_ends_finished_test() {
           http_testing.Reject(_) -> "rejected"
         }
       })
-    #(path, endings) |> should.equal(#(path, ["finished"]))
+    let two_exchanges =
+      path == live_scenarios.path(live_scenarios.OpenAiToolRound)
+      || path == live_scenarios.path(live_scenarios.OpenAiToolRoundHigh)
+    let expected = case two_exchanges {
+      True -> ["finished", "finished"]
+      False -> ["finished"]
+    }
+    #(path, endings) |> should.equal(#(path, expected))
   })
 }
 
@@ -305,4 +316,143 @@ pub fn openai_takes_a_reasoning_effort_test() {
     usage: Some(message.Usage(thought_tokens: Some(_), ..)),
     ..,
   )) = outcome
+}
+
+// --- OpenAI Responses on gpt-6.2-sol (ADR 0021) -------------------------------
+// Recorded on 2026-11-19 with responses unstored.
+
+fn sol_body(prepared: llm_wire.Prepared(o)) -> String {
+  let body = llm_wire.request_json(prepared)
+  string.contains(body, "\"model\":\"gpt-6.2-sol\"") |> should.be_true
+  string.contains(body, "\"store\":false") |> should.be_true
+  string.contains(body, "\"temperature\"") |> should.be_false
+  string.contains(body, "\"top_p\"") |> should.be_false
+  body
+}
+
+pub fn sol_pdf_is_sent_as_an_input_file_test() {
+  let body = sol_body(live_scenarios.pdf_call(key))
+  string.contains(
+    body,
+    "{\"type\":\"input_file\",\"filename\":\"invoice.pdf\",\"file_data\":\"data:application/pdf;base64,JVBERi0xLjQK",
+  )
+  |> should.be_true
+}
+
+pub fn sol_optional_field_is_sent_required_and_nullable_test() {
+  use scenario <- list.each([
+    live_scenarios.OpenAiOptionalNull,
+    live_scenarios.OpenAiOptionalValue,
+  ])
+  let body = sol_body(live_scenarios.optional_call(scenario, key))
+  string.contains(
+    body,
+    "\"nickname\":{\"anyOf\":[{\"type\":\"null\"},{\"type\":\"string\"}]}},\"required\":[\"name\",\"nickname\"]",
+  )
+  |> should.be_true
+}
+
+pub fn sol_store_false_is_sent_test() {
+  let _ = sol_body(live_scenarios.store_call(key))
+  Nil
+}
+
+pub fn sol_tool_round_asks_medium_reasoning_and_a_non_strict_tool_test() {
+  let assert Ok(prepared) =
+    llm_wire.prepare(
+      live_scenarios.sol_config(key),
+      live_scenarios.tool_round_request(live_scenarios.OpenAiToolRound),
+    )
+  let body = sol_body(prepared)
+  string.contains(body, "\"reasoning\":{\"effort\":\"medium\"}")
+  |> should.be_true
+  string.contains(body, "\"strict\":false") |> should.be_true
+  string.contains(body, "\"include\"") |> should.be_false
+}
+
+fn sol_answer(
+  scenario: Scenario,
+  prepared: llm_wire.Prepared(o),
+  output: codec.Codec(o),
+) -> #(o, String) {
+  use client <- with_tape(scenario)
+  let assert Ok(llm_wire.Answer(output: decoded, text:, usage: Some(_))) =
+    llm_wire.run(client, prepared)
+  codec.decode_json(output, text) |> should.equal(Ok(decoded))
+  #(decoded, text)
+}
+
+pub fn sol_reads_the_pdf_into_the_codec_test() {
+  let #(invoice, _) =
+    sol_answer(
+      live_scenarios.OpenAiFilePdf,
+      live_scenarios.pdf_call(key),
+      live_scenarios.invoice_output(),
+    )
+  invoice |> should.equal(live_scenarios.Invoice("A-17", "42.50", "EUR"))
+}
+
+/// The model wrote `"nickname":null`; the answer reads it as absent, and
+/// `Answer.text` no longer holds the member.
+pub fn sol_null_for_an_optional_field_reads_as_absent_test() {
+  let scenario = live_scenarios.OpenAiOptionalNull
+  let assert Ok(raw) = simplifile.read(live_scenarios.path(scenario))
+  // The answer text sits two JSON strings deep in the cassette.
+  string.contains(raw, "\\\\\\\"nickname\\\\\\\":null") |> should.be_true
+  let #(person, text) =
+    sol_answer(
+      scenario,
+      live_scenarios.optional_call(scenario, key),
+      live_scenarios.person_output(),
+    )
+  person |> should.equal(live_scenarios.Person("Ada Lovelace", None))
+  text |> should.equal("{\"person\":{\"name\":\"Ada Lovelace\"}}")
+}
+
+pub fn sol_optional_field_with_a_value_test() {
+  let scenario = live_scenarios.OpenAiOptionalValue
+  let #(person, _) =
+    sol_answer(
+      scenario,
+      live_scenarios.optional_call(scenario, key),
+      live_scenarios.person_output(),
+    )
+  person |> should.equal(live_scenarios.Person("Robert Stone", Some("Bobby")))
+}
+
+pub fn sol_answers_with_store_false_test() {
+  use client <- with_tape(live_scenarios.OpenAiStoreFalse)
+  let assert Ok(llm_wire.Answer(output: "Paris", ..)) =
+    llm_wire.run(client, live_scenarios.store_call(key))
+}
+
+/// The call streams `function_call_arguments.done` before
+/// `output_item.done`, and the follow-up replays it with `call_id` only and
+/// no reasoning item; OpenAI accepts it. At medium and at high effort the
+/// model reported no reasoning tokens and sent no reasoning item, so
+/// neither round had one to leave out.
+pub fn sol_tool_round_is_accepted_without_reasoning_items_test() {
+  use scenario <- list.each([
+    live_scenarios.OpenAiToolRound,
+    live_scenarios.OpenAiToolRoundHigh,
+  ])
+  let assert Ok(raw) = simplifile.read(live_scenarios.path(scenario))
+  string.contains(raw, "response.function_call_arguments.done")
+  |> should.be_true
+  // Output item types sit one JSON string deep in the cassette.
+  string.contains(raw, "\\\"type\\\":\\\"function_call\\\"")
+  |> should.be_true
+  string.contains(raw, "\\\"type\\\":\\\"reasoning\\\"")
+  |> should.be_false
+  use client <- with_tape(scenario)
+  let assert Ok(#(
+    llm_wire.NeedsTools(turn:, issues: [], ..),
+    Some(llm_wire.Answer(output:, ..)),
+  )) = live_scenarios.tool_round(scenario, client, key)
+  let assert [call] = turn.calls
+  call.name |> should.equal("get_weather")
+  let assert Ok(city) = tool.decode_arguments(call, live_scenarios.city())
+  string.starts_with(city, "Paris") |> should.be_true
+  string.contains(output, "Paris") |> should.be_true
+  string.contains(output, "sunny") |> should.be_true
 }

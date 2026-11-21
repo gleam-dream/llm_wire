@@ -34,7 +34,7 @@ pub fn start_openai_stream_holding_body(
   transport: owner.TransportPort,
 ) -> Result(owner.Stream, Nil) {
   start_with(
-    builtin.openai_adapter(fn() { "owner-test" }, None, None),
+    builtin.openai_adapter(fn() { "owner-test" }, None, None, None),
     limits,
     timeouts,
     transport,
@@ -91,7 +91,7 @@ pub fn start_openai_stream_with_tools(
   tools: List(tool_def.Tool),
 ) -> Result(owner.Stream, Nil) {
   start(
-    builtin.openai_adapter(fn() { "owner-test" }, None, None),
+    builtin.openai_adapter(fn() { "owner-test" }, None, None, None),
     limits,
     timeouts,
     transport,

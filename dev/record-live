@@ -1,10 +1,14 @@
 #!/bin/sh
 # Opt-in: re-record the live-provider cassettes under test/cassettes/live/.
 # Not part of the gate. Calls the live Gemini and OpenAI APIs, one request
-# per named scenario (all nine by default), and spends a few tokens.
+# per named scenario (two for each openai-tool-round; every scenario of
+# test/live_scenarios.gleam by default), and spends a few tokens.
 # Keys come from the git-ignored .env.local (GEMINI_API_KEY, OPENAI_API_KEY)
 # or the environment; they are never printed and never stored in a cassette.
-#   sh dev/record-live [google-union-written google-text-stream ...]
+#   sh dev/record-live [google-union-written openai-file-pdf ...]
+# The OpenAI scenarios on gpt-6.2-sol: openai-file-pdf openai-optional-null
+# openai-optional-value openai-store-false openai-tool-round
+# openai-tool-round-high.
 set -eu
 cd "$(dirname "$0")/.."
 if [ -f .env.local ]; then

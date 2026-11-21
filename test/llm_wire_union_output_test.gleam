@@ -128,7 +128,7 @@ pub fn a_union_payload_with_an_unsupported_schema_is_refused_test() {
     llm_wire.prepare(config, question(tool_fixtures.one_field("answer", pairs)))
 }
 
-pub fn an_optional_payload_field_is_still_refused_test() {
+pub fn an_optional_payload_field_is_sent_nullable_and_required_test() {
   use #(_, _, config) <- list.each(strict_wires())
   let loose =
     codec.union({
@@ -144,9 +144,13 @@ pub fn an_optional_payload_field_is_still_refused_test() {
       )
       codec.match(fn(t) { note(t) })
     })
-  let assert Error(error.UnsupportedSchema(error.Output, reason)) =
+  let assert Ok(prepared) =
     llm_wire.prepare(config, question(tool_fixtures.one_field("answer", loose)))
-  string.contains(reason, "required") |> should.be_true
+  llm_wire.request_json(prepared)
+  |> string.contains(
+    "\"properties\":{\"text\":{\"anyOf\":[{\"type\":\"null\"},{\"type\":\"string\"}]}},\"required\":[\"text\"]",
+  )
+  |> should.be_true
 }
 
 pub fn gemini_admits_a_pair_and_an_optional_field_in_a_payload_test() {

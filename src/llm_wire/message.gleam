@@ -49,6 +49,12 @@ pub type Content {
   /// preparation.
   ImageUrlPart(url: String)
   InlineImagePart(mime_type: String, base64_data: String)
+  /// A document the provider reads as a file, such as a PDF. OpenAI sends it
+  /// as `input_file` with `file_name`; Google as inline data; Anthropic as a
+  /// `document`, which takes only `application/pdf`. A file with an image
+  /// media type is sent as the provider's image, as `InlineImagePart` is;
+  /// no provider has a field for an image's name.
+  InlineFilePart(mime_type: String, file_name: String, base64_data: String)
 }
 
 /// A tool call the model made. `arguments_json` is the argument text exactly
@@ -369,6 +375,13 @@ fn content_to_json(part: Content) -> json.Json {
         #("mime_type", json.string(mime_type)),
         #("data", json.string(data)),
       ])
+    InlineFilePart(mime_type, file_name, data) ->
+      json.object([
+        #("type", json.string("inline_file")),
+        #("mime_type", json.string(mime_type)),
+        #("file_name", json.string(file_name)),
+        #("data", json.string(data)),
+      ])
   }
 }
 
@@ -385,6 +398,12 @@ fn content_decoder() -> decode.Decoder(Content) {
       use mime_type <- decode.field("mime_type", decode.string)
       use data <- decode.field("data", decode.string)
       decode.success(InlineImagePart(mime_type, data))
+    }
+    "inline_file" -> {
+      use mime_type <- decode.field("mime_type", decode.string)
+      use file_name <- decode.field("file_name", decode.string)
+      use data <- decode.field("data", decode.string)
+      decode.success(InlineFilePart(mime_type, file_name, data))
     }
     _ -> decode.failure(TextPart(""), "a content part type")
   }

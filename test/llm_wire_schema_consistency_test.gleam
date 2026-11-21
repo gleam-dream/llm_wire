@@ -7,7 +7,6 @@ import json/blueprint/contract
 import json/blueprint/number
 import llm_wire
 import llm_wire/anthropic
-import llm_wire/error
 import llm_wire/google
 import llm_wire/internal/schema
 import llm_wire/openai
@@ -126,7 +125,7 @@ fn google_config() -> llm_wire.Config {
   google.new("test-key") |> google.config
 }
 
-pub fn optional_field_is_not_converted_to_nullable_required_test() {
+pub fn optional_field_is_nullable_required_only_in_strict_profiles_test() {
   let optional_codec = {
     use item <- codec.optional_field("answer", codec.int(), get: fn(item) {
       item
@@ -134,17 +133,16 @@ pub fn optional_field_is_not_converted_to_nullable_required_test() {
     codec.success(item)
   }
   let optional = schema_of(optional_codec)
-  // Projections return a plain reason; `prepare` wraps it in
-  // `error.UnsupportedSchema(error.Output, reason)`.
-  let reason =
-    "Strict structured output requires every object property to be required"
-  schema.strict_output_schema(optional) |> should.equal(Error(reason))
+  let strict =
+    "{\"type\":\"object\",\"properties\":{\"answer\":{\"anyOf\":[{\"type\":\"null\"},{\"type\":\"integer\"}]}},\"required\":[\"answer\"],\"additionalProperties\":false}"
+  let assert Ok(projected) = schema.strict_output_schema(optional)
+  json.to_string(projected) |> should.equal(strict)
   let request =
     llm_wire.request("model-test", [llm_wire.user("answer")])
     |> llm_wire.with_output("optional_shape", optional_codec)
   list.each(strict_configs(), fn(config) {
-    llm_wire.prepare(config, request)
-    |> should.equal(Error(error.UnsupportedSchema(error.Output, reason)))
+    let assert Ok(prepared) = llm_wire.prepare(config, request)
+    string.contains(llm_wire.request_json(prepared), strict) |> should.be_true
   })
   // Gemini honours `required` (live, 2026-10-04): the field stays optional,
   // not nullable.

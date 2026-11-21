@@ -23,13 +23,14 @@ pub opaque type Options {
     key: fn() -> String,
     organization: Option(String),
     project: Option(String),
+    store: Option(Bool),
   )
 }
 
 /// Options for the API key `api_key`, trimmed.
 pub fn new(api_key: String) -> Options {
   let key = string.trim(api_key)
-  Options(key: fn() { key }, organization: None, project: None)
+  Options(key: fn() { key }, organization: None, project: None, store: None)
 }
 
 /// Send `OpenAI-Organization`.
@@ -42,11 +43,24 @@ pub fn with_project(options: Options, project: String) -> Options {
   Options(..options, project: Some(project))
 }
 
+/// Send `"store": store` on every Responses request. OpenAI stores a
+/// response for 30 days unless a request sends `store: false`. Without this
+/// setting the field is left out and OpenAI's default applies.
+///
+/// LLM Wire replays the whole conversation and never reads a stored
+/// response. By decision it does not carry OpenAI's encrypted reasoning:
+/// with `with_store(False)` a tool round replays its calls without the
+/// earlier reasoning items, and the model loses that reasoning.
+pub fn with_store(options: Options, store: Bool) -> Options {
+  Options(..options, store: Some(store))
+}
+
 /// The configuration of OpenAI calls, with the default limits and timeouts.
 pub fn config(options: Options) -> llm_wire.Config {
   config.new(builtin.openai_adapter(
     options.key,
     options.organization,
     options.project,
+    options.store,
   ))
 }

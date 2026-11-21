@@ -28,7 +28,7 @@
 //// `Done`. A prepared call can run again, for a retry. Structured output is
 //// one more request step, `with_output(name, codec)`: the `Answer` then
 //// holds the decoded value, and invalid output fails with
-//// `error.InvalidOutput`, keeping the raw text.
+//// `error.InvalidOutput`, keeping the answer text.
 ////
 //// The caller owns the conversation and the tool loop: on `NeedsTools`,
 //// append the turn and one `tool_result` per call, and prepare the next
@@ -52,6 +52,7 @@
 
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/time/duration.{type Duration}
 import http_gun
 import http_gun/error as http_error
@@ -290,16 +291,23 @@ pub fn request(model: String, messages: List(Message)) -> Request(String) {
     messages,
     generation.default(),
     [],
-    call.Output(format: None, decode: fn(_, text, _) { Ok(text) }),
+    call.Output(format: None, decode: fn(_, text, _) { Ok(#(text, text)) }),
   )
 }
 
 /// Ask for structured output matching `codec`'s schema, named `name`. The
 /// answer is validated and decoded; invalid output fails the call with
 /// `error.InvalidOutput`. The codec must be a record at the root. OpenAI and
-/// Anthropic take a strict schema (every field required; no pair, number
-/// range or `codec.value()`); Gemini takes all of these too. `prepare`
-/// refuses what the provider cannot take with `error.UnsupportedSchema`.
+/// Anthropic take a strict schema: an optional field is sent as required and
+/// nullable, and no pair, number range or `codec.value()` is admitted;
+/// Gemini takes all of these. `prepare` refuses what the provider cannot
+/// take with `error.UnsupportedSchema`.
+///
+/// For every provider, a `null` the model writes for an optional field
+/// whose own codec is not `nullable` is removed before decoding, so it
+/// decodes as absent. `Answer.text`, and `InvalidOutput.raw_output` when the
+/// text is JSON, is then that cleaned JSON, which the same codec decodes
+/// again; otherwise it is the model's text unchanged.
 ///
 /// The call the owner and HTTP worker receive holds only the codec's
 /// schema, so the codec is not copied to them. The codec itself stays in the
@@ -325,11 +333,21 @@ pub fn with_output(
     call.Output(
       format: Some(#(name, admitted)),
       decode: fn(output_contract, text, max_bytes) {
-        case output_contract {
-          Some(output_contract) ->
-            tool_def.decode_value(output_contract, output, text, max_bytes)
+        case output_contract, admitted {
+          Some(output_contract), Ok(#(schema, _)) ->
+            tool_def.decode_output(
+              output_contract,
+              schema,
+              output,
+              text,
+              max_bytes,
+            )
           // `prepare` refuses a request whose codec has no usable schema.
-          None -> codec.decode_json(output, text) |> map_decode_error
+          _, _ ->
+            codec.decode_json(output, text)
+            |> map_decode_error
+            |> result.map(fn(decoded) { #(decoded, text) })
+            |> result.map_error(fn(failure) { #(failure, text) })
         }
       },
     ),
@@ -628,8 +646,8 @@ fn outcome(
   case terminal {
     stream_types.StreamFinished(stream_types.CompletedText(text), usage) ->
       case call.decode(stream, text) {
-        Ok(output) -> Ok(Answer(output:, text:, usage:))
-        Error(problem) ->
+        Ok(#(output, text)) -> Ok(Answer(output:, text:, usage:))
+        Error(#(problem, text)) ->
           Error(Failure(
             error.InvalidOutput(text, problem),
             Completed,

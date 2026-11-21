@@ -8,6 +8,7 @@
 import gleam/int
 import gleam/io
 import gleam/list
+import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import gleam/time/duration
@@ -88,6 +89,24 @@ fn record(scenario: Scenario) -> Result(Nil, Nil) {
     | live_scenarios.OpenAiThinkingLevel ->
       llm_wire.run(recorded.client, live_scenarios.thinking_call(scenario, key))
       |> result.map(summary)
+    live_scenarios.OpenAiFilePdf ->
+      llm_wire.run(recorded.client, live_scenarios.pdf_call(key))
+      |> result.map(summary)
+    live_scenarios.OpenAiOptionalNull | live_scenarios.OpenAiOptionalValue ->
+      llm_wire.run(recorded.client, live_scenarios.optional_call(scenario, key))
+      |> result.map(summary)
+    live_scenarios.OpenAiStoreFalse ->
+      llm_wire.run(recorded.client, live_scenarios.store_call(key))
+      |> result.map(summary)
+    live_scenarios.OpenAiToolRound | live_scenarios.OpenAiToolRoundHigh ->
+      live_scenarios.tool_round(scenario, recorded.client, key)
+      |> result.map(fn(round) {
+        case round {
+          #(first, Some(second)) ->
+            "then " <> summary(first) <> "\n  then " <> summary(second)
+          #(first, None) -> "no tool call, so no follow-up: " <> summary(first)
+        }
+      })
     _ ->
       llm_wire.run(
         recorded.client,

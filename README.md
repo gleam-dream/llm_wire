@@ -99,7 +99,8 @@ pub fn ask(
 - `llm_wire.advise` reports whether another attempt may help; it never schedules a retry. A `MaybeSent` failure may already have cost tokens. Cap a provider delay against the caller's remaining budget before sleeping.
 - Closing a stream ends local work. It does not prove that the provider rolled back or stopped processing the request.
 - Request JSON and prompts can contain sensitive data; transcription request JSON contains the encoded audio. Do not log them by default.
-- Structured-output codecs must fit the selected provider's admitted schema profile. Preparation reports unsupported schemas before execution.
+- Structured-output codecs must fit the selected provider's admitted schema profile. Preparation reports unsupported schemas before execution. On OpenAI and Anthropic an optional field is sent as required and nullable. A `null` for an optional field whose own codec does not accept `null` is removed from the answer before decoding; a codec that accepts `null` keeps it.
+- Send a PDF as `message.InlineFilePart`, and raise `limit.RequestBytes` (1 MiB by default) for large files. `openai.with_store(False)` asks OpenAI not to store responses; LLM Wire does not carry OpenAI's encrypted reasoning, so a tool round then replays without the model's earlier reasoning.
 - Keep transport trust and destination policy on the application-owned HTTP Gun client; use HTTPS for remote endpoints.
 
 ## Codecs and process copies

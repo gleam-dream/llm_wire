@@ -30,6 +30,7 @@ import transcription_consumer
 import usage_client
 import usage_conversation
 import usage_defaults
+import usage_documents
 import usage_failures
 import usage_observe
 import usage_testing
@@ -468,6 +469,7 @@ pub fn main() -> Nil {
   transcription_consumer.main()
   usage_defaults.main()
   usage_conversation.main()
+  usage_documents.main()
   usage_failures.main()
   usage_testing.main()
   usage_observe.main()

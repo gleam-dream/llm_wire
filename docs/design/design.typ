@@ -138,7 +138,7 @@
     #md-table(3, (
       [*Capability*], [*Current contract*], [*Owner of an extension*],
       [Provider-native options], [Account and version fields and common sampling, token and cache settings], [A complete custom adapter or a future typed provider option],
-      [Content and reasoning], [Input images, semantic text, refusal and reasoning deltas, a text terminal], [A future ordered-block contract that keeps protocol meaning],
+      [Content and reasoning], [Input images and files, semantic text, refusal and reasoning deltas, a text terminal], [A future ordered-block contract that keeps protocol meaning],
       [Tool modes and hosted tools], [Application tool batch admission; hosted activity observed conservatively], [A future policy with distinct provider-hosted outcomes],
       [Model metadata], [An explicit model string that the provider may reject], [An injected capability description with separately owned freshness],
       [Interaction lifecycle], [One HTTP and SSE generation, buffered classification or inline transcription; local close only], [A separate contract per new lifecycle],
