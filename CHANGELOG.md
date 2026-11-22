@@ -31,6 +31,7 @@ This release lets an application use OpenAI's Responses API with documents, code
 
 ### Compatibility
 
+- **Requires `json_blueprint` 2.2.0 or later** (was 2.1.1). An application still locked to 2.1.x must upgrade it with this release; 2.2.0 codecs copy at about their own size between processes.
 - `message.Content` and `error.RequestProblem` each gain variants. Both are documented to gain variants and to be matched with a `_` arm; a `case` over either without one stops compiling. Fabric 0.4.0 and dash-crm have none.
 - Fabric's requirement `>= 0.2.0 and < 0.3.0` admits this release.
 
