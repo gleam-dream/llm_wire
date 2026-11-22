@@ -105,7 +105,7 @@ pub fn ask(
 
 ## Codecs and process copies
 
-LLM Wire requires `json_blueprint` 2.1.1 or later. Which codec shape to use, and why, is in the
+LLM Wire requires `json_blueprint` 2.2.0 or later. Which codec shape to use, and why, is in the
 [JSON Blueprint codec practice guide](https://github.com/lostbean/json_blueprint/blob/main/docs/CODEC-PRACTICE.md); this section states only what LLM Wire copies.
 
 Each call starts an owner process, and the owner starts an HTTP worker. The BEAM copies what a process start or a message carries, without keeping shared terms shared. A call copies its tool list about five times: three times into the owner and twice into the worker. It also copies the prepared request, which holds the conversation messages, twice (once into the owner, once into the worker). A tool built with `tool.new` holds its schema, its contract and a decode function that holds the whole input codec, so every copy includes that codec. Tools built with `tool.from_contract` or `tool.from_json_schema` hold no codec and copy only schema data. The output codec of `with_output` is not copied to the owner or the worker: only its schema enters the call they receive. The codec itself stays in the `Request`, the `Prepared` and the `Stream`, whose decode functions hold it, and `run` and `next` decode the answer in the calling process. Sending a `Request`, a `Prepared` or a `Stream` to another process therefore copies the codec: a 2,899-word output codec raised a `Request` from 32 to 3,303 words, a `Prepared` from 234 to 3,315 and a `Stream` to 3,103, and left the call the owner receives at 147.
