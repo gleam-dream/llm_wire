@@ -5,22 +5,12 @@
 # of coderabbit-config itself, and `repository` marks a rule beyond the catalog.
 #
 # Catalogs read:
-#   practice skills    879841a61c3f83cd809edca9229c4a6bb7f909f8
-#   gleam-agent-tools  6a9ea2f647e787a32d3c7fa88d9c58c5b81ae9d7
+#   practice catalog (not public)  a56636a4eed7a0d644b89f5bb7c7d7c9692e0887
+#   gleam-agent-tools  d7b541cb885b3edbf25563b06aee97b28b66074f
 #
 # Governing skills: coderabbit-config (policy), gleam, gleam-lib, gleam-ffi,
 # gleam-otp, llm-wire, http-gun, json-blueprint, sinal, testing, python,
 # design, tracker, gate, git.
-#
-# Governing dependency versions: llm_wire 0.2.1 (this package, gleam.toml; the
-# llm-wire skill names 0.1.0, and every API its rules cite exists in 0.2.1).
-# Locked in manifest.toml and examples/consumer/manifest.toml: http_gun 0.2.0,
-# json_blueprint 2.2.0, sinal 0.1.0, gleam_otp 1.3.0, gleam_erlang 1.3.0,
-# gleam_stdlib 1.0.5, gleam_json 3.1.0, gleeunit 1.11.0; dev only:
-# anthropic_gleam 0.1.1 (oracle), mist 6.0.3 (one integration test server).
-# json_blueprint 2.2.0 is the version the json-blueprint, llm-wire and
-# gleam-lib skills name, so their rules stated for 2.2.0 (a codec copies at
-# about its own size) are taken with the codec API rules.
 language: en-US
 tone_instructions: >-
   Literal and concise. Report only defects you can evidence from the diff, its
@@ -154,8 +144,8 @@ reviews:
         - Flag a deliberate crash on a failure the caller could act on; return
           a structured error instead.
         - Flag a codec newly held in a tool, request or stream that a call
-          sends between processes with no bound on its copied size in a test
-          (json_blueprint 2.2.0).
+          sends between processes with no bound on its copied size in a test;
+          a codec copies at about its own size.
         - Flag the library taking over what AGENTS.md gives the application:
           conversation history, retry, tool execution, the shared HTTP Gun
           client, and trust and transport policy.
@@ -187,8 +177,8 @@ reviews:
 
     - path: "{src,examples}/**/*.gleam"
       instructions: |
-        Processes (gleam-otp; gleam_otp 1.3.0, gleam_erlang 1.3.0). Apply to a
-        module that imports `gleam/otp/actor` or `gleam/erlang/process`.
+        Processes (gleam-otp). Apply to a module that imports
+        `gleam/otp/actor` or `gleam/erlang/process`.
         - Flag an actor whose messages are not one explicit message type, and
           request/reply mechanics exposed instead of hidden behind public
           functions.
@@ -219,8 +209,11 @@ reviews:
           as `Answer`; they are `OutputLimited`, `Refused` or a failure.
         - Flag a change that drops call ids, call ordering or opaque provider
           replay data from `AssistantTurn` or its codec.
-        - Flag missing usage reported as zero tokens, and a `ProviderDelay`
-          capped by the package.
+        - Flag missing usage reported as zero tokens, `output_tokens` that
+          leaves out thinking tokens, and a `ProviderDelay` capped by the
+          package.
+        - Flag an adapter that drops a thinking level the provider cannot
+          carry; `prepare` refuses it with `ThinkingUnsupported`.
         - Flag tool execution, authorization or tool error policy moved into
           the package.
 
@@ -228,7 +221,9 @@ reviews:
       instructions: |
         LLM Wire consumer (llm-wire).
         - Flag a request executed without `prepare` and handling of its
-          unsupported settings and schemas.
+          unsupported settings and schemas, `ThinkingUnsupported` included.
+        - Flag a thinking level set with a token limit sized for the answer
+          alone; the limit also counts thoughts.
         - Flag a `case` on a call outcome that does not name `Answer`,
           `NeedsTools`, `OutputLimited` and `Refused`, and an `OutputLimited`
           partial treated as a complete typed answer.
@@ -241,9 +236,9 @@ reviews:
         - Flag a `with_output` codec whose root is not a record.
         - Flag a `tool.new` tool sent on many calls where a
           `tool.from_contract` or `tool.from_json_schema` tool with
-          `decode_arguments` in the calling process would do; each call copies
-          its tool list about five times, input codec included
-          (json_blueprint 2.2.0).
+          `decode_arguments` in the calling process would do; a `tool.new`
+          tool carries its input codec into each call's processes, and the
+          contract tools copy schema only.
         - Flag a stream neither read until `Done` nor closed, and two readers
           of one stream.
         - Flag `TimedOut` from `next_within` treated as the end of the call.
@@ -256,8 +251,7 @@ reviews:
 
     - path: "{src,examples}/**/*.gleam"
       instructions: |
-        HTTP Gun (http-gun; http_gun 0.2.0). Apply to a module that imports
-        `http_gun`.
+        HTTP Gun (http-gun). Apply to a module that imports `http_gun`.
         - Flag a decoded response body with no check of `status` first; an
           `Ok` transport result can hold a 404 or 503.
         - Flag a truncated collection (`truncated`) decoded as a complete JSON
@@ -271,16 +265,24 @@ reviews:
           semantics, and a timeout or cancellation treated as proof the
           provider did nothing.
         - Flag a destination view that widens authority, loopback enabled
-          outside local fixtures, and disabled TLS verification.
-        - Flag a recording whose redaction does not cover provider headers,
-          query tokens and bodies, and a recording not finished with its
-          result handled.
+          outside local fixtures, and disabled or weakened TLS verification;
+          a server that accepts only TLS 1.2 CBC suites takes
+          `config.with_cipher_suites(settings, config.OtpDefaultsAndTls12Cbc)`.
+        - Flag a recording whose redaction policy does not add the provider's
+          credential headers (`with_headers`), query parameters
+          (`with_query_parameters`) and body fields (`with_body_fields`,
+          `with_body`); the defaults do not remove every secret.
+        - Flag `cassette.encode` on a hand-built or parsed script that can
+          hold credentials without `cassette.redact(script, policy)` first,
+          and `redaction.request_fields_only` on a recording whose response
+          bodies carry tokens saved unredacted.
+        - Flag a recording not finished with its result handled.
         - Flag a shared client started by a short-lived request process.
 
     - path: "{src,examples}/**/*.gleam"
       instructions: |
-        JSON Blueprint codecs (json-blueprint; json_blueprint 2.2.0). Apply to
-        a module that imports `json/blueprint`.
+        JSON Blueprint codecs (json-blueprint). Apply to a module that imports
+        `json/blueprint`.
         - Flag a callback passed to `field`, `optional_field`, `success` or a
           getter that has an effect or is not synchronous and pure, and a
           placeholder value from schema discovery stored as data.
@@ -304,13 +306,12 @@ reviews:
           Erlang test bounding its `erts_debug:flat_size/1` as a ratio to its
           in-heap size, and one value placed in several parts of such a term;
           each place is copied.
-        - Flag a codec stored with `term_to_binary` or kept across a hot
-          upgrade from 2.1.x; rebuild it.
+        - Flag a codec stored with `term_to_binary` or kept across a hot code
+          upgrade; rebuild it.
 
     - path: "{src,examples}/**/*.gleam"
       instructions: |
-        Telemetry (sinal; sinal 0.1.0). Apply to a module that imports
-        `sinal`.
+        Telemetry (sinal). Apply to a module that imports `sinal`.
         - Flag an event name, field key or route prefix built from run-time
           input; they become atoms. Unbounded values go in metadata values.
         - Flag an event defined twice instead of one definition shared by
