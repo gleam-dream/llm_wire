@@ -27,7 +27,7 @@
 //// codec for a fixed shape, with child codecs built inside their fields
 //// rather than `let`-bound and captured. Check a tool with
 //// `erts_debug:flat_size` of the `Tool` times five, as a starting bound at
-//// most 1,000 words (8 KB) per tool. See the [codec practice guide](https://github.com/lostbean/json_blueprint/blob/main/docs/CODEC-PRACTICE.md)
+//// most 1,000 words (8 KB) per tool. See the [codec practice guide](https://github.com/gleam-dream/json_blueprint/blob/main/docs/CODEC-PRACTICE.md)
 //// for the codec side and the README section "Codecs and process copies"
 //// for LLM Wire's part.
 ////
