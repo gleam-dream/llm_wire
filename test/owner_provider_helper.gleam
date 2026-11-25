@@ -114,9 +114,9 @@ pub fn start_anthropic_stream_with_tools(
   )
 }
 
-/// Timeouts in milliseconds; `None` is unbounded.
+/// Timeouts in milliseconds; `None` lifts the first-token or idle-gap timer.
 pub fn timeouts(
-  whole_call: Option(Int),
+  whole_call: Int,
   first_token: Option(Int),
   idle_gap: Option(Int),
 ) -> config.Timeouts {

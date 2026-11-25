@@ -5,18 +5,15 @@ import llm_wire/internal/adapter.{type Adapter}
 import llm_wire/internal/limits.{type Limits}
 import llm_wire/tool
 
-/// The three timers of a call, in whole milliseconds. `None` is unbounded.
+/// The three timers of a call, in whole milliseconds. The whole call is
+/// always bounded; `None` lifts the first-token or idle-gap timer.
 pub type Timeouts {
-  Timeouts(
-    whole_call: Option(Int),
-    first_token: Option(Int),
-    idle_gap: Option(Int),
-  )
+  Timeouts(whole_call: Int, first_token: Option(Int), idle_gap: Option(Int))
 }
 
 pub fn default_timeouts() -> Timeouts {
   Timeouts(
-    whole_call: Some(600_000),
+    whole_call: 600_000,
     first_token: Some(180_000),
     idle_gap: Some(60_000),
   )
@@ -55,7 +52,7 @@ pub fn validate_timeouts(
       _ -> Ok(Nil)
     }
   }
-  case check(timeouts.whole_call, error.WholeCall) {
+  case check(Some(timeouts.whole_call), error.WholeCall) {
     Error(problem) -> Error(problem)
     Ok(Nil) ->
       case check(timeouts.first_token, error.FirstToken) {

@@ -100,7 +100,8 @@ pub fn prepared_buffered_http_gun_test() {
   fake_server.stop(server)
 }
 
-/// The call's own budget replaces HTTP Gun's request timeout, and the client's
+/// The call's own budget replaces HTTP Gun's request timeout, so a stream
+/// outlives a shorter request timeout on the client's view, and the client's
 /// idle timeout does not cut a slow first token or a gap between events: the
 /// semantic owner's timers alone decide.
 pub fn client_timeouts_do_not_cut_the_call_budget_test() {
@@ -128,25 +129,23 @@ pub fn client_timeouts_do_not_cut_the_call_budget_test() {
           True,
         )
     })
-  let assert Ok(client) =
+  let assert Ok(started) =
     http_gun.start(
       http_test_helpers.loopback_config()
-      |> http_config.with_request_timeout(
-        http_config.After(duration.milliseconds(100)),
-      )
       |> http_config.with_idle_timeout(
         http_config.After(duration.milliseconds(100)),
       ),
     )
+  let client = http_gun.with_timeout(started, duration.milliseconds(100))
   let configure = fn(config) {
     config
-    |> llm_wire.with_call_timeout(ms(5000))
+    |> llm_wire.with_call_timeout(duration.milliseconds(5000))
     |> llm_wire.with_first_token_timeout(ms(2000))
     |> llm_wire.with_idle_timeout(ms(2000))
   }
   llm_wire.run(client, prepared(server.port, configure))
   |> should.equal(Ok(llm_wire.Answer("hello", "hello", None)))
-  http_gun.stop(client)
+  http_gun.stop(started)
   fake_server.stop(server)
 }
 
@@ -310,7 +309,7 @@ pub fn consumer_read_timeout_preserves_http_and_terminal_precedes_eof_test() {
   let assert Ok(client) = http_gun.start(http_test_helpers.loopback_config())
   let configure = fn(config) {
     config
-    |> llm_wire.with_call_timeout(ms(5000))
+    |> llm_wire.with_call_timeout(duration.milliseconds(5000))
     |> llm_wire.with_first_token_timeout(ms(3000))
   }
   let assert Ok(stream) =
@@ -356,7 +355,7 @@ pub fn keepalive_bytes_do_not_extend_semantic_idle_test() {
   let assert Ok(client) = http_gun.start(http_test_helpers.loopback_config())
   let configure = fn(config) {
     config
-    |> llm_wire.with_call_timeout(ms(5000))
+    |> llm_wire.with_call_timeout(duration.milliseconds(5000))
     |> llm_wire.with_first_token_timeout(ms(150))
   }
   let assert Error(failure) =
@@ -373,7 +372,7 @@ pub fn keepalive_bytes_do_not_extend_semantic_idle_test() {
   let _ = process.spawn_unlinked(fn() { serve_then_ping(server, opening, 100) })
   let configure = fn(config) {
     config
-    |> llm_wire.with_call_timeout(ms(5000))
+    |> llm_wire.with_call_timeout(duration.milliseconds(5000))
     |> llm_wire.with_idle_timeout(ms(150))
   }
   let assert Error(failure) =
@@ -401,7 +400,7 @@ pub fn partial_status_body_keeps_bytes_when_semantic_idle_wins_test() {
   let assert Ok(client) = http_gun.start(http_test_helpers.loopback_config())
   let configure = fn(config) {
     config
-    |> llm_wire.with_call_timeout(ms(5000))
+    |> llm_wire.with_call_timeout(duration.milliseconds(5000))
     |> llm_wire.with_first_token_timeout(ms(150))
   }
   // The first-token timer covers the response head and a status body; it
@@ -427,7 +426,11 @@ pub fn execution_starts_budget_and_delayed_headers_spend_it_test() {
       let _ = tcp.recv(socket, 0, 3000)
       tcp.close(socket)
     })
-  let call = prepared(server.port, llm_wire.with_call_timeout(_, ms(400)))
+  let call =
+    prepared(server.port, llm_wire.with_call_timeout(
+      _,
+      duration.milliseconds(400),
+    ))
   // Waiting longer than the budget after `prepare` spends none of it.
   process.sleep(500)
   let assert Ok(client) = http_gun.start(http_test_helpers.loopback_config())

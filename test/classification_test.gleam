@@ -86,7 +86,7 @@ pub fn classification_cassette_round_trip_and_correlated_telemetry_test() {
 pub fn classification_limits_and_timeouts_are_validated_before_dispatch_test() {
   classify.prepare(
     classify.typesafe(),
-    config() |> classify.with_timeout(llm_wire.After(duration.milliseconds(-1))),
+    config() |> classify.with_timeout(duration.milliseconds(-1)),
     request(),
   )
   |> should.be_error
@@ -110,7 +110,7 @@ pub fn classification_limits_and_timeouts_are_validated_before_dispatch_test() {
   |> should.be_error
   classify.prepare(
     classify.typesafe(),
-    config() |> classify.with_timeout(llm_wire.Infinity),
+    config() |> classify.with_timeout(duration.hours(2)),
     request(),
   )
   |> should.be_ok

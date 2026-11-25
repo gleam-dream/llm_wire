@@ -7,6 +7,7 @@
 //// Confidence is provider concentration evidence, not answer correctness.
 
 import gleam/option.{type Option}
+import gleam/time/duration.{type Duration}
 import http_gun
 import json/blueprint/codec
 import json/blueprint/value.{type Value}
@@ -93,7 +94,7 @@ pub fn with_endpoint(config: Config, url: String) -> Config {
   runtime.with_endpoint(config, url)
 }
 
-pub fn with_timeout(config: Config, timeout: llm_wire.Bound) -> Config {
+pub fn with_timeout(config: Config, timeout: Duration) -> Config {
   runtime.with_timeout(config, timeout)
 }
 

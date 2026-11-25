@@ -181,6 +181,9 @@ pub fn request_json(prepared: Prepared) -> String {
 
 /// Perform exactly one attempt. The borrowed client view is used unchanged:
 /// transport bounds, destination restrictions and cancellation remain effective.
+/// Its request timeout, 30 s unless the view sets another with
+/// `http_gun.with_timeout`, bounds the attempt; set a longer one on the view
+/// for long audio.
 /// Synchronous response interpretation has no independent preemption guarantee.
 pub fn run(
   client: http_gun.Client,

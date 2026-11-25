@@ -44,11 +44,12 @@
 //// | invalid tool calls | fail the response | `with_tool_call_checks` |
 //// | plaintext `http://` | loopback addresses only | none: HTTP Gun's destination policy |
 ////
-//// Each call's whole-call budget replaces the HTTP Gun client's relative
-//// request timeout and lifts its idle timeout. An explicit absolute deadline
-//// on the supplied client remains a ceiling, including with an infinite call
-//// budget. The client's connect and pool timeouts, destination policy and
-//// trust still apply.
+//// Each call's whole-call budget replaces the HTTP Gun client's request
+//// timeout, 30 s unless the view sets another, and lifts its idle timeout.
+//// The whole call is always finite, as every HTTP Gun request is; a long
+//// generation chooses a long budget. An explicit absolute deadline on the
+//// supplied client remains a ceiling. The client's connect and pool
+//// timeouts, destination policy and trust still apply.
 
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -101,7 +102,8 @@ pub type Prepared(o) =
 pub type Stream(o) =
   call.Stream(o)
 
-/// A time bound that may be lifted. `Infinity` must be chosen explicitly.
+/// A first-token or idle-gap bound that may be lifted. `Infinity` must be
+/// chosen explicitly. The whole call is always a finite `Duration`.
 pub type Bound {
   After(Duration)
   Infinity
@@ -245,12 +247,14 @@ pub fn with_limit(config: Config, which: Limit, value: Int) -> Config {
 }
 
 /// Bound the whole call, from the start of execution to the final event.
-/// Default `After(duration.seconds(600))`.
-pub fn with_call_timeout(config: Config, bound: Bound) -> Config {
+/// Default `duration.seconds(600)`. The bound is always finite: it becomes
+/// the HTTP request's own timeout, replacing the client's, so a stream or a
+/// long generation is never cut by the client's shorter default.
+pub fn with_call_timeout(config: Config, bound: Duration) -> Config {
   let timeouts = config.timeouts(config)
   config.with_timeouts(
     config,
-    config.Timeouts(..timeouts, whole_call: to_ms(bound)),
+    config.Timeouts(..timeouts, whole_call: whole_ms(bound)),
   )
 }
 
@@ -285,13 +289,15 @@ pub fn with_tool_call_checks(config: Config, checks: ToolCallChecks) -> Config {
 fn to_ms(bound: Bound) -> Option(Int) {
   case bound {
     Infinity -> None
-    After(span) -> {
-      let #(seconds, nanoseconds) = duration.to_seconds_and_nanoseconds(span)
-      // Whole milliseconds, rounding a remainder away from zero, so a
-      // positive duration stays positive.
-      Some(seconds * 1000 + { nanoseconds + 999_999 } / 1_000_000)
-    }
+    After(span) -> Some(whole_ms(span))
   }
+}
+
+/// Whole milliseconds, rounding a remainder away from zero, so a positive
+/// duration stays positive.
+fn whole_ms(span: Duration) -> Int {
+  let #(seconds, nanoseconds) = duration.to_seconds_and_nanoseconds(span)
+  seconds * 1000 + { nanoseconds + 999_999 } / 1_000_000
 }
 
 // --- requests ----------------------------------------------------------------

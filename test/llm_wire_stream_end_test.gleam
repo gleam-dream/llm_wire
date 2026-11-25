@@ -305,10 +305,7 @@ pub fn an_end_that_never_comes_returns_the_answer_at_the_bound_test() {
 
 pub fn the_whole_call_deadline_caps_the_read_to_the_end_test() {
   let configure = fn(config) {
-    llm_wire.with_call_timeout(
-      config,
-      llm_wire.After(duration.milliseconds(400)),
-    )
+    llm_wire.with_call_timeout(config, duration.milliseconds(400))
   }
   // HTTP Gun refuses to publish a recording interrupted by a deadline, so
   // this call runs on a plain client.
@@ -496,10 +493,7 @@ pub fn the_connection_is_reused_after_a_delayed_end_test() {
   // turns a lost connection into a quick failure rather than a hang.
   let call =
     prepared(message.Google, server.port, fn(config) {
-      llm_wire.with_call_timeout(
-        config,
-        llm_wire.After(duration.milliseconds(3000)),
-      )
+      llm_wire.with_call_timeout(config, duration.milliseconds(3000))
     })
   assert is_ola(llm_wire.run(client, call))
   assert is_ola(llm_wire.run(client, call))
@@ -551,7 +545,7 @@ pub fn trailing_bytes_dripped_slowly_stop_at_the_bound_test() {
   let assert Ok(client) = http_gun.start(http_test_helpers.loopback_config())
   let call =
     prepared(message.Google, server.port, fn(config) {
-      llm_wire.with_call_timeout(config, llm_wire.Infinity)
+      llm_wire.with_call_timeout(config, duration.seconds(60))
     })
   let started = now_ms()
   assert is_ola(llm_wire.run(client, call))

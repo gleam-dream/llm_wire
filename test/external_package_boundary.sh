@@ -117,7 +117,7 @@ pub fn openai_settings() -> llm_wire.Config {
   |> openai.config
   |> llm_wire.with_endpoint("https://api.example.test/v1")
   |> llm_wire.with_limit(limit.TotalTextBytes, 1_000_000)
-  |> llm_wire.with_call_timeout(llm_wire.After(duration.seconds(30)))
+  |> llm_wire.with_call_timeout(duration.seconds(30))
   |> llm_wire.with_idle_timeout(llm_wire.Infinity)
 }
 

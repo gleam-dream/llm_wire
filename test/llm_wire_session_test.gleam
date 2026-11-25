@@ -216,7 +216,7 @@ pub fn caller_owned_stream_round_applies_deadline_and_failure_evidence_test() {
   // gone, since `next` waits for the next event.
   let settings =
     local_config(server.port)
-    |> llm_wire.with_call_timeout(llm_wire.After(duration.milliseconds(200)))
+    |> llm_wire.with_call_timeout(duration.milliseconds(200))
     |> llm_wire.with_idle_timeout(llm_wire.After(duration.milliseconds(1000)))
   let assert Ok(prepared) = llm_wire.prepare(settings, request())
   let assert Ok(opened) = llm_wire.stream(owned_http, prepared)

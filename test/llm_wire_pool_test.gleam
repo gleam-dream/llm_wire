@@ -35,7 +35,7 @@ fn request(port: Int, timeout: Int) -> llm_wire.Prepared(String) {
     openai.new("synthetic-pool-key")
     |> openai.config
     |> llm_wire.with_endpoint("http://127.0.0.1:" <> int.to_string(port))
-    |> llm_wire.with_call_timeout(ms(timeout))
+    |> llm_wire.with_call_timeout(duration.milliseconds(timeout))
     |> llm_wire.with_first_token_timeout(ms(4000))
     |> llm_wire.with_idle_timeout(ms(4000))
   let assert Ok(call) =

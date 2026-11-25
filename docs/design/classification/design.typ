@@ -58,7 +58,7 @@
         [*Boundary*], [*Effect*], [*Time and capacity*],
         [prepare], [pure wire encode and bounded JSON validation; default bearer key validation after pure admission], [positive live limits at most fixed receipt limits; endpoint/model/timeout valid],
         [custom headers], [replace bearer auth; unused bearer closure is not invoked], [header reveal occurs when building the HTTP request for execution],
-        [run], [fresh call id/correlation; HTTP send buffers response under response limit], [600 s default request timeout; Infinity explicit; HTTP client idle/connect/pool policies remain],
+        [run], [fresh call id/correlation; HTTP send buffers response under response limit], [600 s default request timeout, always finite; HTTP client idle/connect/pool policies remain],
         [response], [UTF-8 check, status, bounded JSON, wire decode, candidate admission], [non-200 status has empty retained body and optional Retry-After; response body limit still applies],
         [success], [Outcome includes native answer and original request/response/state], [no tool loop, SSE stream or generation first-progress/idle timers],
       ))
@@ -70,7 +70,7 @@
       )
       #md-table(3, (
         [*Classification bound*], [*Default*], [*Owner of the change*],
-        [Whole request timeout], [600 seconds, or an explicit Infinity], [Live config],
+        [Whole request timeout], [600 seconds, or another finite duration #adr(25)], [Live config],
         [Request JSON and response JSON], [1 MiB each], [Live config, at most the wire's receipt bounds],
         [Receipt request and response JSON], [1 MiB each], [The wire],
         [Questions per batch], [256], [Fixed],

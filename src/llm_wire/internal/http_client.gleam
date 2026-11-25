@@ -5,7 +5,7 @@ import gleam/bit_array
 import gleam/erlang/process
 import gleam/http
 import gleam/list
-import gleam/option.{type Option, None, Some}
+import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import gleam/time/duration
@@ -46,7 +46,8 @@ type Left {
 }
 
 /// Opens the call. The call's whole-call budget replaces the client's
-/// relative request timeout while retaining an explicit client deadline.
+/// request timeout, so a long stream is not cut by the client's default,
+/// while an explicit client deadline remains a ceiling.
 /// The client's idle timeout is lifted because the owner runs the first-token and
 /// idle-gap timers. A plaintext endpoint is narrowed to loopback addresses
 /// by HTTP Gun's destination policy, so credentials never cross a network
@@ -56,20 +57,15 @@ pub fn open(
   prepared: api.PreparedCall,
   setup: owner.Setup,
 ) -> Result(owner.Stream, Nil) {
-  let budget =
-    option.map(setup.timeouts.whole_call, fn(ms) {
-      deadline.after(duration.milliseconds(ms))
-    })
+  let budget = deadline.after(duration.milliseconds(setup.timeouts.whole_call))
   let client =
     client
     |> http_gun.with_idle_timeout(http_config.Infinity)
     |> plaintext_rule(api.scheme(prepared))
   let reducer = adapter.new_reducer(api.adapter(prepared), setup.limits)
-  owner.start(
-    owner.Setup(..setup, reducer:),
-    option.map(budget, remaining_ms),
-    fn(stream) { start(client, prepared, budget, stream, setup) },
-  )
+  owner.start(owner.Setup(..setup, reducer:), remaining_ms(budget), fn(stream) {
+    start(client, prepared, budget, stream, setup)
+  })
 }
 
 fn remaining_ms(budget: deadline.Deadline) -> Int {
@@ -96,7 +92,7 @@ fn plaintext_rule(
 fn start(
   client: http_gun.Client,
   prepared: api.PreparedCall,
-  budget: Option(deadline.Deadline),
+  budget: deadline.Deadline,
   stream: owner.Stream,
   setup: owner.Setup,
 ) -> owner.TransportPort {
@@ -107,21 +103,13 @@ fn start(
       cancellation.with_token(fn(token) {
         let control = process.new_subject()
         process.send(ready, #(control, token))
-        let wait = case budget {
-          Some(budget) -> process.receive(control, remaining_ms(budget))
-          None -> Ok(process.receive_forever(control))
-        }
-        case wait {
+        case process.receive(control, remaining_ms(budget)) {
           Ok(More) -> {
             // Keep the caller's absolute deadline. Compute the remaining
             // whole-call timeout after setup, immediately before HTTP dispatch.
-            let timeout = case budget {
-              Some(budget) -> http_config.After(deadline.remaining(budget))
-              None -> http_config.Infinity
-            }
             let call =
               client
-              |> http_gun.with_timeout(timeout)
+              |> http_gun.with_timeout(deadline.remaining(budget))
               |> http_gun.with_cancellation(token)
             let outcome =
               http_gun.with_response(

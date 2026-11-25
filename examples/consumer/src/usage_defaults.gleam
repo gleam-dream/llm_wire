@@ -30,7 +30,7 @@ pub fn main() -> Nil {
     openai.new("sk-example")
     |> openai.config
     |> llm_wire.with_endpoint("https://api.example.test/v1")
-    |> llm_wire.with_call_timeout(llm_wire.After(duration.minutes(5)))
+    |> llm_wire.with_call_timeout(duration.minutes(5))
     |> llm_wire.with_first_token_timeout(llm_wire.After(duration.seconds(30)))
     |> llm_wire.with_idle_timeout(llm_wire.Infinity)
     |> llm_wire.with_limit(limit.TotalTextBytes, 4)

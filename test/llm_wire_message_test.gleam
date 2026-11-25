@@ -140,10 +140,10 @@ pub fn limits_validation_test() {
 pub fn deadlines_validation_test() {
   // The overall deadline became the whole-call timeout; its default rose
   // from 60 s to 600 s.
-  config.default_timeouts().whole_call |> should.equal(Some(600_000))
+  config.default_timeouts().whole_call |> should.equal(600_000)
   llm_wire.prepare(
     testing.config()
-      |> llm_wire.with_call_timeout(llm_wire.After(duration.seconds(30))),
+      |> llm_wire.with_call_timeout(duration.seconds(30)),
     hello("m"),
   )
   |> should.be_ok
@@ -153,7 +153,7 @@ pub fn deadlines_validation_test() {
   )) =
     llm_wire.prepare(
       testing.config()
-        |> llm_wire.with_call_timeout(llm_wire.After(duration.milliseconds(-1))),
+        |> llm_wire.with_call_timeout(duration.milliseconds(-1)),
       hello("m"),
     )
 }

@@ -217,7 +217,7 @@ fn wait_for_conflict(stream: owner.Stream, attempts: Int) -> Bool {
 
 /// The first-token timer ends the call when no semantic progress arrives.
 pub fn owner_first_token_deadline_test() {
-  let timeouts = owner_provider_helper.timeouts(Some(10_000), Some(50), None)
+  let timeouts = owner_provider_helper.timeouts(10_000, Some(50), None)
   let assert Ok(stream) =
     owner_provider_helper.start_openai_stream(
       limits.default(),
@@ -234,7 +234,7 @@ pub fn owner_first_token_deadline_test() {
 /// The idle gap starts at the first progress event, so it fires only after
 /// a delta was delivered.
 pub fn owner_idle_gap_deadline_test() {
-  let timeouts = owner_provider_helper.timeouts(Some(10_000), None, Some(50))
+  let timeouts = owner_provider_helper.timeouts(10_000, None, Some(50))
   let assert Ok(stream) =
     owner_provider_helper.start_openai_stream(
       limits.default(),
@@ -253,7 +253,7 @@ pub fn owner_idle_gap_deadline_test() {
 }
 
 pub fn owner_overall_deadline_test() {
-  let timeouts = owner_provider_helper.timeouts(Some(50), None, None)
+  let timeouts = owner_provider_helper.timeouts(50, None, None)
   let assert Ok(stream) =
     owner_provider_helper.start_openai_stream(
       limits.default(),

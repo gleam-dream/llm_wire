@@ -108,7 +108,7 @@ pub fn deadlines_and_owner_loss_close_the_actual_http_connection_test() {
         ..config,
         settings: classify.with_timeout(
           config.settings,
-          llm_wire.After(duration.milliseconds(100)),
+          duration.milliseconds(100),
         ),
       ),
     )

@@ -7,6 +7,7 @@ import gleam/erlang/process
 import gleam/list
 import gleam/time/duration
 import gleeunit/should
+import http_gun
 import http_gun/config as http_config
 import http_test_helpers
 import llm_wire
@@ -156,7 +157,7 @@ pub fn the_whole_call_bounds_a_stream_that_keeps_pinging_test() {
   let server =
     serve([#(0, a), #(0, b), #(0, c), ..list.repeat(#(50, ping()), 20)])
   let assert Error(failure) =
-    run(server, llm_wire.with_call_timeout(_, ms(300)))
+    run(server, llm_wire.with_call_timeout(_, duration.milliseconds(300)))
   failure.error |> should.equal(error.DeadlineExceeded(error.WholeCall))
 }
 
@@ -182,13 +183,11 @@ pub fn a_short_client_request_timeout_does_not_cut_the_call_test() {
     serve([#(0, start), ..list.map(rest, fn(event) { #(150, event) })])
   let settings =
     http_test_helpers.loopback_config()
-    |> http_config.with_request_timeout(
-      http_config.After(duration.milliseconds(100)),
-    )
     |> http_config.with_idle_timeout(
       http_config.After(duration.milliseconds(100)),
     )
   use http <- http_test_helpers.with_settings(settings)
+  let http = http_gun.with_timeout(http, duration.milliseconds(100))
   let assert Ok(stream) =
     client.open_anthropic_stream(http, server.port, fn(c) { c }, [])
   let assert Ok(llm_wire.Answer(text: "slow", ..)) = llm_wire.collect(stream)

@@ -159,12 +159,12 @@ pub fn owner_pid(stream: Stream) -> Result(process.Pid, Nil) {
   process.subject_owner(stream.subject)
 }
 
-/// Starts the owner. `whole_call_ms` is the time left in the call's budget,
-/// or `None` when the whole call is unbounded. The transport starts inside
+/// Starts the owner. `whole_call_ms` is the time left in the call's budget.
+/// The transport starts inside
 /// the owner, so its linked worker shares the owner's lifetime.
 pub fn start(
   setup: Setup,
-  whole_call_ms: Option(Int),
+  whole_call_ms: Int,
   start_transport: fn(Stream) -> TransportPort,
 ) -> Result(Stream, Nil) {
   let consumer_pid = process.self()
@@ -179,9 +179,11 @@ pub fn start(
       process.unlink(consumer_pid)
       let transport = start_transport(Stream(subject))
       let whole_call_timer =
-        option.map(whole_call_ms, fn(ms) {
-          process.send_after(subject, ms, TimerFired(error.WholeCall))
-        })
+        Some(process.send_after(
+          subject,
+          whole_call_ms,
+          TimerFired(error.WholeCall),
+        ))
       let first_token_timer =
         option.map(setup.timeouts.first_token, fn(ms) {
           process.send_after(subject, ms, TimerFired(error.FirstToken))

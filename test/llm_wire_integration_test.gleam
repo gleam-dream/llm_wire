@@ -524,7 +524,7 @@ pub fn gun_setup_uses_remaining_overall_deadline_test() {
   })
   let configure = fn(config) {
     config
-    |> llm_wire.with_call_timeout(llm_wire.After(duration.milliseconds(200)))
+    |> llm_wire.with_call_timeout(duration.milliseconds(200))
     |> llm_wire.with_first_token_timeout(llm_wire.After(duration.seconds(5)))
   }
   let result = client.open_openai_stream(owned_http, server.port, configure, [])
