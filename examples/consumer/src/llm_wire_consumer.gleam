@@ -161,6 +161,10 @@ pub fn answer_with_tools(
         Ok(llm_wire.NeedsTools(..)) -> Error("too many tool rounds")
         Ok(llm_wire.OutputLimited(..)) -> Error("output limited")
         Ok(llm_wire.Refused(reason:, ..)) -> Error("refused: " <> reason)
+        // A stop reason added after this release: this application does not
+        // trust the text without knowing what the reason means.
+        Ok(llm_wire.UnrecognizedStop(reason:, ..)) ->
+          Error("stopped for an unrecognized reason: " <> reason)
         Error(failure) -> Error(llm_wire.describe_failure(failure))
       }
   }

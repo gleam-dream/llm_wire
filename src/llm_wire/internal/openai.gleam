@@ -930,9 +930,9 @@ fn decode_response_completed() -> decode.Decoder(ResponseCompleted) {
   decode.success(ResponseCompleted(id, status, usage))
 }
 
-/// `response.incomplete_details.reason` of an incomplete response:
-/// `"max_output_tokens"` or `"content_filter"` (openai-python
-/// `IncompleteDetails`), absent when the object is null.
+/// `response.incomplete_details.reason` of an incomplete response, such as
+/// `"max_output_tokens"` or `"content_filter"`; absent when the object is
+/// null.
 fn incomplete_reason(data: String) -> Option(String) {
   let decoder =
     decode.one_of(
@@ -1072,13 +1072,16 @@ fn handle_response_completed(
                     ),
                     retry: retry_evidence,
                   )
+                // `max_messages`, `steered`, and any reason added after
+                // this version: the caller decides what it means.
                 Some(other) ->
-                  stream_types.StreamFailed(
-                    error: error.Provider(
-                      code: Some(other),
-                      message: "Response incomplete with reason: " <> other,
+                  stream_types.StreamFinished(
+                    outcome: stream_types.UnrecognizedStop(
+                      other,
+                      all_text,
+                      all_calls,
                     ),
-                    retry: retry_evidence,
+                    usage: completed.usage,
                   )
               }
             "failed" -> {

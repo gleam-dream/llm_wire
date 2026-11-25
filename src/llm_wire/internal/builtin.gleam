@@ -1146,6 +1146,8 @@ fn map_builtin_terminal(
         stream_types.OutputLimited(text, calls) ->
           adapter.OutputLimited(text, calls, usage)
         stream_types.Refused(reason) -> adapter.Refusal(reason, usage)
+        stream_types.UnrecognizedStop(reason, text, calls) ->
+          adapter.UnrecognizedStop(reason, text, calls, usage)
       })
     Some(stream_types.StreamFailed(failure, _)) ->
       Some(adapter.Failed(failure, None))

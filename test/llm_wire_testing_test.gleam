@@ -884,11 +884,9 @@ pub fn response_incomplete_by_the_content_filter_is_not_an_output_limit_test() {
   |> should.equal(llm_wire.WillNotHelpUnchanged)
 }
 
-pub fn response_incomplete_with_an_unknown_reason_is_a_provider_error_test() {
-  let assert Error(failure) =
+pub fn response_incomplete_with_an_unknown_reason_is_an_unrecognized_stop_test() {
+  let assert Ok(llm_wire.UnrecognizedStop(reason: "something_new", ..)) =
     run_in(openai_config(), testing.events([incomplete("something_new")]))
-  let assert error.Provider(Some("something_new"), _) = failure.error
-  llm_wire.advise(failure).prospect |> should.equal(llm_wire.Unknown)
 }
 
 pub fn response_incomplete_without_details_is_still_an_output_limit_test() {
