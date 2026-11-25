@@ -531,7 +531,9 @@ fn apply_finish_reason(
         }
       }
     }
-    "MAX_TOKENS" -> {
+    // `CONTINUATION`: the per-request token budget ran out before the answer
+    // finished, which is the output limit for one request.
+    "MAX_TOKENS" | "CONTINUATION" -> {
       let calls = build_unvalidated_tool_calls(reducer)
       let outcome =
         stream_types.StreamFinished(
@@ -540,15 +542,17 @@ fn apply_finish_reason(
         )
       Ok(Reducer(..reducer, terminal_outcome: Some(outcome)))
     }
-    // The safety, recitation, blocklist and sensitive-data filters
-    // (google-genai `FinishReason`).
+    // The safety, recitation, blocklist, sensitive-data and escalation
+    // filters (Gemini `FinishReason`).
     "SAFETY"
     | "RECITATION"
     | "BLOCKLIST"
     | "PROHIBITED_CONTENT"
     | "SPII"
     | "IMAGE_SAFETY"
-    | "IMAGE_PROHIBITED_CONTENT" -> {
+    | "IMAGE_PROHIBITED_CONTENT"
+    | "IMAGE_RECITATION"
+    | "ESCALATION" -> {
       let outcome =
         stream_types.StreamFailed(
           error.ContentFiltered(error.InOutput, reason),
@@ -556,22 +560,37 @@ fn apply_finish_reason(
         )
       Ok(Reducer(..reducer, terminal_outcome: Some(outcome)))
     }
-    "OTHER" -> {
+    // Faults the provider names: a malformed or unexpected function call,
+    // a tool loop, a missing thought signature, a malformed response, an
+    // unsupported language, a missing image, or a restricted account. The
+    // reason is known and describes no answer.
+    "MALFORMED_FUNCTION_CALL"
+    | "UNEXPECTED_TOOL_CALL"
+    | "TOO_MANY_TOOL_CALLS"
+    | "MISSING_THOUGHT_SIGNATURE"
+    | "MALFORMED_RESPONSE"
+    | "LANGUAGE"
+    | "NO_IMAGE"
+    | "IMAGE_OTHER"
+    | "PUP_LIMITED_DISABLED" -> {
       let outcome =
         stream_types.StreamFailed(
           error.Provider(
-            Some("OTHER"),
-            "Google generation stopped with reason: OTHER",
+            Some(reason),
+            "Google generation stopped with reason: " <> reason,
           ),
           evidence,
         )
       Ok(Reducer(..reducer, terminal_outcome: Some(outcome)))
     }
+    // `OTHER` is Gemini's own unknown reason, and any other value was added
+    // after this version: the caller decides what it means.
     other -> {
+      let calls = build_unvalidated_tool_calls(reducer)
       let outcome =
-        stream_types.StreamFailed(
-          error.Provider(Some(other), "Unknown Google finish reason: " <> other),
-          evidence,
+        stream_types.StreamFinished(
+          stream_types.UnrecognizedStop(other, reducer.text_buffer, calls),
+          reducer.usage,
         )
       Ok(Reducer(..reducer, terminal_outcome: Some(outcome)))
     }

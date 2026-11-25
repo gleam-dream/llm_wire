@@ -52,6 +52,7 @@ pub type Outcome {
   ToolsRequested
   Refused
   OutputLimited
+  UnrecognizedStop
   Failed
   CallCancelled
   ConsumerClosed
@@ -120,6 +121,7 @@ pub fn outcome_name(outcome: Outcome) -> String {
     ToolsRequested -> "completed_tools"
     Refused -> "refused"
     OutputLimited -> "output_limited"
+    UnrecognizedStop -> "unrecognized_stop"
     Failed -> "failed"
     CallCancelled -> "cancelled"
     ConsumerClosed -> "consumer_closed"
@@ -143,6 +145,7 @@ fn all_outcomes() -> List(Outcome) {
     ToolsRequested,
     Refused,
     OutputLimited,
+    UnrecognizedStop,
     Failed,
     CallCancelled,
     ConsumerClosed,

@@ -97,6 +97,7 @@ pub fn ask(
 ## Operational notes
 
 - `llm_wire.advise` reports whether another attempt may help; it never schedules a retry. A `MaybeSent` failure may already have cost tokens. Cap a provider delay against the caller's remaining budget before sleeping.
+- A stop reason that this version does not know, such as one a provider added after the release, ends the call with `UnrecognizedStop`. It carries the provider's reason and what arrived before it; the application decides whether that text is an answer.
 - Closing a stream ends local work. It does not prove that the provider rolled back or stopped processing the request.
 - Request JSON and prompts can contain sensitive data; transcription request JSON contains the encoded audio. Do not log them by default.
 - Structured-output codecs must fit the selected provider's admitted schema profile. Preparation reports unsupported schemas before execution. On OpenAI and Anthropic an optional field is sent as required and nullable. A `null` for an optional field whose own codec does not accept `null` is removed from the answer before decoding; a codec that accepts `null` keeps it.

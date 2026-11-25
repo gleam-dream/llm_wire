@@ -63,6 +63,13 @@ pub type Terminal {
     usage: Option(Usage),
   )
   Refusal(reason: String, usage: Option(Usage))
+  /// The provider ended with a stop reason the adapter does not know.
+  UnrecognizedStop(
+    reason: String,
+    partial_text: String,
+    partial_calls: List(ToolCall),
+    usage: Option(Usage),
+  )
   /// The provider reported a failure as the end of its response.
   Failed(error: Error, usage: Option(Usage))
 }

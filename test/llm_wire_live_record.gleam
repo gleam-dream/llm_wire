@@ -166,13 +166,16 @@ fn summary(outcome: llm_wire.Outcome(o)) -> String {
     llm_wire.OutputLimited(partial_text:, ..) ->
       "OutputLimited " <> string.inspect(partial_text)
     llm_wire.Refused(reason:, ..) -> "Refused " <> reason
+    llm_wire.UnrecognizedStop(reason:, partial_text:, ..) ->
+      "UnrecognizedStop " <> reason <> " " <> string.inspect(partial_text)
   }
   <> " usage "
   <> string.inspect(case outcome {
     llm_wire.Answer(usage:, ..)
     | llm_wire.NeedsTools(usage:, ..)
     | llm_wire.OutputLimited(usage:, ..)
-    | llm_wire.Refused(usage:, ..) -> usage
+    | llm_wire.Refused(usage:, ..)
+    | llm_wire.UnrecognizedStop(usage:, ..) -> usage
   })
 }
 

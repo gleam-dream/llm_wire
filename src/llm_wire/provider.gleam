@@ -28,7 +28,7 @@
 //// appended to the endpoint. A reducer turns each server-sent `Event`
 //// (`event`, `data`, `id`, `retry`) into `message.Progress` values, and
 //// ends with a `Terminal` built by `text`, `tool_calls`, `output_limited`,
-//// `refused` or `failed`.
+//// `refused`, `unrecognized_stop` or `failed`.
 ////
 //// An adapter refuses from `encode` a control it cannot carry, such as a
 //// `thinking_level`, rather than dropping it:
@@ -205,6 +205,20 @@ pub fn output_limited(
 
 pub fn refused(reason: String, usage: Option(Usage)) -> Terminal {
   adapter.Refusal(reason, usage)
+}
+
+/// The provider ended its response with a stop reason the adapter does not
+/// know. `reason` is the provider's own value, unchanged; `partial_text` and
+/// `partial_calls` are what arrived before it. The call answers
+/// `llm_wire.UnrecognizedStop`, and the application decides what the reason
+/// means.
+pub fn unrecognized_stop(
+  reason reason: String,
+  partial_text partial_text: String,
+  partial_calls partial_calls: List(ToolCall),
+  usage usage: Option(Usage),
+) -> Terminal {
+  adapter.UnrecognizedStop(reason, partial_text, partial_calls, usage)
 }
 
 /// The provider ended its response with an error.
