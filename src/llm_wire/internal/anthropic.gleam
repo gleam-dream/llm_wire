@@ -1,3 +1,4 @@
+import gleam/bit_array
 import gleam/dict.{type Dict}
 import gleam/dynamic/decode
 import gleam/json
@@ -45,10 +46,12 @@ type BlockState {
   )
   ServerToolBlock(is_closed: Bool)
   /// A block of a type this reducer does not know. Anthropic adds block
-  /// types over time, so its start, deltas and stop are accepted and its
-  /// content is not kept. It still follows the block rules: one start per
-  /// index, no delta after its stop, closed before the message ends.
-  IgnoredBlock(is_closed: Bool)
+  /// types over time, so its start, deltas and stop are accepted. It is not
+  /// interpreted: `raw` is its `content_block` exactly as its start event
+  /// sent it, which replay sends back unchanged and in place; its deltas
+  /// are skipped. It still follows the block rules: one start per index, no
+  /// delta after its stop, closed before the message ends.
+  UnknownBlock(raw: String, is_closed: Bool)
   /// A thinking block: its text is reasoning progress, never answer text.
   /// Its text and signature are kept, because a tool round must send the
   /// block back unchanged (ADR 0024).
@@ -422,6 +425,12 @@ fn handle_content_block_start(
                   )
                 }
                 unknown -> {
+                  use raw <- result.try(
+                    raw_content_block(data)
+                    |> result.replace_error(error.Protocol(
+                      "Malformed content_block_start payload",
+                    )),
+                  )
                   use progress <- result.try(extension(
                     reducer,
                     "content_block_start:" <> unknown,
@@ -432,7 +441,7 @@ fn handle_content_block_start(
                       blocks: dict.insert(
                         reducer.blocks,
                         payload.index,
-                        IgnoredBlock(False),
+                        UnknownBlock(raw, False),
                       ),
                       block_order: updated_order,
                       active_blocks_count: reducer.active_blocks_count + 1,
@@ -737,7 +746,7 @@ fn handle_content_block_delta(
                 }
               }
             }
-            ServerToolBlock(is_closed) | IgnoredBlock(is_closed) -> {
+            ServerToolBlock(is_closed) | UnknownBlock(_, is_closed) -> {
               case is_closed {
                 True ->
                   Error(error.Protocol(
@@ -914,7 +923,7 @@ fn handle_content_block_stop(
                 }
               }
             }
-            IgnoredBlock(is_closed) -> {
+            UnknownBlock(raw, is_closed) -> {
               case is_closed {
                 True -> Error(error.Protocol("Duplicate content_block_stop"))
                 False ->
@@ -925,7 +934,7 @@ fn handle_content_block_stop(
                         blocks: dict.insert(
                           reducer.blocks,
                           payload.index,
-                          IgnoredBlock(True),
+                          UnknownBlock(raw, True),
                         ),
                       ),
                       [],
@@ -1202,13 +1211,15 @@ fn handle_message_stop(
   }
 }
 
-/// The turn's content blocks in order, as replay data, when it has thinking.
-/// Anthropic requires a tool-requesting turn's thinking and redacted
-/// thinking blocks to come back unchanged and in place, so the data keeps
-/// every block the next request sends: thinking with its signature,
-/// redacted thinking with its data, non-empty text, and each tool call by
-/// id and name, whose input the encoder writes from the turn's call. A turn
-/// without thinking needs no data and has none.
+/// The turn's content blocks in order, as replay data, when it has a block
+/// that must come back unchanged. Anthropic requires a tool-requesting
+/// turn's thinking and redacted thinking blocks to come back unchanged and
+/// in place, and a block of a type this version does not know is sent back
+/// exactly as received, so the data keeps every block the next request
+/// sends: thinking with its signature, redacted thinking with its data, an
+/// unknown block's raw JSON, non-empty text, and each tool call by id and
+/// name, whose input the encoder writes from the turn's call. A turn with
+/// none of the first three needs no data and has none.
 fn replay_data(reducer: Reducer) -> Option(String) {
   let blocks =
     list.filter_map(reducer.block_order, fn(index) {
@@ -1220,7 +1231,8 @@ fn replay_data(reducer: Reducer) -> Option(String) {
               #("type", json.string("thinking")),
               #("thinking", json.string(thinking)),
               #("signature", json.string(signature)),
-            ]),
+            ])
+              |> json.to_string,
           ))
         Ok(RedactedThinkingBlock(data, _)) ->
           Ok(#(
@@ -1228,8 +1240,10 @@ fn replay_data(reducer: Reducer) -> Option(String) {
             json.object([
               #("type", json.string("redacted_thinking")),
               #("data", json.string(data)),
-            ]),
+            ])
+              |> json.to_string,
           ))
+        Ok(UnknownBlock(raw, _)) -> Ok(#(True, raw))
         Ok(TextBlock("", _)) -> Error(Nil)
         Ok(TextBlock(text, _)) ->
           Ok(#(
@@ -1237,7 +1251,8 @@ fn replay_data(reducer: Reducer) -> Option(String) {
             json.object([
               #("type", json.string("text")),
               #("text", json.string(text)),
-            ]),
+            ])
+              |> json.to_string,
           ))
         Ok(ToolUseBlock(call_id, name, _, _)) ->
           Ok(#(
@@ -1246,18 +1261,106 @@ fn replay_data(reducer: Reducer) -> Option(String) {
               #("type", json.string("tool_use")),
               #("id", json.string(call_id)),
               #("name", json.string(name)),
-            ]),
+            ])
+              |> json.to_string,
           ))
-        Ok(ServerToolBlock(_)) | Ok(IgnoredBlock(_)) | Error(Nil) -> Error(Nil)
+        Ok(ServerToolBlock(_)) | Error(Nil) -> Error(Nil)
       }
     })
   case list.any(blocks, fn(block) { block.0 }) {
     False -> None
     True ->
       Some(
-        json.array(blocks, fn(block) { json.string(json.to_string(block.1)) })
-        |> json.to_string,
+        json.array(blocks, fn(block) { json.string(block.1) }) |> json.to_string,
       )
+  }
+}
+
+/// The text of the `content_block` member of a content_block_start event,
+/// byte for byte as the provider sent it. The event has already parsed as
+/// JSON with an object there, so only its span is found: the member at the
+/// top level whose key is `content_block`, up to its closing brace.
+fn raw_content_block(event: String) -> Result(String, Nil) {
+  let bytes = <<event:utf8>>
+  use start <- result.try(find_content_block(bytes, 0, 0))
+  use rest <- result.try(bit_array.slice(
+    bytes,
+    start,
+    bit_array.byte_size(bytes) - start,
+  ))
+  use length <- result.try(object_length(rest, 0, 0))
+  bit_array.slice(bytes, start, length) |> result.try(bit_array.to_string)
+}
+
+/// The offset of the value of the top-level `content_block` member.
+fn find_content_block(rest: BitArray, at: Int, depth: Int) -> Result(Int, Nil) {
+  case rest {
+    <<"\"":utf8, tail:bytes>> -> {
+      use #(length, after) <- result.try(string_length(tail, 0))
+      let key = bit_array.slice(tail, 0, length - 1)
+      case depth == 1 && key == Ok(<<"content_block":utf8>>) {
+        True ->
+          case value_start(after, at + 1 + length) {
+            Ok(start) -> Ok(start)
+            Error(Nil) -> find_content_block(after, at + 1 + length, depth)
+          }
+        False -> find_content_block(after, at + 1 + length, depth)
+      }
+    }
+    <<"{":utf8, tail:bytes>> | <<"[":utf8, tail:bytes>> ->
+      find_content_block(tail, at + 1, depth + 1)
+    <<"}":utf8, tail:bytes>> | <<"]":utf8, tail:bytes>> ->
+      find_content_block(tail, at + 1, depth - 1)
+    <<_, tail:bytes>> -> find_content_block(tail, at + 1, depth)
+    _ -> Error(Nil)
+  }
+}
+
+/// The offset after a member key's colon and the whitespace around it.
+fn value_start(rest: BitArray, at: Int) -> Result(Int, Nil) {
+  case skip_space(rest, at) {
+    #(<<":":utf8, tail:bytes>>, at) -> Ok(skip_space(tail, at + 1).1)
+    _ -> Error(Nil)
+  }
+}
+
+fn skip_space(rest: BitArray, at: Int) -> #(BitArray, Int) {
+  case rest {
+    <<" ":utf8, tail:bytes>>
+    | <<"\t":utf8, tail:bytes>>
+    | <<"\n":utf8, tail:bytes>>
+    | <<"\r":utf8, tail:bytes>> -> skip_space(tail, at + 1)
+    _ -> #(rest, at)
+  }
+}
+
+/// The byte length of a string's remaining text, closing quote included,
+/// and what follows it.
+fn string_length(rest: BitArray, length: Int) -> Result(#(Int, BitArray), Nil) {
+  case rest {
+    <<"\\":utf8, _, tail:bytes>> -> string_length(tail, length + 2)
+    <<"\"":utf8, tail:bytes>> -> Ok(#(length + 1, tail))
+    <<_, tail:bytes>> -> string_length(tail, length + 1)
+    _ -> Error(Nil)
+  }
+}
+
+/// The byte length of the object or array that starts `rest`.
+fn object_length(rest: BitArray, length: Int, depth: Int) -> Result(Int, Nil) {
+  case rest {
+    <<"\"":utf8, tail:bytes>> -> {
+      use #(string, after) <- result.try(string_length(tail, 0))
+      object_length(after, length + 1 + string, depth)
+    }
+    <<"{":utf8, tail:bytes>> | <<"[":utf8, tail:bytes>> ->
+      object_length(tail, length + 1, depth + 1)
+    <<"}":utf8, tail:bytes>> | <<"]":utf8, tail:bytes>> ->
+      case depth {
+        1 -> Ok(length + 1)
+        _ -> object_length(tail, length + 1, depth - 1)
+      }
+    <<_, tail:bytes>> -> object_length(tail, length + 1, depth)
+    _ -> Error(Nil)
   }
 }
 
@@ -1314,7 +1417,7 @@ fn check_all_blocks_closed(
           ServerToolBlock(closed) -> closed
           ThinkingBlock(_, _, _, closed) -> closed
           RedactedThinkingBlock(_, closed) -> closed
-          IgnoredBlock(closed) -> closed
+          UnknownBlock(_, closed) -> closed
         }
         case is_closed {
           True -> Ok(Nil)

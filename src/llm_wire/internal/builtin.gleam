@@ -539,8 +539,9 @@ fn anthropic_tool_use_block(call: message.ToolCall) -> String {
 
 /// One block of an Anthropic turn's replay data.
 type ReplayBlock {
-  /// A thinking or redacted thinking block, sent back exactly as received.
-  Thought(raw: String)
+  /// A block sent back exactly as received and never interpreted: thinking,
+  /// redacted thinking, or a type this version does not know.
+  Verbatim(raw: String)
   ReplayText(raw: String, text: String)
   /// A tool call, by id and name; its input is the turn's call arguments.
   ReplayToolUse(id: String, name: String)
@@ -590,7 +591,7 @@ fn anthropic_replayed_turn(
           rest,
           anthropic_tool_use_block(call),
         )
-        Thought(raw), _ | ReplayText(raw, _), _ -> #(remaining, raw)
+        Verbatim(raw), _ | ReplayText(raw, _), _ -> #(remaining, raw)
         // The check above matched every tool block to a call.
         ReplayToolUse(..), [] -> #(remaining, "")
       }
@@ -608,15 +609,6 @@ fn anthropic_replay_block(
     let member = string_member(members, _)
     use kind <- result.try(member("type"))
     case kind {
-      "thinking" -> {
-        use _ <- result.try(member("thinking"))
-        use _ <- result.try(member("signature"))
-        Ok(Thought(raw))
-      }
-      "redacted_thinking" -> {
-        use _ <- result.try(member("data"))
-        Ok(Thought(raw))
-      }
       "text" -> {
         use text <- result.try(member("text"))
         Ok(ReplayText(raw, text))
@@ -626,12 +618,14 @@ fn anthropic_replay_block(
         use name <- result.try(member("name"))
         Ok(ReplayToolUse(id, name))
       }
-      _ -> Error(Nil)
+      // Thinking, redacted thinking and any type this version does not know
+      // go back unchanged; only text and calls are checked against the turn.
+      _ -> Ok(Verbatim(raw))
     }
   }
   block
   |> result.replace_error(invalid_data(
-    "an Anthropic replay block is not a thinking, text or tool_use block nested at most 64 deep",
+    "an Anthropic replay block is not a typed content block nested at most 64 deep",
   ))
 }
 
