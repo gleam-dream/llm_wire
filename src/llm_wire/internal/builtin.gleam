@@ -459,8 +459,10 @@ fn anthropic_message_json(
         ),
       )
     }
+    message.Assistant(
+      message.AssistantTurn(provider_data: Some(data), ..) as turn,
+    ) -> anthropic_replayed_turn(turn, data)
     message.Assistant(turn) -> {
-      use Nil <- result.try(require_canonical_data(turn))
       case turn.calls {
         [] ->
           Ok(
@@ -513,16 +515,7 @@ fn anthropic_tool_message(
   text: String,
   calls: List(message.ToolCall),
 ) -> String {
-  let blocks =
-    list.map(calls, fn(call) {
-      "{\"type\":\"tool_use\",\"id\":"
-      <> json.to_string(json.string(call.id))
-      <> ",\"name\":"
-      <> json.to_string(json.string(call.name))
-      <> ",\"input\":"
-      <> replayable_arguments_object(call.arguments_json)
-      <> "}"
-    })
+  let blocks = list.map(calls, anthropic_tool_use_block)
   let text_blocks = case text {
     "" -> []
     _ -> [
@@ -532,6 +525,116 @@ fn anthropic_tool_message(
   "{\"role\":\"assistant\",\"content\":["
   <> string.join(list.append(text_blocks, blocks), ",")
   <> "]}"
+}
+
+fn anthropic_tool_use_block(call: message.ToolCall) -> String {
+  "{\"type\":\"tool_use\",\"id\":"
+  <> json.to_string(json.string(call.id))
+  <> ",\"name\":"
+  <> json.to_string(json.string(call.name))
+  <> ",\"input\":"
+  <> replayable_arguments_object(call.arguments_json)
+  <> "}"
+}
+
+/// One block of an Anthropic turn's replay data.
+type ReplayBlock {
+  /// A thinking or redacted thinking block, sent back exactly as received.
+  Thought(raw: String)
+  ReplayText(raw: String, text: String)
+  /// A tool call, by id and name; its input is the turn's call arguments.
+  ReplayToolUse(id: String, name: String)
+}
+
+/// An Anthropic turn with replay data sends back its content blocks in the
+/// order the provider sent them, thinking blocks unchanged, after checking
+/// that the data's text and tool calls are exactly the turn's.
+fn anthropic_replayed_turn(
+  turn: message.AssistantTurn,
+  data: String,
+) -> Result(String, error.PrepareError) {
+  use Nil <- result.try(
+    json_bounds.check_depth(data)
+    |> result.replace_error(invalid_data("Anthropic data nesting exceeds 64")),
+  )
+  use raw_blocks <- result.try(
+    json.parse(data, decode.list(decode.string))
+    |> result.replace_error(invalid_data(
+      "Anthropic data is not a list of content blocks",
+    )),
+  )
+  use blocks <- result.try(list.try_map(raw_blocks, anthropic_replay_block))
+  let text =
+    list.filter_map(blocks, fn(block) {
+      case block {
+        ReplayText(_, text) -> Ok(text)
+        _ -> Error(Nil)
+      }
+    })
+    |> string.join("")
+  let uses =
+    list.filter_map(blocks, fn(block) {
+      case block {
+        ReplayToolUse(id, name) -> Ok(#(id, name))
+        _ -> Error(Nil)
+      }
+    })
+  let calls = list.map(turn.calls, fn(call) { #(call.id, call.name) })
+  use Nil <- result.try(case text == turn.text && uses == calls {
+    True -> Ok(Nil)
+    False ->
+      Error(invalid_data(
+        "Anthropic replay blocks disagree with the turn's text or calls",
+      ))
+  })
+  let #(_, content) =
+    list.map_fold(blocks, turn.calls, fn(remaining, block) {
+      case block, remaining {
+        ReplayToolUse(..), [call, ..rest] -> #(
+          rest,
+          anthropic_tool_use_block(call),
+        )
+        Thought(raw), _ | ReplayText(raw, _), _ -> #(remaining, raw)
+        // The check above matched every tool block to a call.
+        ReplayToolUse(..), [] -> #(remaining, "")
+      }
+    })
+  Ok(
+    "{\"role\":\"assistant\",\"content\":[" <> string.join(content, ",") <> "]}",
+  )
+}
+
+fn anthropic_replay_block(
+  raw: String,
+) -> Result(ReplayBlock, error.PrepareError) {
+  let decoder = {
+    use kind <- decode.field("type", decode.string)
+    case kind {
+      "thinking" -> {
+        use _ <- decode.field("thinking", decode.string)
+        use _ <- decode.field("signature", decode.string)
+        decode.success(Thought(raw))
+      }
+      "redacted_thinking" -> {
+        use _ <- decode.field("data", decode.string)
+        decode.success(Thought(raw))
+      }
+      "text" -> {
+        use text <- decode.field("text", decode.string)
+        decode.success(ReplayText(raw, text))
+      }
+      "tool_use" -> {
+        use id <- decode.field("id", decode.string)
+        use name <- decode.field("name", decode.string)
+        decode.success(ReplayToolUse(id, name))
+      }
+      _ -> decode.failure(Thought(raw), "Anthropic replay block")
+    }
+  }
+  json.parse(raw, decoder)
+  |> result.replace_error(invalid_data(
+    "an Anthropic replay block is not a thinking, text or tool_use block",
+  ))
 }
 
 fn anthropic_content_json(

@@ -72,7 +72,8 @@ pub type ToolCall {
 
 /// One assistant response. `provider` is `None` for a turn the application
 /// wrote itself. `provider_data` is opaque replay data that a later request
-/// to the same provider must carry unchanged, such as Gemini's signed parts.
+/// to the same provider must carry unchanged, such as Gemini's signed parts
+/// or Anthropic's thinking blocks.
 pub type AssistantTurn {
   AssistantTurn(
     provider: Option(Provider),
