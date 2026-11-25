@@ -14,6 +14,11 @@
 //// })
 //// ```
 ////
+//// The handler belongs to the process that attaches it and is detached when
+//// that process exits, so attach it from a process that outlives the calls
+//// it observes, such as the application's supervisor child, not from a
+//// short-lived request process.
+////
 //// `call` is minted for every execution, so the events of one `run` or
 //// `stream` share it and a retry gets a new one. `correlation` is the
 //// correlation of the `http_gun.Client` view the call ran on, the value
