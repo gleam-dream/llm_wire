@@ -97,7 +97,7 @@ with http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
             "HTTP stream was not closed"
         )
         print(
-            "Generation respected both deadline orders and Infinity, lifted the relative default and released HTTP."
+            "Generation respected both deadline orders and a long call budget, replaced the view's request timeout and released HTTP."
         )
     finally:
         server.shutdown()
