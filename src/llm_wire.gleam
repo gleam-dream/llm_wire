@@ -130,6 +130,18 @@ pub type Outcome(o) {
   /// custom provider's `provider.refused`. A provider's safety filter is not
   /// an outcome: the call fails with `error.ContentFiltered`.
   Refused(reason: String, usage: Option(Usage))
+  /// The provider ended the response with a stop reason this version of LLM
+  /// Wire does not know, such as one a provider added after this release.
+  /// `reason` is the provider's own value, unchanged. `partial_text` and
+  /// `partial_calls` are what arrived before it; the calls are not admitted
+  /// against the tool catalog. Whether the text is a complete answer depends
+  /// on what the reason means, which only the application can decide.
+  UnrecognizedStop(
+    reason: String,
+    partial_text: String,
+    partial_calls: List(ToolCall),
+    usage: Option(Usage),
+  )
 }
 
 /// One item of a stream.
@@ -675,6 +687,10 @@ fn outcome(
       Ok(OutputLimited(text, calls, usage))
     stream_types.StreamFinished(stream_types.Refused(reason), usage) ->
       Ok(Refused(reason, usage))
+    stream_types.StreamFinished(
+      stream_types.UnrecognizedStop(reason, text, calls),
+      usage,
+    ) -> Ok(UnrecognizedStop(reason, text, calls, usage))
     stream_types.StreamFailed(problem, evidence) ->
       Error(Failure(
         problem,

@@ -674,8 +674,8 @@ fn validate_progress(
     // Reducers bound argument bytes per call and in total.
     message.ToolArgumentsDelta(..) -> Ok(state)
     message.UsageUpdate(_) -> Ok(state)
-    message.ProviderExtension(provider_name, event_name) -> {
-      let bytes = string.byte_size(provider_name) + string.byte_size(event_name)
+    message.UnrecognizedEvent(provider_name, name) -> {
+      let bytes = string.byte_size(provider_name) + string.byte_size(name)
       case bytes > state.limits.extension_bytes_limit {
         True ->
           Error(error.LimitExceeded(
@@ -1023,6 +1023,8 @@ fn terminal_outcome_name(terminal: TerminalOutcome) -> telemetry.Outcome {
       ) -> telemetry.ToolsRequested
     stream_types.StreamFinished(stream_types.OutputLimited(_, _), _) ->
       telemetry.OutputLimited
+    stream_types.StreamFinished(stream_types.UnrecognizedStop(..), _) ->
+      telemetry.UnrecognizedStop
     stream_types.StreamFailed(_, _) -> telemetry.Failed
     stream_types.StreamCancelledLocally(_) -> telemetry.CallCancelled
   }
@@ -1112,6 +1114,23 @@ fn terminal_provider(
         )),
       )
     }
+    Some(adapter.UnrecognizedStop(reason, text, calls, usage)) -> {
+      use Nil <- result.try(call_admission.validate_text(state.limits, reason))
+      use Nil <- result.try(call_admission.validate_text(state.limits, text))
+      use Nil <- result.try(call_admission.validate_metadata(
+        state.limits,
+        calls,
+        None,
+        None,
+      ))
+      use Nil <- result.try(validate_partial_calls(state.limits, calls))
+      Ok(
+        Some(stream_types.StreamFinished(
+          stream_types.UnrecognizedStop(reason, text, calls),
+          usage,
+        )),
+      )
+    }
     Some(adapter.Refusal(reason, usage)) ->
       call_admission.validate_text(state.limits, reason)
       |> result.map(fn(_) {
@@ -1170,7 +1189,7 @@ fn validate_partial_calls(
 /// not end the first-token wait and are not partial output.
 fn is_semantic_progress(progress: message.Progress) -> Bool {
   case progress {
-    message.ProviderExtension(_, _) | message.UsageUpdate(_) -> False
+    message.UnrecognizedEvent(_, _) | message.UsageUpdate(_) -> False
     _ -> True
   }
 }
@@ -1190,7 +1209,7 @@ fn size_of_progress(progress: message.Progress) -> Int {
     | message.ToolArgumentsDelta(id, t) ->
       string.byte_size(id) + string.byte_size(t) + 32
     message.UsageUpdate(_) -> 24
-    message.ProviderExtension(provider_name, e) ->
+    message.UnrecognizedEvent(provider_name, e) ->
       string.byte_size(provider_name) + string.byte_size(e) + 16
   }
 }

@@ -3,6 +3,7 @@ import gleam/dynamic/decode
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import llm_wire/error
 import llm_wire/internal/ids
@@ -43,6 +44,11 @@ type BlockState {
     is_closed: Bool,
   )
   ServerToolBlock(is_closed: Bool)
+  /// A block of a type this reducer does not know. Anthropic adds block
+  /// types over time, so its start, deltas and stop are accepted and its
+  /// content is not kept. It still follows the block rules: one start per
+  /// index, no delta after its stop, closed before the message ends.
+  IgnoredBlock(is_closed: Bool)
   /// A thinking block: its text is reasoning progress, never answer text.
   /// Its text and signature are kept, because a tool round must send the
   /// block back unchanged (ADR 0024).
@@ -146,9 +152,9 @@ pub fn step(
             False ->
               Ok(
                 #(with_bytes, [
-                  message.ProviderExtension(
+                  message.UnrecognizedEvent(
                     provider: "anthropic",
-                    event_name: other_event,
+                    name: other_event,
                   ),
                 ]),
               )
@@ -415,12 +421,71 @@ fn handle_content_block_start(
                     ),
                   )
                 }
-                _ -> Ok(#(reducer, []))
+                unknown -> {
+                  use progress <- result.try(extension(
+                    reducer,
+                    "content_block_start:" <> unknown,
+                  ))
+                  Ok(#(
+                    Reducer(
+                      ..reducer,
+                      blocks: dict.insert(
+                        reducer.blocks,
+                        payload.index,
+                        IgnoredBlock(False),
+                      ),
+                      block_order: updated_order,
+                      active_blocks_count: reducer.active_blocks_count + 1,
+                    ),
+                    progress,
+                  ))
+                }
               }
             }
           }
         }
       }
+    }
+  }
+}
+
+/// Report a block or delta type this reducer does not know as a bounded
+/// provider extension, as an unknown named event is reported.
+fn extension(
+  reducer: Reducer,
+  name: String,
+) -> Result(List(message.Progress), error.Error) {
+  let bytes = string.byte_size(name)
+  case bytes > reducer.limits.extension_bytes_limit {
+    True ->
+      Error(error.LimitExceeded(
+        limit.ExtensionBytes,
+        reducer.limits.extension_bytes_limit,
+        bytes,
+      ))
+    False -> Ok([message.UnrecognizedEvent(provider: "anthropic", name: name)])
+  }
+}
+
+/// A delta whose type does not belong to its block. A type this reducer
+/// knows from another kind of block contradicts the block and fails. Any
+/// other type is new to this reducer and is skipped.
+fn foreign_delta(
+  reducer: Reducer,
+  block: String,
+  delta_type: String,
+) -> Result(#(Reducer, List(message.Progress)), error.Error) {
+  case delta_type {
+    "text_delta" | "input_json_delta" | "thinking_delta" | "signature_delta" ->
+      Error(error.Protocol(
+        "Delta type mismatch for " <> block <> " block: " <> delta_type,
+      ))
+    unknown -> {
+      use progress <- result.try(extension(
+        reducer,
+        "content_block_delta:" <> unknown,
+      ))
+      Ok(#(reducer, progress))
     }
   }
 }
@@ -561,10 +626,7 @@ fn handle_content_block_delta(
                           }
                       }
                     }
-                    other ->
-                      Error(error.Protocol(
-                        "Delta type mismatch for text block: " <> other,
-                      ))
+                    other -> foreign_delta(reducer, "text", other)
                   }
                 }
               }
@@ -661,15 +723,12 @@ fn handle_content_block_delta(
                           }
                       }
                     }
-                    other ->
-                      Error(error.Protocol(
-                        "Delta type mismatch for tool_use block: " <> other,
-                      ))
+                    other -> foreign_delta(reducer, "tool_use", other)
                   }
                 }
               }
             }
-            ServerToolBlock(is_closed) -> {
+            ServerToolBlock(is_closed) | IgnoredBlock(is_closed) -> {
               case is_closed {
                 True ->
                   Error(error.Protocol(
@@ -766,8 +825,7 @@ fn thinking_delta(
           )
       }
     }
-    False, other ->
-      Error(error.Protocol("Delta type mismatch for thinking block: " <> other))
+    False, other -> foreign_delta(reducer, "thinking", other)
   }
 }
 
@@ -845,6 +903,25 @@ fn handle_content_block_stop(
                     )
                   Ok(#(Reducer(..reducer, blocks: updated_blocks), []))
                 }
+              }
+            }
+            IgnoredBlock(is_closed) -> {
+              case is_closed {
+                True -> Error(error.Protocol("Duplicate content_block_stop"))
+                False ->
+                  Ok(
+                    #(
+                      Reducer(
+                        ..reducer,
+                        blocks: dict.insert(
+                          reducer.blocks,
+                          payload.index,
+                          IgnoredBlock(True),
+                        ),
+                      ),
+                      [],
+                    ),
+                  )
               }
             }
             ThinkingBlock(thinking, signature, bytes, is_closed) -> {
@@ -1024,7 +1101,9 @@ fn handle_message_stop(
       let retry_evidence =
         retry_evidence(reducer, stream_types.RequestMayHaveReachedProvider)
       let terminal = case reducer.stop_reason {
-        Some("max_tokens") ->
+        // `model_context_window_exceeded`: the answer filled the model's
+        // context window before `max_tokens`; the output was cut all the same.
+        Some("max_tokens") | Some("model_context_window_exceeded") ->
           stream_types.StreamFinished(
             stream_types.OutputLimited(all_text, all_calls),
             final_usage,
@@ -1056,7 +1135,10 @@ fn handle_message_stop(
             error.ContentFiltered(error.InOutput, "refusal"),
             retry_evidence,
           )
-        Some("end_turn") ->
+        // `stop_sequence` is the model writing one of the caller's stop
+        // sequences: a normal end, with the text before the sequence as the
+        // answer.
+        Some("end_turn" as reason) | Some("stop_sequence" as reason) ->
           case all_calls {
             [] ->
               stream_types.StreamFinished(
@@ -1066,7 +1148,7 @@ fn handle_message_stop(
             _ ->
               stream_types.StreamFailed(
                 error.Provider(
-                  code: Some("end_turn"),
+                  code: Some(reason),
                   message: "Tool calls ended without the provider tool_use stop reason",
                 ),
                 retry_evidence,
@@ -1080,13 +1162,12 @@ fn handle_message_stop(
             ),
             retry_evidence,
           )
+        // A stop reason added after this version: the caller decides what
+        // it means for the text and calls that arrived.
         Some(other) ->
-          stream_types.StreamFailed(
-            error.Provider(
-              code: Some(other),
-              message: "Unsupported Anthropic stop reason: " <> other,
-            ),
-            retry_evidence,
+          stream_types.StreamFinished(
+            stream_types.UnrecognizedStop(other, all_text, all_calls),
+            final_usage,
           )
         None ->
           stream_types.StreamFailed(
@@ -1158,7 +1239,7 @@ fn replay_data(reducer: Reducer) -> Option(String) {
               #("name", json.string(name)),
             ]),
           ))
-        Ok(ServerToolBlock(_)) | Error(Nil) -> Error(Nil)
+        Ok(ServerToolBlock(_)) | Ok(IgnoredBlock(_)) | Error(Nil) -> Error(Nil)
       }
     })
   case list.any(blocks, fn(block) { block.0 }) {
@@ -1224,6 +1305,7 @@ fn check_all_blocks_closed(
           ServerToolBlock(closed) -> closed
           ThinkingBlock(_, _, _, closed) -> closed
           RedactedThinkingBlock(_, closed) -> closed
+          IgnoredBlock(closed) -> closed
         }
         case is_closed {
           True -> Ok(Nil)
