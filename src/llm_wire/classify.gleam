@@ -45,7 +45,8 @@ pub fn typesafe() -> Wire {
 /// Another wire projects the question vocabulary into its own protocol.
 /// Both callbacks must be pure and must not capture credentials. Shared JSON
 /// syntax and duplicate-key checks precede decoding within the admitted byte
-/// allowance. No depth, value-count or numeric-token limit is added here. The
+/// allowance and Blueprint's default nesting depth of 128. No value-count or
+/// numeric-token limit is added here. The
 /// wire checks its own mandatory fields and precise numbers before Float conversion;
 /// shared admission checks candidate evidence against the authored questions.
 pub fn wire(

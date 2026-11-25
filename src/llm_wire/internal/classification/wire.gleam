@@ -31,8 +31,9 @@ pub fn describe_error(problem: Error) -> String {
 pub fn parse(raw: String) -> Result(Value, Error) {
   // Byte admission belongs to preparation, HTTP collection and receipt
   // restoration. This parse checks an already materialized string without
-  // imposing a second byte cap. Blueprint preserves exact numbers and rejects
-  // duplicate keys; this layer adds no depth, value-count or token-size policy.
+  // imposing a second byte cap. Blueprint preserves exact numbers, rejects
+  // duplicate keys and keeps its default nesting depth of 128; this layer adds
+  // no value-count or token-size policy.
   value.parse(
     raw,
     value.default_limits() |> value.with_max_bytes(string.byte_size(raw)),

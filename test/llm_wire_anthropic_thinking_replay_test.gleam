@@ -150,6 +150,25 @@ pub fn replay_data_that_disagrees_with_the_turn_is_refused_test() {
   assert string.contains(reason, "Anthropic")
 }
 
+/// Every replay block is bounded in nesting like the rest of the replay
+/// data, so a stored block nested deeper than 64 levels is refused before
+/// sending.
+pub fn a_replay_block_nested_too_deep_is_refused_test() {
+  let deep = string.repeat("[", 65) <> string.repeat("]", 65)
+  let block =
+    "{\"type\":\"thinking\",\"thinking\":\"t\",\"signature\":\"s\",\"x\":"
+    <> deep
+    <> "}"
+  let turn = tool_turn()
+  let assert Some(data) = turn.provider_data
+  let assert Ok(blocks) = json.parse(data, decode.list(decode.string))
+  let data = json.array([block, ..blocks], json.string) |> json.to_string
+  let turn = message.AssistantTurn(..turn, provider_data: Some(data))
+  let assert Error(error.InvalidRequest(error.InvalidProviderData(reason))) =
+    llm_wire.prepare(config(), next_request(turn))
+  assert string.contains(reason, "Anthropic")
+}
+
 /// An application-written tool turn has no thinking to replay. Anthropic's
 /// adaptive thinking does not require the last assistant turn to start with
 /// a thinking block, so the level is sent.

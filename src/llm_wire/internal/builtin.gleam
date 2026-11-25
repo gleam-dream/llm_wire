@@ -5,11 +5,11 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import json/blueprint/value
 import llm_wire/error
 import llm_wire/internal/adapter
 import llm_wire/internal/anthropic
 import llm_wire/internal/google
-import llm_wire/internal/json_bounds
 import llm_wire/internal/limits
 import llm_wire/internal/openai
 import llm_wire/internal/schema
@@ -553,14 +553,10 @@ fn anthropic_replayed_turn(
   turn: message.AssistantTurn,
   data: String,
 ) -> Result(String, error.PrepareError) {
-  use Nil <- result.try(
-    json_bounds.check_depth(data)
-    |> result.replace_error(invalid_data("Anthropic data nesting exceeds 64")),
-  )
   use raw_blocks <- result.try(
-    json.parse(data, decode.list(decode.string))
+    replay_strings(data)
     |> result.replace_error(invalid_data(
-      "Anthropic data is not a list of content blocks",
+      "Anthropic data is not a list of content blocks nested at most 64 deep",
     )),
   )
   use blocks <- result.try(list.try_map(raw_blocks, anthropic_replay_block))
@@ -607,33 +603,35 @@ fn anthropic_replayed_turn(
 fn anthropic_replay_block(
   raw: String,
 ) -> Result(ReplayBlock, error.PrepareError) {
-  let decoder = {
-    use kind <- decode.field("type", decode.string)
+  let block = {
+    use members <- result.try(replay_object(raw))
+    let member = string_member(members, _)
+    use kind <- result.try(member("type"))
     case kind {
       "thinking" -> {
-        use _ <- decode.field("thinking", decode.string)
-        use _ <- decode.field("signature", decode.string)
-        decode.success(Thought(raw))
+        use _ <- result.try(member("thinking"))
+        use _ <- result.try(member("signature"))
+        Ok(Thought(raw))
       }
       "redacted_thinking" -> {
-        use _ <- decode.field("data", decode.string)
-        decode.success(Thought(raw))
+        use _ <- result.try(member("data"))
+        Ok(Thought(raw))
       }
       "text" -> {
-        use text <- decode.field("text", decode.string)
-        decode.success(ReplayText(raw, text))
+        use text <- result.try(member("text"))
+        Ok(ReplayText(raw, text))
       }
       "tool_use" -> {
-        use id <- decode.field("id", decode.string)
-        use name <- decode.field("name", decode.string)
-        decode.success(ReplayToolUse(id, name))
+        use id <- result.try(member("id"))
+        use name <- result.try(member("name"))
+        Ok(ReplayToolUse(id, name))
       }
-      _ -> decode.failure(Thought(raw), "Anthropic replay block")
+      _ -> Error(Nil)
     }
   }
-  json.parse(raw, decoder)
+  block
   |> result.replace_error(invalid_data(
-    "an Anthropic replay block is not a thinking, text or tool_use block",
+    "an Anthropic replay block is not a thinking, text or tool_use block nested at most 64 deep",
   ))
 }
 
@@ -1269,6 +1267,45 @@ fn require_canonical_data(
   }
 }
 
+/// Replay data comes back from the caller's stored history. Blueprint's
+/// parser bounds its nesting, as it bounds every JSON text the library
+/// parses; its size is already bounded by the provider metadata limit.
+fn replay_limits() -> value.Limits {
+  value.unlimited() |> value.with_max_depth(64)
+}
+
+/// A JSON array of strings.
+fn replay_strings(text: String) -> Result(List(String), Nil) {
+  case value.parse(text, replay_limits()) {
+    Ok(value.Array(items)) ->
+      list.try_map(items, fn(item) {
+        case item {
+          value.String(text) -> Ok(text)
+          _ -> Error(Nil)
+        }
+      })
+    _ -> Error(Nil)
+  }
+}
+
+/// The members of a JSON object.
+fn replay_object(text: String) -> Result(List(#(String, value.Value)), Nil) {
+  case value.parse(text, replay_limits()) {
+    Ok(value.Object(members)) -> Ok(members)
+    _ -> Error(Nil)
+  }
+}
+
+fn string_member(
+  members: List(#(String, value.Value)),
+  name: String,
+) -> Result(String, Nil) {
+  case list.key_find(members, name) {
+    Ok(value.String(text)) -> Ok(text)
+    _ -> Error(Nil)
+  }
+}
+
 fn invalid_data(reason: String) -> error.PrepareError {
   error.InvalidRequest(error.InvalidProviderData(reason))
 }
@@ -1298,22 +1335,18 @@ fn google_signed_turn(
   turn: message.AssistantTurn,
   data: String,
 ) -> Result(String, error.PrepareError) {
-  use Nil <- result.try(
-    json_bounds.check_depth(data)
-    |> result.replace_error(invalid_data("Google data nesting exceeds 64")),
-  )
   use parts <- result.try(
-    json.parse(data, decode.list(decode.string))
-    |> result.replace_error(invalid_data("Google data is not a list of parts")),
+    replay_strings(data)
+    |> result.replace_error(invalid_data(
+      "Google data is not a list of parts nested at most 64 deep",
+    )),
   )
   use _ <- result.try(
     list.try_map(parts, fn(part) {
-      use Nil <- result.try(
-        json_bounds.check_depth(part)
-        |> result.replace_error(invalid_data("Google part nesting exceeds 64")),
-      )
-      json.parse(part, decode.dict(decode.string, decode.dynamic))
-      |> result.replace_error(invalid_data("a Google part is not an object"))
+      replay_object(part)
+      |> result.replace_error(invalid_data(
+        "a Google part is not an object nested at most 64 deep",
+      ))
     }),
   )
   let payload =
