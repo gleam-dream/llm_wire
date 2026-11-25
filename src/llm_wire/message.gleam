@@ -120,10 +120,13 @@ pub type Progress {
   /// Argument text of a tool call still being generated.
   ToolArgumentsDelta(call_id: String, text: String)
   UsageUpdate(usage: Usage)
-  /// A provider event LLM Wire does not interpret, by name. A block, delta or
-  /// item type it does not know inside a known event is named by the event
-  /// and the type, such as `content_block_start:future_block`.
-  ProviderExtension(provider: String, event_name: String)
+  /// Something the provider streamed that this version of LLM Wire does not
+  /// interpret, by the provider's own name, with its content left out: an
+  /// event, such as OpenAI's `response.in_progress`, or a block, delta or
+  /// item type inside a known event, named by the event and the type, such
+  /// as `content_block_start:future_block`. The call goes on, and its
+  /// outcome is decided by what LLM Wire does interpret.
+  UnrecognizedEvent(provider: String, name: String)
 }
 
 /// A tool call without provider replay data, for application-written turns.

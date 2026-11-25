@@ -151,9 +151,9 @@ pub fn step(
             False ->
               Ok(
                 #(with_bytes, [
-                  message.ProviderExtension(
+                  message.UnrecognizedEvent(
                     provider: "openai",
-                    event_name: other_event,
+                    name: other_event,
                   ),
                 ]),
               )
@@ -167,9 +167,9 @@ pub fn step(
             _ ->
               Ok(
                 #(with_bytes, [
-                  message.ProviderExtension(
+                  message.UnrecognizedEvent(
                     provider: "openai",
-                    event_name: "data_only",
+                    name: "data_only",
                   ),
                 ]),
               )
@@ -397,9 +397,9 @@ fn handle_output_item_added(
                                   + 1,
                               ),
                               [
-                                message.ProviderExtension(
+                                message.UnrecognizedEvent(
                                   provider: "openai",
-                                  event_name: name,
+                                  name: name,
                                 ),
                               ],
                             ),

@@ -30,8 +30,8 @@ fn read_loop(
   extensions: List(String),
 ) -> #(List(String), Result(llm_wire.Outcome(String), llm_wire.Failure)) {
   case llm_wire.next(stream) {
-    Ok(llm_wire.Progress(message.ProviderExtension(event_name:, ..))) ->
-      read_loop(stream, [event_name, ..extensions])
+    Ok(llm_wire.Progress(message.UnrecognizedEvent(name:, ..))) ->
+      read_loop(stream, [name, ..extensions])
     Ok(llm_wire.Progress(_)) -> read_loop(stream, extensions)
     Ok(llm_wire.Done(outcome)) -> #(list.reverse(extensions), outcome)
     Error(_) -> panic as "the stream ended without an outcome"

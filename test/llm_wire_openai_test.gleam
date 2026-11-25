@@ -449,9 +449,9 @@ pub fn openai_future_extension_test() {
   let assert Ok(#(_reducer, progress)) = openai.step(reducer, ev)
   progress
   |> should.equal([
-    message.ProviderExtension(
+    message.UnrecognizedEvent(
       provider: "openai",
-      event_name: "response.some_new_feature",
+      name: "response.some_new_feature",
     ),
   ])
 }

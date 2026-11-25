@@ -144,9 +144,9 @@ pub fn step(
             False ->
               Ok(
                 #(with_bytes, [
-                  message.ProviderExtension(
+                  message.UnrecognizedEvent(
                     provider: "anthropic",
-                    event_name: other_event,
+                    name: other_event,
                   ),
                 ]),
               )
@@ -416,8 +416,7 @@ fn extension(
         reducer.limits.extension_bytes_limit,
         bytes,
       ))
-    False ->
-      Ok([message.ProviderExtension(provider: "anthropic", event_name: name)])
+    False -> Ok([message.UnrecognizedEvent(provider: "anthropic", name: name)])
   }
 }
 
