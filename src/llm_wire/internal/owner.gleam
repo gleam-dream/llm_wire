@@ -947,9 +947,13 @@ fn handle_timer(
   }
 }
 
+/// The owner holds two kinds of monitor: one on its creator for its whole
+/// life, and one on the reader of the pending read. Only the creator's exit
+/// ends the call. A reader's exit loses that reader's read and nothing else,
+/// so another holder of the handle can keep reading.
 fn handle_down(state: State, down: process.Down) -> actor.Next(State, Message) {
-  case down {
-    process.ProcessDown(..) -> {
+  case down, state.pending_read {
+    process.ProcessDown(monitor:, ..), _ if monitor == state.consumer_monitor -> {
       let cleaned = perform_cleanup(state)
       // A latched outcome still reaches a reader already waiting.
       case state.ending {
@@ -961,7 +965,10 @@ fn handle_down(state: State, down: process.Down) -> actor.Next(State, Message) {
       }
       actor.stop()
     }
-    _ -> actor.continue(state)
+    process.ProcessDown(monitor:, ..), Some(pending)
+      if monitor == pending.monitor
+    -> actor.continue(State(..state, pending_read: None))
+    _, _ -> actor.continue(state)
   }
 }
 
