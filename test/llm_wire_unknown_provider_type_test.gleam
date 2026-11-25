@@ -88,6 +88,24 @@ pub fn anthropic_unknown_delta_in_a_known_block_is_skipped_test() {
   assert extensions == ["content_block_delta:citations_delta"]
 }
 
+/// A delta of a type the reducer does not know is skipped inside a redacted
+/// thinking block too, as inside every other block it knows.
+pub fn anthropic_unknown_delta_in_a_redacted_thinking_block_is_skipped_test() {
+  let #(extensions, outcome) =
+    read(anthropic(), [
+      anthropic_start,
+      "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"redacted_thinking\",\"data\":\"opaque\"}}\n\n",
+      "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"future_delta\"}}\n\n",
+      "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+      "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+      "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\n",
+      "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":1}\n\n",
+      anthropic_end,
+    ])
+  let assert Ok(llm_wire.Answer(text: "hello", ..)) = outcome
+  assert extensions == ["content_block_delta:future_delta"]
+}
+
 /// A known delta type on the wrong kind of block is a contradiction, not a
 /// new type, and still fails.
 pub fn anthropic_known_delta_on_the_wrong_block_still_fails_test() {

@@ -640,12 +640,21 @@ fn handle_content_block_delta(
                 bytes,
                 is_closed,
               )
-            // Redacted thinking arrives whole, with no deltas.
-            RedactedThinkingBlock(..) ->
-              Error(error.Protocol(
-                "Delta type mismatch for redacted_thinking block: "
-                <> payload.delta_type,
-              ))
+            // Redacted thinking arrives whole: every known delta type is a
+            // mismatch, and a type this reducer does not know is skipped.
+            RedactedThinkingBlock(_, is_closed) ->
+              case is_closed {
+                True ->
+                  Error(error.Protocol(
+                    "Delta received after content_block_stop",
+                  ))
+                False ->
+                  foreign_delta(
+                    reducer,
+                    "redacted_thinking",
+                    payload.delta_type,
+                  )
+              }
             ToolUseBlock(call_id, name, existing_args, is_closed) -> {
               case is_closed {
                 True ->
