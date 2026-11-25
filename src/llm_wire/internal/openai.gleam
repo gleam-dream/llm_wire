@@ -5,6 +5,7 @@ import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/set.{type Set}
 import gleam/string
 import llm_wire/error
 import llm_wire/internal/ids
@@ -28,6 +29,10 @@ pub opaque type Reducer {
     tool_buffers: Dict(String, ToolBuffer),
     tool_order: List(String),
     index_to_item_id: Dict(Int, String),
+    /// Items of a type this reducer does not know, by id. OpenAI adds item
+    /// types over time, so such an item and its completion are accepted and
+    /// its content is not kept.
+    ignored_items: Set(String),
     seen_call_ids: List(String),
     active_blocks_count: Int,
     total_text_bytes: Int,
@@ -56,6 +61,7 @@ pub fn new(limits: limits.Limits) -> Reducer {
     tool_buffers: dict.new(),
     tool_order: [],
     index_to_item_id: dict.new(),
+    ignored_items: set.new(),
     seen_call_ids: [],
     active_blocks_count: 0,
     total_text_bytes: 0,
@@ -241,6 +247,7 @@ fn handle_output_item_added(
                 dict.has_key(reducer.text_buffers, added.item_id)
                 || dict.has_key(reducer.reasoning_buffers, added.item_id)
                 || dict.has_key(reducer.tool_buffers, added.item_id)
+                || set.contains(reducer.ignored_items, added.item_id)
               {
                 True ->
                   Error(error.Protocol(
@@ -366,7 +373,39 @@ fn handle_output_item_added(
                           ))
                       }
                     }
-                    _ -> Ok(#(reducer, []))
+                    unknown -> {
+                      let name = "response.output_item.added:" <> unknown
+                      let bytes = string.byte_size(name)
+                      case bytes > reducer.limits.extension_bytes_limit {
+                        True ->
+                          Error(error.LimitExceeded(
+                            limit.ExtensionBytes,
+                            reducer.limits.extension_bytes_limit,
+                            bytes,
+                          ))
+                        False ->
+                          Ok(
+                            #(
+                              Reducer(
+                                ..reducer,
+                                index_to_item_id: updated_indices,
+                                ignored_items: set.insert(
+                                  reducer.ignored_items,
+                                  added.item_id,
+                                ),
+                                active_blocks_count: reducer.active_blocks_count
+                                  + 1,
+                              ),
+                              [
+                                message.ProviderExtension(
+                                  provider: "openai",
+                                  event_name: name,
+                                ),
+                              ],
+                            ),
+                          )
+                      }
+                    }
                   }
                 }
               }
@@ -875,9 +914,13 @@ fn handle_output_item_done(
                       )
                     }
                     Error(Nil) ->
-                      Error(error.Protocol(
-                        "Unknown output item completed: " <> item_id,
-                      ))
+                      case set.contains(reducer.ignored_items, item_id) {
+                        True -> Ok(#(reducer, []))
+                        False ->
+                          Error(error.Protocol(
+                            "Unknown output item completed: " <> item_id,
+                          ))
+                      }
                   }
               }
             }

@@ -3,6 +3,7 @@ import gleam/dynamic/decode
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import llm_wire/error
 import llm_wire/internal/ids
@@ -47,6 +48,11 @@ type BlockState {
   /// never answer text; its signature and redacted data are not kept, since
   /// the assistant turn does not carry them (ADR 0020).
   ThinkingBlock(bytes: Int, is_closed: Bool)
+  /// A block of a type this reducer does not know. Anthropic adds block
+  /// types over time, so its start, deltas and stop are accepted and its
+  /// content is not kept. It still follows the block rules: one start per
+  /// index, no delta after its stop, closed before the message ends.
+  IgnoredBlock(is_closed: Bool)
 }
 
 pub fn new(limits: limits.Limits) -> Reducer {
@@ -368,12 +374,72 @@ fn handle_content_block_start(
                     ),
                   )
                 }
-                _ -> Ok(#(reducer, []))
+                unknown -> {
+                  use progress <- result.try(extension(
+                    reducer,
+                    "content_block_start:" <> unknown,
+                  ))
+                  Ok(#(
+                    Reducer(
+                      ..reducer,
+                      blocks: dict.insert(
+                        reducer.blocks,
+                        payload.index,
+                        IgnoredBlock(False),
+                      ),
+                      block_order: updated_order,
+                      active_blocks_count: reducer.active_blocks_count + 1,
+                    ),
+                    progress,
+                  ))
+                }
               }
             }
           }
         }
       }
+    }
+  }
+}
+
+/// Report a block or delta type this reducer does not know as a bounded
+/// provider extension, as an unknown named event is reported.
+fn extension(
+  reducer: Reducer,
+  name: String,
+) -> Result(List(message.Progress), error.Error) {
+  let bytes = string.byte_size(name)
+  case bytes > reducer.limits.extension_bytes_limit {
+    True ->
+      Error(error.LimitExceeded(
+        limit.ExtensionBytes,
+        reducer.limits.extension_bytes_limit,
+        bytes,
+      ))
+    False ->
+      Ok([message.ProviderExtension(provider: "anthropic", event_name: name)])
+  }
+}
+
+/// A delta whose type does not belong to its block. A type this reducer
+/// knows from another kind of block contradicts the block and fails. Any
+/// other type is new to this reducer and is skipped.
+fn foreign_delta(
+  reducer: Reducer,
+  block: String,
+  delta_type: String,
+) -> Result(#(Reducer, List(message.Progress)), error.Error) {
+  case delta_type {
+    "text_delta" | "input_json_delta" | "thinking_delta" | "signature_delta" ->
+      Error(error.Protocol(
+        "Delta type mismatch for " <> block <> " block: " <> delta_type,
+      ))
+    unknown -> {
+      use progress <- result.try(extension(
+        reducer,
+        "content_block_delta:" <> unknown,
+      ))
+      Ok(#(reducer, progress))
     }
   }
 }
@@ -502,10 +568,7 @@ fn handle_content_block_delta(
                           }
                       }
                     }
-                    other ->
-                      Error(error.Protocol(
-                        "Delta type mismatch for text block: " <> other,
-                      ))
+                    other -> foreign_delta(reducer, "text", other)
                   }
                 }
               }
@@ -589,15 +652,12 @@ fn handle_content_block_delta(
                           }
                       }
                     }
-                    other ->
-                      Error(error.Protocol(
-                        "Delta type mismatch for tool_use block: " <> other,
-                      ))
+                    other -> foreign_delta(reducer, "tool_use", other)
                   }
                 }
               }
             }
-            ServerToolBlock(is_closed) -> {
+            ServerToolBlock(is_closed) | IgnoredBlock(is_closed) -> {
               case is_closed {
                 True ->
                   Error(error.Protocol(
@@ -668,8 +728,7 @@ fn thinking_delta(
           )
       }
     }
-    False, other ->
-      Error(error.Protocol("Delta type mismatch for thinking block: " <> other))
+    False, other -> foreign_delta(reducer, "thinking", other)
   }
 }
 
@@ -747,6 +806,25 @@ fn handle_content_block_stop(
                     )
                   Ok(#(Reducer(..reducer, blocks: updated_blocks), []))
                 }
+              }
+            }
+            IgnoredBlock(is_closed) -> {
+              case is_closed {
+                True -> Error(error.Protocol("Duplicate content_block_stop"))
+                False ->
+                  Ok(
+                    #(
+                      Reducer(
+                        ..reducer,
+                        blocks: dict.insert(
+                          reducer.blocks,
+                          payload.index,
+                          IgnoredBlock(True),
+                        ),
+                      ),
+                      [],
+                    ),
+                  )
               }
             }
             ThinkingBlock(bytes, is_closed) -> {
@@ -1041,6 +1119,7 @@ fn check_all_blocks_closed(
           ToolUseBlock(_, _, _, closed) -> closed
           ServerToolBlock(closed) -> closed
           ThinkingBlock(_, closed) -> closed
+          IgnoredBlock(closed) -> closed
         }
         case is_closed {
           True -> Ok(Nil)

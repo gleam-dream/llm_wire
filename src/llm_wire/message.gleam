@@ -120,7 +120,9 @@ pub type Progress {
   /// Argument text of a tool call still being generated.
   ToolArgumentsDelta(call_id: String, text: String)
   UsageUpdate(usage: Usage)
-  /// A provider event LLM Wire does not interpret, by name.
+  /// A provider event LLM Wire does not interpret, by name. A block, delta or
+  /// item type it does not know inside a known event is named by the event
+  /// and the type, such as `content_block_start:future_block`.
   ProviderExtension(provider: String, event_name: String)
 }
 
