@@ -319,7 +319,13 @@ pub fn run(
       status ->
         Error(failure_for(
           prepared,
-          error.Status(status, "", retry_after.from_headers(response.headers)),
+          error.Status(
+            status:,
+            code: None,
+            message: None,
+            body: "",
+            retry_after: retry_after.from_headers(response.headers),
+          ),
           llm_wire.Completed,
         ))
     })

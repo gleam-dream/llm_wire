@@ -307,7 +307,13 @@ fn decode_response(
   use Nil <- result.try(case reply.status {
     200 -> Ok(Nil)
     status ->
-      Error(error.Status(status, "", retry_after.from_headers(reply.headers)))
+      Error(error.Status(
+        status:,
+        code: None,
+        message: None,
+        body: "",
+        retry_after: retry_after.from_headers(reply.headers),
+      ))
   })
   use body <- result.try(
     bit_array.to_string(reply.body)

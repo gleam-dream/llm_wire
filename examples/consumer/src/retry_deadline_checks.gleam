@@ -57,7 +57,7 @@ pub fn main() -> Nil {
       duration.milliseconds(200),
       duration.milliseconds(400),
     )
-  let assert error.Status(503, _, _) = failure.error
+  let assert error.Status(503, _, _, _, _) = failure.error
   wait_for_release(client, 100)
   http_gun.stop(client)
 }

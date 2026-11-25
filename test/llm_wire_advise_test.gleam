@@ -36,7 +36,7 @@ fn prospect(
 }
 
 fn status(code: Int) -> error.Error {
-  error.Status(code, "", None)
+  error.Status(code, None, None, "", None)
 }
 
 pub fn service_unavailable_may_help_test() {
@@ -209,25 +209,47 @@ pub fn unknown_codes_never_guess_from_names_or_diagnostic_text_test() {
   })
 }
 
-pub fn status_prospect_does_not_infer_policy_from_body_or_retry_hint_test() {
-  // A status alone is ambiguous, even if a body resembles a permanent quota
-  // error. Only explicit provider error codes are provider-classified. The
-  // advice now also returns the status's `Retry-After` delay unchanged.
+pub fn status_prospect_reads_the_provider_code_not_the_body_test() {
+  // The provider's code decides where it is known: an exhausted quota is a
+  // 429 that waiting does not fix. The advice still returns the status's
+  // `Retry-After` delay unchanged.
   llm_wire.advise(failure(
     message.OpenAI,
     error.Status(
-      429,
-      "{\"error\":{\"code\":\"insufficient_quota\"}}",
-      Some(duration.seconds(60)),
+      status: 429,
+      code: Some("insufficient_quota"),
+      message: Some("You exceeded your current quota."),
+      body: "{}",
+      retry_after: Some(duration.seconds(60)),
     ),
   ))
   |> should.equal(llm_wire.RetryAdvice(
-    llm_wire.MayHelp,
+    llm_wire.WillNotHelpUnchanged,
     llm_wire.ProviderDelay(duration.seconds(60)),
   ))
+  // Without a code, advice follows the status alone; the body is never
+  // parsed again.
   llm_wire.advise(failure(
     message.OpenAI,
-    error.Status(400, "retry later", Some(duration.seconds(1))),
+    error.Status(
+      status: 429,
+      code: None,
+      message: None,
+      body: "{\"error\":{\"code\":\"insufficient_quota\"}}",
+      retry_after: None,
+    ),
+  ))
+  |> should.equal(llm_wire.RetryAdvice(llm_wire.MayHelp, llm_wire.Backoff))
+  // A code advice does not know leaves the status in charge.
+  llm_wire.advise(failure(
+    message.OpenAI,
+    error.Status(
+      status: 400,
+      code: Some("a_new_code"),
+      message: None,
+      body: "retry later",
+      retry_after: Some(duration.seconds(1)),
+    ),
   ))
   |> should.equal(llm_wire.RetryAdvice(
     llm_wire.WillNotHelpUnchanged,
@@ -340,8 +362,11 @@ fn providers() -> List(message.Provider) {
 
 pub fn a_provider_delay_and_a_missing_one_are_different_advice_test() {
   let with_header =
-    failure(message.OpenAI, error.Status(503, "", Some(duration.seconds(30))))
-  let without = failure(message.OpenAI, error.Status(503, "", None))
+    failure(
+      message.OpenAI,
+      error.Status(503, None, None, "", Some(duration.seconds(30))),
+    )
+  let without = failure(message.OpenAI, error.Status(503, None, None, "", None))
   llm_wire.advise(with_header)
   |> should.equal(llm_wire.RetryAdvice(
     llm_wire.MayHelp,
@@ -377,8 +402,8 @@ pub fn a_scheduler_chooses_snooze_backoff_or_discard_from_the_advice_test() {
       llm_wire.RetryAdvice(_, _) -> "discard"
     }
   }
-  choose(error.Status(429, "", Some(duration.seconds(2))))
+  choose(error.Status(429, None, None, "", Some(duration.seconds(2))))
   |> should.equal("snooze")
-  choose(error.Status(529, "", None)) |> should.equal("backoff")
-  choose(error.Status(401, "", None)) |> should.equal("discard")
+  choose(error.Status(529, None, None, "", None)) |> should.equal("backoff")
+  choose(error.Status(401, None, None, "", None)) |> should.equal("discard")
 }

@@ -74,7 +74,7 @@ pub fn main() -> Nil {
     |> testing.playback(config.default())
   let assert Ok(Note(42, "Hello")) = record(client, call)
   let assert Error(failure) = record(client, call)
-  let assert error.Status(429, "", None) = failure.error
+  let assert error.Status(429, _, _, "", None) = failure.error
   let assert llm_wire.Completed = failure.sent
   // The failed call did not consume the following explicit attempt.
   let assert Ok(Note(42, "Hello")) = record(client, call)

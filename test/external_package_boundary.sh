@@ -241,7 +241,7 @@ pub fn scripts_a_provider_failure(
   let cut = testing.interrupted(testing.text("partial"))
   let served = testing.http_response(message.OpenAI, cut)
   let failure =
-    testing.failure(message.OpenAI, error.Status(429, "slow", None))
+    testing.failure(message.OpenAI, error.Status(429, None, None, "slow", None))
   #(limited, failure, case served.status {
     200 -> Ok(Nil)
     _ -> Error(Nil)
