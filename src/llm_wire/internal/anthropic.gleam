@@ -44,15 +44,23 @@ type BlockState {
     is_closed: Bool,
   )
   ServerToolBlock(is_closed: Bool)
-  /// A thinking or redacted thinking block: its text is reasoning progress,
-  /// never answer text; its signature and redacted data are not kept, since
-  /// the assistant turn does not carry them (ADR 0020).
-  ThinkingBlock(bytes: Int, is_closed: Bool)
   /// A block of a type this reducer does not know. Anthropic adds block
   /// types over time, so its start, deltas and stop are accepted and its
   /// content is not kept. It still follows the block rules: one start per
   /// index, no delta after its stop, closed before the message ends.
   IgnoredBlock(is_closed: Bool)
+  /// A thinking block: its text is reasoning progress, never answer text.
+  /// Its text and signature are kept, because a tool round must send the
+  /// block back unchanged (ADR 0024).
+  ThinkingBlock(
+    thinking: String,
+    signature: String,
+    bytes: Int,
+    is_closed: Bool,
+  )
+  /// A redacted thinking block. Its encrypted data arrives whole in its
+  /// start and is kept for the same reason.
+  RedactedThinkingBlock(data: String, is_closed: Bool)
 }
 
 pub fn new(limits: limits.Limits) -> Reducer {
@@ -219,6 +227,8 @@ type ContentBlockStartPayload {
     block_type: String,
     id: Option(String),
     name: Option(String),
+    signature: Option(String),
+    data: Option(String),
   )
 }
 
@@ -239,7 +249,34 @@ fn decode_content_block_start() -> decode.Decoder(ContentBlockStartPayload) {
       decode.success(n)
     }),
   )
-  decode.success(ContentBlockStartPayload(index, block_type, id, name))
+  use signature <- decode.optional_field(
+    "content_block",
+    None,
+    decode.optional_field(
+      "signature",
+      None,
+      decode.optional(decode.string),
+      decode.success,
+    ),
+  )
+  use data <- decode.optional_field(
+    "content_block",
+    None,
+    decode.optional_field(
+      "data",
+      None,
+      decode.optional(decode.string),
+      decode.success,
+    ),
+  )
+  decode.success(ContentBlockStartPayload(
+    index,
+    block_type,
+    id,
+    name,
+    signature,
+    data,
+  ))
 }
 
 fn handle_content_block_start(
@@ -336,12 +373,22 @@ fn handle_content_block_start(
                   }
                 }
                 "thinking" | "redacted_thinking" -> {
+                  let block = case payload.block_type {
+                    "thinking" ->
+                      ThinkingBlock(
+                        "",
+                        option.unwrap(payload.signature, ""),
+                        0,
+                        False,
+                      )
+                    _ ->
+                      RedactedThinkingBlock(
+                        option.unwrap(payload.data, ""),
+                        False,
+                      )
+                  }
                   let updated_blocks =
-                    dict.insert(
-                      reducer.blocks,
-                      payload.index,
-                      ThinkingBlock(0, False),
-                    )
+                    dict.insert(reducer.blocks, payload.index, block)
                   Ok(
                     #(
                       Reducer(
@@ -450,6 +497,7 @@ type ContentBlockDeltaPayload {
     text: Option(String),
     thinking: Option(String),
     partial_json: Option(String),
+    signature: Option(String),
   )
 }
 
@@ -483,12 +531,23 @@ fn decode_content_block_delta() -> decode.Decoder(ContentBlockDeltaPayload) {
       fn(pj) { decode.success(pj) },
     ),
   )
+  use signature <- decode.optional_field(
+    "delta",
+    None,
+    decode.optional_field(
+      "signature",
+      None,
+      decode.optional(decode.string),
+      decode.success,
+    ),
+  )
   decode.success(ContentBlockDeltaPayload(
     index,
     delta_type,
     text,
     thinking,
     partial_json,
+    signature,
   ))
 }
 
@@ -572,8 +631,21 @@ fn handle_content_block_delta(
                 }
               }
             }
-            ThinkingBlock(bytes, is_closed) ->
-              thinking_delta(reducer, payload, bytes, is_closed)
+            ThinkingBlock(thinking, signature, bytes, is_closed) ->
+              thinking_delta(
+                reducer,
+                payload,
+                thinking,
+                signature,
+                bytes,
+                is_closed,
+              )
+            // Redacted thinking arrives whole, with no deltas.
+            RedactedThinkingBlock(..) ->
+              Error(error.Protocol(
+                "Delta type mismatch for redacted_thinking block: "
+                <> payload.delta_type,
+              ))
             ToolUseBlock(call_id, name, existing_args, is_closed) -> {
               case is_closed {
                 True ->
@@ -673,16 +745,37 @@ fn handle_content_block_delta(
 }
 
 /// A thinking delta is reasoning progress under the text limits; a signature
-/// delta is accepted and not kept.
+/// delta extends the block's signature. Both are kept for replay; the turn's
+/// replay data is bounded by `ProviderMetadataBytes` at the terminal.
 fn thinking_delta(
   reducer: Reducer,
   payload: ContentBlockDeltaPayload,
+  thinking: String,
+  signature: String,
   bytes: Int,
   is_closed: Bool,
 ) -> Result(#(Reducer, List(message.Progress)), error.Error) {
   case is_closed, payload.delta_type {
     True, _ -> Error(error.Protocol("Delta received after content_block_stop"))
-    False, "signature_delta" -> Ok(#(reducer, []))
+    False, "signature_delta" ->
+      Ok(
+        #(
+          Reducer(
+            ..reducer,
+            blocks: dict.insert(
+              reducer.blocks,
+              payload.index,
+              ThinkingBlock(
+                thinking,
+                signature <> option.unwrap(payload.signature, ""),
+                bytes,
+                False,
+              ),
+            ),
+          ),
+          [],
+        ),
+      )
     False, "thinking_delta" -> {
       let fragment = option.unwrap(payload.thinking, "")
       let fragment_bytes = string.byte_size(fragment)
@@ -712,7 +805,12 @@ fn thinking_delta(
                 blocks: dict.insert(
                   reducer.blocks,
                   payload.index,
-                  ThinkingBlock(block_bytes, False),
+                  ThinkingBlock(
+                    thinking <> fragment,
+                    signature,
+                    block_bytes,
+                    False,
+                  ),
                 ),
                 total_text_bytes: total_bytes,
                 semantic_progress_observed: True,
@@ -826,7 +924,7 @@ fn handle_content_block_stop(
                   )
               }
             }
-            ThinkingBlock(bytes, is_closed) -> {
+            ThinkingBlock(thinking, signature, bytes, is_closed) -> {
               case is_closed {
                 True -> Error(error.Protocol("Duplicate content_block_stop"))
                 False -> {
@@ -834,7 +932,21 @@ fn handle_content_block_stop(
                     dict.insert(
                       reducer.blocks,
                       payload.index,
-                      ThinkingBlock(bytes, True),
+                      ThinkingBlock(thinking, signature, bytes, True),
+                    )
+                  Ok(#(Reducer(..reducer, blocks: updated_blocks), []))
+                }
+              }
+            }
+            RedactedThinkingBlock(data, is_closed) -> {
+              case is_closed {
+                True -> Error(error.Protocol("Duplicate content_block_stop"))
+                False -> {
+                  let updated_blocks =
+                    dict.insert(
+                      reducer.blocks,
+                      payload.index,
+                      RedactedThinkingBlock(data, True),
                     )
                   Ok(#(Reducer(..reducer, blocks: updated_blocks), []))
                 }
@@ -998,12 +1110,23 @@ fn handle_message_stop(
           )
         Some("tool_use") ->
           stream_types.StreamFinished(
-            stream_types.CompletedToolCalls(
-              all_text,
-              all_calls,
-              reducer.response_id,
-              [],
-            ),
+            case replay_data(reducer) {
+              None ->
+                stream_types.CompletedToolCalls(
+                  all_text,
+                  all_calls,
+                  reducer.response_id,
+                  [],
+                )
+              Some(data) ->
+                stream_types.CompletedToolCallsWithData(
+                  all_text,
+                  all_calls,
+                  reducer.response_id,
+                  data,
+                  [],
+                )
+            },
             final_usage,
           )
         // Anthropic's streaming classifiers stopped the output.
@@ -1070,6 +1193,65 @@ fn handle_message_stop(
   }
 }
 
+/// The turn's content blocks in order, as replay data, when it has thinking.
+/// Anthropic requires a tool-requesting turn's thinking and redacted
+/// thinking blocks to come back unchanged and in place, so the data keeps
+/// every block the next request sends: thinking with its signature,
+/// redacted thinking with its data, non-empty text, and each tool call by
+/// id and name, whose input the encoder writes from the turn's call. A turn
+/// without thinking needs no data and has none.
+fn replay_data(reducer: Reducer) -> Option(String) {
+  let blocks =
+    list.filter_map(reducer.block_order, fn(index) {
+      case dict.get(reducer.blocks, index) {
+        Ok(ThinkingBlock(thinking, signature, _, _)) ->
+          Ok(#(
+            True,
+            json.object([
+              #("type", json.string("thinking")),
+              #("thinking", json.string(thinking)),
+              #("signature", json.string(signature)),
+            ]),
+          ))
+        Ok(RedactedThinkingBlock(data, _)) ->
+          Ok(#(
+            True,
+            json.object([
+              #("type", json.string("redacted_thinking")),
+              #("data", json.string(data)),
+            ]),
+          ))
+        Ok(TextBlock("", _)) -> Error(Nil)
+        Ok(TextBlock(text, _)) ->
+          Ok(#(
+            False,
+            json.object([
+              #("type", json.string("text")),
+              #("text", json.string(text)),
+            ]),
+          ))
+        Ok(ToolUseBlock(call_id, name, _, _)) ->
+          Ok(#(
+            False,
+            json.object([
+              #("type", json.string("tool_use")),
+              #("id", json.string(call_id)),
+              #("name", json.string(name)),
+            ]),
+          ))
+        Ok(ServerToolBlock(_)) | Ok(IgnoredBlock(_)) | Error(Nil) -> Error(Nil)
+      }
+    })
+  case list.any(blocks, fn(block) { block.0 }) {
+    False -> None
+    True ->
+      Some(
+        json.array(blocks, fn(block) { json.string(json.to_string(block.1)) })
+        |> json.to_string,
+      )
+  }
+}
+
 type ErrorPayload {
   ErrorPayload(error_type: String, message: String)
 }
@@ -1121,7 +1303,8 @@ fn check_all_blocks_closed(
           TextBlock(_, closed) -> closed
           ToolUseBlock(_, _, _, closed) -> closed
           ServerToolBlock(closed) -> closed
-          ThinkingBlock(_, closed) -> closed
+          ThinkingBlock(_, _, _, closed) -> closed
+          RedactedThinkingBlock(_, closed) -> closed
           IgnoredBlock(closed) -> closed
         }
         case is_closed {
