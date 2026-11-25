@@ -933,7 +933,10 @@ fn handle_message_stop(
             error.ContentFiltered(error.InOutput, "refusal"),
             retry_evidence,
           )
-        Some("end_turn") ->
+        // `stop_sequence` is the model writing one of the caller's stop
+        // sequences: a normal end, with the text before the sequence as the
+        // answer.
+        Some("end_turn" as reason) | Some("stop_sequence" as reason) ->
           case all_calls {
             [] ->
               stream_types.StreamFinished(
@@ -943,7 +946,7 @@ fn handle_message_stop(
             _ ->
               stream_types.StreamFailed(
                 error.Provider(
-                  code: Some("end_turn"),
+                  code: Some(reason),
                   message: "Tool calls ended without the provider tool_use stop reason",
                 ),
                 retry_evidence,
