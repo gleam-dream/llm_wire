@@ -127,6 +127,63 @@ pub fn the_next_request_replays_thinking_blocks_unchanged_test() {
     decode.run(call, decode.at(["input", "city"], decode.string))
 }
 
+/// A content block of a type this version does not know, as received in its
+/// start event: members out of alphabetical order, a number with a trailing
+/// zero and nested values, so any re-encoding would show.
+const unknown_block =
+  "{\"type\":\"future_block\",\"zeta\":1.50,\"alpha\":{\"b\":[1,2],\"a\":\"x\"}}"
+
+/// The documented stream with an unknown block between the thinking and the
+/// text. The unknown block's own delta carries nothing replayable.
+fn stream_with_unknown_block() -> List(String) {
+  let assert [start, thinking_start, d1, d2, sig, thinking_stop, ..rest] =
+    stream
+  let shift = fn(event: String) {
+    event
+    |> string.replace("\"index\":1", "\"index\":91")
+    |> string.replace("\"index\":2", "\"index\":92")
+    |> string.replace("\"index\":3", "\"index\":93")
+  }
+  list.flatten([
+    [start, thinking_start, d1, d2, sig, thinking_stop],
+    [
+      "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":"
+        <> unknown_block
+        <> "}\n\n",
+      "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"future_delta\",\"x\":1}}\n\n",
+      "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":1}\n\n",
+    ],
+    list.map(rest, shift),
+  ])
+}
+
+/// An unknown block in a tool turn is sent back byte for byte, in its place,
+/// beside the thinking blocks.
+pub fn an_unknown_block_is_replayed_unchanged_in_place_test() {
+  let assert Ok(prepared) = llm_wire.prepare(config(), first_request())
+  let assert Ok(llm_wire.NeedsTools(turn:, ..)) =
+    http_test_helpers.run_reply(
+      prepared,
+      testing.events(stream_with_unknown_block()),
+    )
+  let assert Ok(next) = llm_wire.prepare(config(), next_request(turn))
+  let body = llm_wire.request_json(next)
+  // Byte for byte and in place: after the thinking block's signature,
+  // before the redacted thinking block.
+  assert string.contains(
+    body,
+    "MOYds2a/3CB4kPC/MQ==\"},"
+      <> unknown_block
+      <> ",{\"type\":\"redacted_thinking\"",
+  )
+  let assert [thought, unknown, redacted, text, call] = assistant_content(body)
+  assert field(thought, "type") == "thinking"
+  assert field(unknown, "type") == "future_block"
+  assert field(redacted, "type") == "redacted_thinking"
+  assert field(text, "type") == "text"
+  assert field(call, "type") == "tool_use"
+}
+
 /// A stored turn keeps its replay data through the turn codec.
 pub fn a_stored_turn_replays_the_same_blocks_test() {
   let turn = tool_turn()

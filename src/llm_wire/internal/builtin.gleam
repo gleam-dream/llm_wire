@@ -539,8 +539,9 @@ fn anthropic_tool_use_block(call: message.ToolCall) -> String {
 
 /// One block of an Anthropic turn's replay data.
 type ReplayBlock {
-  /// A thinking or redacted thinking block, sent back exactly as received.
-  Thought(raw: String)
+  /// A block sent back exactly as received and never interpreted: thinking,
+  /// redacted thinking, or a type this version does not know.
+  Verbatim(raw: String)
   ReplayText(raw: String, text: String)
   /// A tool call, by id and name; its input is the turn's call arguments.
   ReplayToolUse(id: String, name: String)
@@ -594,7 +595,7 @@ fn anthropic_replayed_turn(
           rest,
           anthropic_tool_use_block(call),
         )
-        Thought(raw), _ | ReplayText(raw, _), _ -> #(remaining, raw)
+        Verbatim(raw), _ | ReplayText(raw, _), _ -> #(remaining, raw)
         // The check above matched every tool block to a call.
         ReplayToolUse(..), [] -> #(remaining, "")
       }
@@ -610,15 +611,6 @@ fn anthropic_replay_block(
   let decoder = {
     use kind <- decode.field("type", decode.string)
     case kind {
-      "thinking" -> {
-        use _ <- decode.field("thinking", decode.string)
-        use _ <- decode.field("signature", decode.string)
-        decode.success(Thought(raw))
-      }
-      "redacted_thinking" -> {
-        use _ <- decode.field("data", decode.string)
-        decode.success(Thought(raw))
-      }
       "text" -> {
         use text <- decode.field("text", decode.string)
         decode.success(ReplayText(raw, text))
@@ -628,12 +620,14 @@ fn anthropic_replay_block(
         use name <- decode.field("name", decode.string)
         decode.success(ReplayToolUse(id, name))
       }
-      _ -> decode.failure(Thought(raw), "Anthropic replay block")
+      // Thinking, redacted thinking and any type this version does not know
+      // go back unchanged; only text and calls are checked against the turn.
+      _ -> decode.success(Verbatim(raw))
     }
   }
   json.parse(raw, decoder)
   |> result.replace_error(invalid_data(
-    "an Anthropic replay block is not a thinking, text or tool_use block",
+    "an Anthropic replay block is not a typed content block",
   ))
 }
 
