@@ -191,6 +191,9 @@ fn start(
         },
       )
     Error(Nil) -> {
+      // Unlink first: the kill must end the worker alone, so that the owner
+      // lives to report the failure below.
+      process.unlink(worker)
       process.kill(worker)
       owner.feed_failure(
         stream,

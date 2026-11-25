@@ -1,7 +1,8 @@
 //// The per-call owner process. It frames SSE, steps the reducer, bounds
 //// every queue and text, runs the call's three timers and delivers progress
-//// to exactly one reader at a time. It monitors the caller: caller death
-//// releases the HTTP stream.
+//// to exactly one reader at a time. It monitors its creator and is not
+//// linked to it: creator death releases the HTTP stream, and an owner exit
+//// reaches a reader as a typed read error, never as an exit signal.
 
 import gleam/bit_array
 import gleam/erlang/process
@@ -169,6 +170,13 @@ pub fn start(
   let consumer_pid = process.self()
   let builder =
     actor.new_with_initialiser(5000, fn(subject) {
+      // The owner's lifetime follows its creator through this monitor alone.
+      // `actor.start` links the two, and a link would also end the creator
+      // whenever the owner exits abnormally or is killed by `close`; the
+      // creator learns of an owner exit from its own monitor in `next` and
+      // `close`. Monitor first, so no creator exit goes unseen.
+      let consumer_monitor = process.monitor(consumer_pid)
+      process.unlink(consumer_pid)
       let transport = start_transport(Stream(subject))
       let whole_call_timer =
         option.map(whole_call_ms, fn(ms) {
@@ -178,7 +186,6 @@ pub fn start(
         option.map(setup.timeouts.first_token, fn(ms) {
           process.send_after(subject, ms, TimerFired(error.FirstToken))
         })
-      let consumer_monitor = process.monitor(consumer_pid)
       let selector =
         process.new_selector()
         |> process.select(subject)
@@ -306,7 +313,8 @@ fn delivered_before_exit(
 }
 
 /// Ends the call. Idempotent; an owner that does not answer within 5 s is
-/// killed, which also ends its transport worker.
+/// killed, which also ends its transport worker. The kill reaches no other
+/// process: the owner is linked to its worker only.
 pub fn close(stream: Stream) -> stream_types.CloseOutcome {
   case owner_pid(stream) {
     Error(Nil) -> stream_types.AlreadyTerminal
