@@ -19,6 +19,7 @@ import http_gun/error as http_error
 import llm_wire/error
 import llm_wire/internal/adapter
 import llm_wire/internal/api
+import llm_wire/internal/error_body
 import llm_wire/internal/owner
 import llm_wire/internal/retry_after
 import llm_wire/internal/stream_types
@@ -299,7 +300,16 @@ fn error_body(
         |> result.unwrap("Invalid UTF-8 error response")
       owner.feed_failure(
         stream,
-        error.Status(status, text, retry_after.from_headers(headers)),
+        {
+          let #(code, message) = error_body.read(text)
+          error.Status(
+            status:,
+            code:,
+            message:,
+            body: text,
+            retry_after: retry_after.from_headers(headers),
+          )
+        },
         stream_types.RetryEvidence(stream_types.ResponseCompleted, True, False),
       )
     }

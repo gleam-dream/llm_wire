@@ -392,6 +392,8 @@ pub fn real_http_error_response_test() {
   failure.error
   |> should.equal(error.Status(
     429,
+    None,
+    None,
     "{\"error\": \"rate_limited\"}",
     Some(duration.seconds(3)),
   ))
@@ -415,7 +417,7 @@ pub fn buffered_http_status_failure_records_response_bytes_test() {
       llm_wire.request("gpt-test", [llm_wire.user("hello")]),
     )
   let assert Error(failure) = llm_wire.run(owned_http, prepared)
-  let assert error.Status(429, "busy", _) = failure.error
+  let assert error.Status(429, _, _, "busy", _) = failure.error
   // Completed means the provider finished its response, including an error status.
   failure.sent |> should.equal(llm_wire.Completed)
   fake_server.stop(server)
@@ -431,7 +433,7 @@ pub fn gun_refuses_redirects_instead_of_following_them_test() {
   let result =
     client.open_openai_stream(owned_http, server.port, fn(c) { c }, [])
   let assert Error(failure) = opening_failure(result)
-  failure.error |> should.equal(error.Status(302, "", None))
+  failure.error |> should.equal(error.Status(302, None, None, "", None))
   fake_server.stop(server)
 }
 

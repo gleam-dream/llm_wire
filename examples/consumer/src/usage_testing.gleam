@@ -54,7 +54,7 @@ pub fn main() -> Nil {
   let limited =
     testing.exchange(call, testing.rate_limited(message.OpenAI))
     |> testing.with_retry_after(duration.seconds(2))
-  let assert Error(llm_wire.Failure(error: error.Status(429, _, _), ..)) = {
+  let assert Error(llm_wire.Failure(error: error.Status(429, _, _, _, _), ..)) = {
     let assert Ok(rate_client) =
       http_testing.playback(
         http_testing.script([limited]),
@@ -64,6 +64,7 @@ pub fn main() -> Nil {
   }
 
   // Build a `Failure` for code that only consumes failures.
-  let failure = testing.failure(message.OpenAI, error.Status(429, "slow", None))
+  let failure =
+    testing.failure(message.OpenAI, error.Status(429, None, None, "slow", None))
   io.println(llm_wire.describe_failure(failure))
 }

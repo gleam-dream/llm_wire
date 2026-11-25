@@ -760,7 +760,9 @@ pub fn describe_failure(failure: Failure) -> String {
 /// and limits will not, nor will a provider's content filter
 /// (`error.ContentFiltered`): the prompt must change. HTTP statuses 408, 429, 500, 502, 503 and 504 (and
 /// Anthropic's 529) may help. Provider error codes are matched exactly per
-/// provider; prose is never parsed. The `delay` is `ProviderDelay` when the
+/// provider, in a stream error and in an error status's `code`, where a
+/// known code decides before the status: OpenAI's `insufficient_quota` 429
+/// will not help. Prose is never parsed. The `delay` is `ProviderDelay` when the
 /// provider sent a readable `Retry-After` (delay seconds or an HTTP date)
 /// and `Backoff` otherwise. LLM Wire never retries by itself, and `MayHelp`
 /// does not make a `MaybeSent` call free: it may have spent tokens.
@@ -788,8 +790,17 @@ pub fn advise(failure: Failure) -> RetryAdvice {
         },
         delay(retry_after.from_headers(http_error.headers(http_failure))),
       )
-    error.Status(code, _, after) ->
-      RetryAdvice(assess_status(failure.provider, code), delay(after))
+    // The provider's code is more specific than the status: OpenAI answers
+    // an exhausted quota and a rate limit both with 429.
+    error.Status(status, code, _, _, after) ->
+      RetryAdvice(
+        case option.map(code, assess_code(failure.provider, _)) {
+          Some(MayHelp) -> MayHelp
+          Some(WillNotHelpUnchanged) -> WillNotHelpUnchanged
+          Some(Unknown) | None -> assess_status(failure.provider, status)
+        },
+        delay(after),
+      )
     error.Provider(Some(code), _) ->
       RetryAdvice(assess_code(failure.provider, code), Backoff)
     error.Provider(None, _) -> RetryAdvice(Unknown, Backoff)

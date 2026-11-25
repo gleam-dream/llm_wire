@@ -180,7 +180,7 @@ pub fn recorded_status_and_interruption_keep_normal_error_evidence_test() {
     testing.exchange(call, testing.interrupted(testing.events([]))),
   ])
   let assert Error(status) = llm_wire.run(client, call)
-  status.error |> should.equal(error.Status(429, "busy", None))
+  status.error |> should.equal(error.Status(429, None, None, "busy", None))
   // A finished error response is `Completed` (was response bytes observed).
   status.sent |> should.equal(llm_wire.Completed)
   let assert Error(interrupted) = llm_wire.run(client, call)
@@ -282,8 +282,10 @@ pub fn unexpected_success_statuses_match_the_http_transport_test() {
       testing.http_status(message.Custom("scripted"), 201, "created"),
     ),
   ])
-  let assert Error(llm_wire.Failure(error: error.Status(201, "created", _), ..)) =
-    llm_wire.run(client, call)
+  let assert Error(llm_wire.Failure(
+    error: error.Status(201, _, _, "created", _),
+    ..,
+  )) = llm_wire.run(client, call)
 }
 
 // Explicit fixture regeneration; never record-if-missing during tests.
