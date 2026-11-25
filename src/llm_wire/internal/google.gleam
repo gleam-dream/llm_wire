@@ -660,14 +660,14 @@ fn dynamic_json(value: Dynamic) -> Result(json.Json, Nil) {
                     Error(_) ->
                       case decode.run(non_null, decode.list(decode.dynamic)) {
                         Ok(items) -> {
-                          let empty: Result(List(json.Json), Nil) = Ok([])
-                          use encoded <- result.try(
-                            list.fold(items, empty, fn(acc, item) {
-                              use values <- result.try(acc)
-                              use encoded_item <- result.try(dynamic_json(item))
-                              Ok(list.append(values, [encoded_item]))
-                            }),
-                          )
+                          // One pass in order. Appending each element to
+                          // the end of a list would copy the list every
+                          // time, and this runs in the call's owner on
+                          // provider-chosen sizes.
+                          use encoded <- result.try(list.try_map(
+                            items,
+                            dynamic_json,
+                          ))
                           Ok(json.array(encoded, fn(item) { item }))
                         }
                         Error(_) ->
@@ -678,20 +678,13 @@ fn dynamic_json(value: Dynamic) -> Result(json.Json, Nil) {
                             )
                           {
                             Ok(fields) -> {
-                              let empty: Result(List(#(String, json.Json)), Nil) =
-                                Ok([])
                               use encoded <- result.try(
                                 dict.to_list(fields)
-                                |> list.fold(empty, fn(acc, entry) {
-                                  use values <- result.try(acc)
+                                |> list.try_map(fn(entry) {
                                   use encoded_value <- result.try(dynamic_json(
                                     entry.1,
                                   ))
-                                  Ok(
-                                    list.append(values, [
-                                      #(entry.0, encoded_value),
-                                    ]),
-                                  )
+                                  Ok(#(entry.0, encoded_value))
                                 }),
                               )
                               Ok(json.object(encoded))
