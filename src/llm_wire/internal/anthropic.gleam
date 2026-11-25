@@ -912,7 +912,9 @@ fn handle_message_stop(
       let retry_evidence =
         retry_evidence(reducer, stream_types.RequestMayHaveReachedProvider)
       let terminal = case reducer.stop_reason {
-        Some("max_tokens") ->
+        // `model_context_window_exceeded`: the answer filled the model's
+        // context window before `max_tokens`; the output was cut all the same.
+        Some("max_tokens") | Some("model_context_window_exceeded") ->
           stream_types.StreamFinished(
             stream_types.OutputLimited(all_text, all_calls),
             final_usage,
@@ -960,13 +962,12 @@ fn handle_message_stop(
             ),
             retry_evidence,
           )
+        // A stop reason added after this version: the caller decides what
+        // it means for the text and calls that arrived.
         Some(other) ->
-          stream_types.StreamFailed(
-            error.Provider(
-              code: Some(other),
-              message: "Unsupported Anthropic stop reason: " <> other,
-            ),
-            retry_evidence,
+          stream_types.StreamFinished(
+            stream_types.UnrecognizedStop(other, all_text, all_calls),
+            final_usage,
           )
         None ->
           stream_types.StreamFailed(

@@ -23,6 +23,12 @@ pub type Outcome {
     issues: List(ToolCallIssue),
   )
   OutputLimited(partial_text: String, partial_calls: List(ToolCall))
+  /// The provider ended with a stop reason the reducer does not know.
+  UnrecognizedStop(
+    reason: String,
+    partial_text: String,
+    partial_calls: List(ToolCall),
+  )
 }
 
 /// What the runtime observed about delivery when a call ended.
