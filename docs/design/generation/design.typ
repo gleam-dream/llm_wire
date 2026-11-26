@@ -308,7 +308,7 @@
         #given[A stream is reading the rest of its body after a provider terminal.]
         #when[A caller closes a handle or the creating process exits.]
         #then[The close of local transport is requested at once and close reports that the stream had already ended.]
-        #then[A reader already waiting receives the outcome decided at the provider terminal, unless the creating process ended abnormally.]
+        #then[A reader already waiting receives the outcome decided at the provider terminal, whether the creating process ended normally or abnormally.]
       ]
     ]
     #subsection(title: "Effect timing and deadlines")[
