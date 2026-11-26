@@ -32,18 +32,19 @@ New in 0.3.0 and not breaking: `provider.unrecognized_stop` and `testing.unrecog
 
 **Why.** HTTP Gun no longer has an unbounded request. An unbounded whole call would have fallen back to the client's 30 second default and cut long streams ([ADR 0025](https://github.com/gleam-dream/llm_wire/blob/main/docs/adr/0025-keep-the-whole-call-finite.md)).
 
-**What to do.** Drop the `After` wrapper. Replace `Infinity` with the longest time the application accepts for one call.
+**What to do.** Drop the `After` wrapper. Replace `Infinity` with the longest time the application accepts for one call. `config` is an `llm_wire.Config` and `classify_config` a `classify.Config`; each setter takes its own configuration.
 
 ```gleam
 // 0.2
-config
-|> llm_wire.with_call_timeout(llm_wire.After(duration.minutes(5)))
-|> classify.with_timeout(llm_wire.Infinity)
+let generation =
+  config |> llm_wire.with_call_timeout(llm_wire.After(duration.minutes(5)))
+let classification =
+  classify_config |> classify.with_timeout(llm_wire.Infinity)
 
 // 0.3
-config
-|> llm_wire.with_call_timeout(duration.minutes(5))
-|> classify.with_timeout(duration.minutes(30))
+let generation = config |> llm_wire.with_call_timeout(duration.minutes(5))
+let classification =
+  classify_config |> classify.with_timeout(duration.minutes(30))
 ```
 
 An absolute deadline set on the HTTP Gun client view remains a ceiling for the call.
