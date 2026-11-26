@@ -8,6 +8,16 @@ repository = { type = "github", user = "gleam-dream", repo = "llm_wire" }
 
 internal_modules = ["llm_wire/internal", "llm_wire/internal/*"]
 
+[[documentation.pages]]
+title = "Migrating from 0.2 to 0.3"
+path = "migration.html"
+source = "./docs/MIGRATION.md"
+
+[[documentation.pages]]
+title = "Changelog"
+path = "changelog.html"
+source = "./CHANGELOG.md"
+
 [dependencies]
 gleam_stdlib = ">= 0.70.0 and < 2.0.0"
 gleam_json = ">= 3.0.0 and < 4.0.0"

@@ -2,6 +2,35 @@
 
 Release notes begin with the first published version ([ADR 0016](docs/adr/0016-record-unpublished-changes-in-adrs-not-a-changelog.md)). Present behavior lives in the design layer, and the reasons for each change live in the ADRs.
 
+## 0.3.0
+
+This is a breaking release. The [migration guide](https://github.com/gleam-dream/llm_wire/blob/main/docs/MIGRATION.md) gives before and after code for each change, ordered by how many applications it affects.
+
+### Breaking
+
+- **Requires `http_gun >= 0.4.0 and < 0.5.0`, `sinal >= 0.2.0 and < 0.3.0` and `json_blueprint >= 3.0.0 and < 4.0.0`.** Each is a breaking release; read its own guide.
+- **`llm_wire.with_call_timeout` and `classify.with_timeout` take a `Duration`, not a `Bound`.** The whole call is always finite ([ADR 0025](https://github.com/gleam-dream/llm_wire/blob/main/docs/adr/0025-keep-the-whole-call-finite.md)).
+- **`error.Status(status:, code:, message:, body:, retry_after:)` replaces `Status(code:, body:, retry_after:)`.** The HTTP status is the field `status`; `code` and `message` are the provider's own ([ADR 0023](https://github.com/gleam-dream/llm_wire/blob/main/docs/adr/0023-carry-the-provider-error-code-on-an-error-status.md)). `llm_wire.advise` reads a known permanent code before the status.
+- **`llm_wire.Outcome` and `telemetry.Outcome` gain `UnrecognizedStop`.** A stop reason this version does not know ends the call with it, not with a provider failure ([ADR 0022](https://github.com/gleam-dream/llm_wire/blob/main/docs/adr/0022-end-an-unrecognized-stop-reason-with-its-own-outcome.md)).
+- **`message.ProviderExtension(provider:, event_name:)` is now `message.UnrecognizedEvent(provider:, name:)`.** It also reports unknown block, delta and item types, which no longer fail the call.
+- **`error.ThinkingInToolRound` is removed.** An Anthropic `NeedsTools` turn keeps its thinking, redacted thinking and unknown content blocks in `provider_data`, and the next request replays them unchanged ([ADR 0024](https://github.com/gleam-dream/llm_wire/blob/main/docs/adr/0024-replay-anthropic-thinking-blocks-in-tool-rounds.md)).
+
+### Added
+
+- `provider.unrecognized_stop` and `testing.unrecognized_stop`.
+
+### Changed
+
+- An owner failure no longer ends the process that created the stream; it reaches the caller as a typed read error.
+- A reader other than the creator that exits clears only its own read; only the creator's exit ends the call.
+- Tool arguments, replay data and classification responses are parsed with JSON Blueprint's default limits (1 MiB, 128 levels); replay data and transcription responses allow 64 levels.
+- Every HTTP Gun request is finite. Transcription runs under the client view's timeout, 30 seconds unless set.
+
+### Fixed
+
+- Anthropic: a stop sequence ends the message with an answer, and an unknown delta inside a redacted thinking block is skipped.
+- Gemini: reading a tool argument with a large array or object takes time proportional to its size.
+
 ## 0.2.1
 
 This release lets an application use OpenAI's Responses API with documents, codecs with optional fields, and responses OpenAI does not keep ([ADR 0021](docs/adr/0021-send-files-optional-answer-fields-and-unstored-responses.md)). No signature changes.
