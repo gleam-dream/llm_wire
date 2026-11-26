@@ -38,7 +38,7 @@
         [The candidate sum is Yes(yes), Selected(label, probabilities, confidence) or Rated(position, indexed probabilities, levels, confidence). Exact question ids/kinds and exact distribution keys are checked, including duplicates. Probabilities are finite in 0 through 1 and sum to one within 0.00001.],
         [A selected choice must be a known label and maximal within 0.00001. Returned probabilities are reordered to authored alternative order and retain each application value even when several labels map to the same value. A score's canonical rubric must match; its position is in 0 through levels minus one and matches the weighted distribution within 0.00001 times level count.],
         [Present confidence must be within 0 through 1; absent #term("term-concentration-evidence") remains None. Missing usage is None, and reported counts must be nonnegative. TypeSafe's protocol still requires its mandatory confidence/usage fields; shared optionality does not make malformed mandatory evidence absent.],
-        [Shared parsing uses the already admitted byte allowance. Blueprint rejects duplicate keys and retains exact numbers; it imposes no global depth, value-count or numeric-token admission limit. No additional structural policy is introduced here. TypeSafe validates precise decimal bounds before Float conversion and rejects positive underflow to zero. Custom wires own their corresponding precise-number and mandatory-field checks. #adr(8) records this extension boundary.],
+        [Shared parsing uses the already admitted byte allowance. Blueprint rejects duplicate keys, retains exact numbers and keeps its default nesting depth of 128; it imposes no value-count or numeric-token admission limit. No additional structural policy is introduced here. TypeSafe validates precise decimal bounds before Float conversion and rejects positive underflow to zero. Custom wires own their corresponding precise-number and mandatory-field checks. #adr(8) records this extension boundary.],
       )
       #behavior(title: "Malformed candidates cannot bypass shared admission", area: "Classification evidence", level: "boundary")[
         #given[A wire returns missing, duplicate or unknown ids, wrong kinds, incomplete probabilities or inconsistent native evidence.]
@@ -58,7 +58,7 @@
         [*Boundary*], [*Effect*], [*Time and capacity*],
         [prepare], [pure wire encode and bounded JSON validation; default bearer key validation after pure admission], [positive live limits at most fixed receipt limits; endpoint/model/timeout valid],
         [custom headers], [replace bearer auth; unused bearer closure is not invoked], [header reveal occurs when building the HTTP request for execution],
-        [run], [fresh call id/correlation; HTTP send buffers response under response limit], [600 s default request timeout; Infinity explicit; HTTP client idle/connect/pool policies remain],
+        [run], [fresh call id/correlation; HTTP send buffers response under response limit], [600 s default request timeout, always finite; HTTP client idle/connect/pool policies remain],
         [response], [UTF-8 check, status, bounded JSON, wire decode, candidate admission], [non-200 status has empty retained body and optional Retry-After; response body limit still applies],
         [success], [Outcome includes native answer and original request/response/state], [no tool loop, SSE stream or generation first-progress/idle timers],
       ))
@@ -70,13 +70,13 @@
       )
       #md-table(3, (
         [*Classification bound*], [*Default*], [*Owner of the change*],
-        [Whole request timeout], [600 seconds, or an explicit Infinity], [Live config],
+        [Whole request timeout], [600 seconds, or another finite duration #adr(25)], [Live config],
         [Request JSON and response JSON], [1 MiB each], [Live config, at most the wire's receipt bounds],
         [Receipt request and response JSON], [1 MiB each], [The wire],
         [Questions per batch], [256], [Fixed],
         [Choice alternatives and score levels], [2 through 255 and 2 through 10], [Fixed],
       ))
-      #points([Byte admission is independent of any consumer-specific structural policy. Valid deep or wide JSON reaches the wire decoder when it fits the admitted bytes; this library adds no depth, value-count or numeric-token limit. The HTTP client's own request, buffering and collection limits are independent and can impose a smaller allowance. A call neither retries nor follows redirects, and keys enter only through a reveal closure.])
+      #points([Byte admission is independent of any consumer-specific structural policy. Valid wide JSON reaches the wire decoder when it fits the admitted bytes and Blueprint's default nesting depth of 128; this library adds no value-count or numeric-token limit. The HTTP client's own request, buffering and collection limits are independent and can impose a smaller allowance. A call neither retries nor follows redirects, and keys enter only through a reveal closure.])
       #behavior(title: "Receipt limits are checked before credentials", area: "Classification preparation", level: "interface")[
         #given[A live byte allowance is nonpositive or exceeds the wire's fixed receipt allowance.]
         #when[The caller prepares classification.]

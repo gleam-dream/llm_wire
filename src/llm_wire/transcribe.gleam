@@ -7,7 +7,6 @@
 //// remote rollback. Request JSON contains audio and must be treated as sensitive.
 
 import gleam/bit_array
-import gleam/dynamic/decode
 import gleam/http
 import gleam/http/request
 import gleam/http/response
@@ -19,9 +18,9 @@ import gleam/string
 import gleam/uri
 import http_gun
 import http_gun/error as http_error
+import json/blueprint/value
 import llm_wire
 import llm_wire/error
-import llm_wire/internal/json_bounds
 import llm_wire/internal/observe
 import llm_wire/internal/retry_after
 import llm_wire/limit
@@ -181,6 +180,9 @@ pub fn request_json(prepared: Prepared) -> String {
 
 /// Perform exactly one attempt. The borrowed client view is used unchanged:
 /// transport bounds, destination restrictions and cancellation remain effective.
+/// Its request timeout, 30 s unless the view sets another with
+/// `http_gun.with_timeout`, bounds the attempt; set a longer one on the view
+/// for long audio.
 /// Synchronous response interpretation has no independent preemption guarantee.
 pub fn run(
   client: http_gun.Client,
@@ -307,7 +309,13 @@ fn decode_response(
   use Nil <- result.try(case reply.status {
     200 -> Ok(Nil)
     status ->
-      Error(error.Status(status, "", retry_after.from_headers(reply.headers)))
+      Error(error.Status(
+        status:,
+        code: None,
+        message: None,
+        body: "",
+        retry_after: retry_after.from_headers(reply.headers),
+      ))
   })
   use body <- result.try(
     bit_array.to_string(reply.body)
@@ -315,19 +323,19 @@ fn decode_response(
       "transcription response is not UTF-8",
     )),
   )
-  use Nil <- result.try(
-    json_bounds.check_depth(body)
-    |> result.replace_error(error.Protocol(
-      "transcription JSON exceeds depth limit",
-    )),
+  // Blueprint's parser bounds the response's nesting; its size is already
+  // bounded by the HTTP client's collection limit.
+  use document <- result.try(
+    value.parse(body, value.unlimited() |> value.with_max_depth(64))
+    |> result.map_error(fn(problem) {
+      case value.is_limit_exceeded(problem) {
+        True -> error.Protocol("transcription JSON exceeds depth limit")
+        False -> error.Protocol("malformed transcription response")
+      }
+    }),
   )
-  let decoder = {
-    use status <- decode.field("status", decode.string)
-    use steps <- decode.field("steps", decode.list(step_decoder()))
-    decode.success(#(status, list.flatten(steps)))
-  }
   use parsed <- result.try(
-    json.parse(body, decoder)
+    response_pieces(document)
     |> result.replace_error(error.Protocol("malformed transcription response")),
   )
   case parsed {
@@ -340,24 +348,65 @@ fn decode_response(
   }
 }
 
-fn step_decoder() -> decode.Decoder(List(String)) {
-  use kind <- decode.field("type", decode.string)
+/// The response's status and the text of its model output, in order.
+fn response_pieces(
+  document: value.Value,
+) -> Result(#(String, List(String)), Nil) {
+  use members <- result.try(object(document))
+  use status <- result.try(string_member(members, "status"))
+  use steps <- result.try(array_member(members, "steps"))
+  use pieces <- result.try(list.try_map(steps, step_pieces))
+  Ok(#(status, list.flatten(pieces)))
+}
+
+fn step_pieces(step: value.Value) -> Result(List(String), Nil) {
+  use members <- result.try(object(step))
+  use kind <- result.try(string_member(members, "type"))
   case kind {
     "model_output" -> {
-      use pieces <- decode.field("content", decode.list(content_decoder()))
-      decode.success(list.flatten(pieces))
+      use content <- result.try(array_member(members, "content"))
+      use pieces <- result.try(list.try_map(content, content_pieces))
+      Ok(list.flatten(pieces))
     }
-    _ -> decode.success([])
+    _ -> Ok([])
   }
 }
 
-fn content_decoder() -> decode.Decoder(List(String)) {
-  use kind <- decode.field("type", decode.string)
+fn content_pieces(content: value.Value) -> Result(List(String), Nil) {
+  use members <- result.try(object(content))
+  use kind <- result.try(string_member(members, "type"))
   case kind {
     "text" -> {
-      use text <- decode.field("text", decode.string)
-      decode.success([text])
+      use text <- result.try(string_member(members, "text"))
+      Ok([text])
     }
-    _ -> decode.success([])
+    _ -> Ok([])
+  }
+}
+
+fn object(document: value.Value) -> Result(List(#(String, value.Value)), Nil) {
+  case document {
+    value.Object(members) -> Ok(members)
+    _ -> Error(Nil)
+  }
+}
+
+fn string_member(
+  members: List(#(String, value.Value)),
+  name: String,
+) -> Result(String, Nil) {
+  case list.key_find(members, name) {
+    Ok(value.String(text)) -> Ok(text)
+    _ -> Error(Nil)
+  }
+}
+
+fn array_member(
+  members: List(#(String, value.Value)),
+  name: String,
+) -> Result(List(value.Value), Nil) {
+  case list.key_find(members, name) {
+    Ok(value.Array(items)) -> Ok(items)
+    _ -> Error(Nil)
   }
 }

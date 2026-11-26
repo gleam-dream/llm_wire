@@ -166,13 +166,16 @@ fn summary(outcome: llm_wire.Outcome(o)) -> String {
     llm_wire.OutputLimited(partial_text:, ..) ->
       "OutputLimited " <> string.inspect(partial_text)
     llm_wire.Refused(reason:, ..) -> "Refused " <> reason
+    llm_wire.UnrecognizedStop(reason:, partial_text:, ..) ->
+      "UnrecognizedStop " <> reason <> " " <> string.inspect(partial_text)
   }
   <> " usage "
   <> string.inspect(case outcome {
     llm_wire.Answer(usage:, ..)
     | llm_wire.NeedsTools(usage:, ..)
     | llm_wire.OutputLimited(usage:, ..)
-    | llm_wire.Refused(usage:, ..) -> usage
+    | llm_wire.Refused(usage:, ..)
+    | llm_wire.UnrecognizedStop(usage:, ..) -> usage
   })
 }
 
@@ -180,9 +183,9 @@ fn summary(outcome: llm_wire.Outcome(o)) -> String {
 /// error body may quote part of the key, so only its status is shown.
 fn describe(failure: llm_wire.Failure) -> String {
   case failure.error {
-    error.Status(code, _, _) if code == 401 || code == 403 ->
+    error.Status(code, _, _, _, _) if code == 401 || code == 403 ->
       "HTTP " <> int.to_string(code)
-    error.Status(code, body, _) ->
+    error.Status(code, _, _, body, _) ->
       "HTTP " <> int.to_string(code) <> " " <> string.slice(body, 0, 1500)
     _ -> llm_wire.describe_failure(failure)
   }

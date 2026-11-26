@@ -33,7 +33,7 @@ pub fn main() -> Nil {
     )
   let settings =
     classify.config(fn() { "consumer-secret" })
-    |> classify.with_timeout(llm_wire.After(duration.seconds(20)))
+    |> classify.with_timeout(duration.seconds(20))
     |> classify.with_response_limit(4096)
   let request = classify.request("fixture", value.String("draft"), choice)
   let assert Ok(prepared) =

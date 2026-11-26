@@ -7,7 +7,7 @@ import gleam/http
 import gleam/http/request
 import gleam/http/response
 import gleam/list
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import gleam/time/duration
@@ -171,7 +171,13 @@ pub fn status_and_uncertain_transport_failures_never_retry_test() -> Nil {
   let client = playback_client([quota, completed()])
   let assert Error(failure) = run(client)
   failure.error
-  |> should.equal(wire_error.Status(429, "", Some(duration.seconds(30))))
+  |> should.equal(wire_error.Status(
+    429,
+    None,
+    None,
+    "",
+    Some(duration.seconds(30)),
+  ))
   failure.sent |> should.equal(llm_wire.Completed)
   run(client) |> should.equal(Ok(expected_text))
   http_gun.stop(client)

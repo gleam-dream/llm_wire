@@ -305,10 +305,7 @@ pub fn an_end_that_never_comes_returns_the_answer_at_the_bound_test() {
 
 pub fn the_whole_call_deadline_caps_the_read_to_the_end_test() {
   let configure = fn(config) {
-    llm_wire.with_call_timeout(
-      config,
-      llm_wire.After(duration.milliseconds(400)),
-    )
+    llm_wire.with_call_timeout(config, duration.milliseconds(400))
   }
   // HTTP Gun refuses to publish a recording interrupted by a deadline, so
   // this call runs on a plain client.
@@ -437,7 +434,7 @@ pub fn creator_death_during_the_read_releases_the_body_test() {
 }
 
 /// A creator that ends normally hands the latched outcome to a reader already
-/// waiting; one that ends abnormally ends the owner through their link.
+/// waiting.
 pub fn creator_exit_during_the_read_hands_the_answer_to_a_waiting_reader_test() {
   let assert Ok(server) = fake_server.start()
   let done = process.new_subject()
@@ -472,6 +469,42 @@ pub fn creator_exit_during_the_read_hands_the_answer_to_a_waiting_reader_test() 
   fake_server.stop(server)
 }
 
+/// A creator that is killed hands the latched outcome to a reader already
+/// waiting, as one that ends normally does: the owner monitors its creator
+/// and is not linked to it.
+pub fn creator_killed_during_the_read_hands_the_answer_to_a_waiting_reader_test() {
+  let assert Ok(server) = fake_server.start()
+  let done = process.new_subject()
+  let _ =
+    process.spawn_unlinked(fn() {
+      serve(server, message.Google, [], 3000, done)
+    })
+  let assert Ok(client) = http_gun.start(http_test_helpers.loopback_config())
+  let call = prepared(message.Google, server.port, unchanged)
+  let started = process.new_subject()
+  let creator =
+    process.spawn_unlinked(fn() {
+      let assert Ok(stream) = llm_wire.stream(client, call)
+      let assert Ok(llm_wire.Progress(_)) = llm_wire.next(stream)
+      process.send(started, stream)
+      process.sleep(10_000)
+    })
+  let assert Ok(stream) = process.receive(started, 2000)
+  let collected = process.new_subject()
+  let _ =
+    process.spawn_unlinked(fn() {
+      process.send(collected, llm_wire.collect(stream))
+    })
+  // The reader waits for the outcome while the body is outstanding.
+  assert process.receive(collected, 100) == Error(Nil)
+  process.kill(creator)
+  let assert Ok(outcome) = process.receive(collected, 500)
+  assert is_ola(outcome)
+  assert process.receive(done, 500) == Ok(True)
+  http_gun.stop(client)
+  fake_server.stop(server)
+}
+
 /// Serves two requests on one connection, each answer's body ending after
 /// a delay.
 fn serve_twice(server: fake_server.FakeServer, done: process.Subject(Nil)) {
@@ -496,10 +529,7 @@ pub fn the_connection_is_reused_after_a_delayed_end_test() {
   // turns a lost connection into a quick failure rather than a hang.
   let call =
     prepared(message.Google, server.port, fn(config) {
-      llm_wire.with_call_timeout(
-        config,
-        llm_wire.After(duration.milliseconds(3000)),
-      )
+      llm_wire.with_call_timeout(config, duration.milliseconds(3000))
     })
   assert is_ola(llm_wire.run(client, call))
   assert is_ola(llm_wire.run(client, call))
@@ -551,7 +581,7 @@ pub fn trailing_bytes_dripped_slowly_stop_at_the_bound_test() {
   let assert Ok(client) = http_gun.start(http_test_helpers.loopback_config())
   let call =
     prepared(message.Google, server.port, fn(config) {
-      llm_wire.with_call_timeout(config, llm_wire.Infinity)
+      llm_wire.with_call_timeout(config, duration.seconds(60))
     })
   let started = now_ms()
   assert is_ola(llm_wire.run(client, call))

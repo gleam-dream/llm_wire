@@ -1,5 +1,14 @@
 # LLM Wire
 
+> **LLM Wire 0.3.0 is a breaking release.** Read the [migration guide](https://github.com/gleam-dream/llm_wire/blob/main/docs/MIGRATION.md) before you upgrade from 0.2.
+>
+> - `with_call_timeout` and `classify.with_timeout` take a `Duration`; the whole call is always finite.
+> - `error.Status` carries the provider's error `code` and `message`; the HTTP status is the field `status`.
+> - An unknown stop reason ends the call with the new outcome `UnrecognizedStop`.
+> - `message.ProviderExtension` is renamed `message.UnrecognizedEvent` and also reports unknown block, delta and item types.
+> - Anthropic tool rounds replay thinking blocks unchanged; `error.ThinkingInToolRound` is removed.
+> - Depend on `http_gun >= 0.4.0 and < 0.5.0`, `sinal >= 0.2.0 and < 0.3.0` and `json_blueprint >= 3.0.0 and < 4.0.0`.
+
 [![CI](https://github.com/gleam-dream/llm_wire/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/gleam-dream/llm_wire/actions/workflows/ci.yml)
 [![llm_wire on Hex](https://img.shields.io/hexpm/v/llm_wire?label=Hex%3A%20llm_wire)](https://hex.pm/packages/llm_wire)
 [![Gleam](https://img.shields.io/badge/Gleam-FFAFF3?logo=gleam&logoColor=000000)](https://gleam.run/)
@@ -97,6 +106,7 @@ pub fn ask(
 ## Operational notes
 
 - `llm_wire.advise` reports whether another attempt may help; it never schedules a retry. A `MaybeSent` failure may already have cost tokens. Cap a provider delay against the caller's remaining budget before sleeping.
+- A stop reason that this version does not know, such as one a provider added after the release, ends the call with `UnrecognizedStop`. It carries the provider's reason and what arrived before it; the application decides whether that text is an answer.
 - Closing a stream ends local work. It does not prove that the provider rolled back or stopped processing the request.
 - Request JSON and prompts can contain sensitive data; transcription request JSON contains the encoded audio. Do not log them by default.
 - Structured-output codecs must fit the selected provider's admitted schema profile. Preparation reports unsupported schemas before execution. On OpenAI and Anthropic an optional field is sent as required and nullable. A `null` for an optional field whose own codec does not accept `null` is removed from the answer before decoding; a codec that accepts `null` keeps it.
@@ -105,7 +115,7 @@ pub fn ask(
 
 ## Codecs and process copies
 
-LLM Wire requires `json_blueprint` 2.2.0 or later. Which codec shape to use, and why, is in the
+LLM Wire requires `json_blueprint` 3.0.0 or later, below 4.0.0. Which codec shape to use, and why, is in the
 [JSON Blueprint codec practice guide](https://github.com/gleam-dream/json_blueprint/blob/main/docs/CODEC-PRACTICE.md); this section states only what LLM Wire copies.
 
 Each call starts an owner process, and the owner starts an HTTP worker. The BEAM copies what a process start or a message carries, without keeping shared terms shared. A call copies its tool list about five times: three times into the owner and twice into the worker. It also copies the prepared request, which holds the conversation messages, twice (once into the owner, once into the worker). A tool built with `tool.new` holds its schema, its contract and a decode function that holds the whole input codec, so every copy includes that codec. Tools built with `tool.from_contract` or `tool.from_json_schema` hold no codec and copy only schema data. The output codec of `with_output` is not copied to the owner or the worker: only its schema enters the call they receive. The codec itself stays in the `Request`, the `Prepared` and the `Stream`, whose decode functions hold it, and `run` and `next` decode the answer in the calling process. Sending a `Request`, a `Prepared` or a `Stream` to another process therefore copies the codec: a 2,899-word output codec raised a `Request` from 32 to 3,303 words, a `Prepared` from 234 to 3,315 and a `Stream` to 3,103, and left the call the owner receives at 147.

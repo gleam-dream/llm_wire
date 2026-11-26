@@ -39,7 +39,7 @@ pub fn main() -> Nil {
       duration.seconds(0),
       duration.seconds(5),
     )
-  let assert error.Status(429, _, Some(wait)) = failure.error
+  let assert error.Status(429, _, _, _, Some(wait)) = failure.error
   let assert 86_400_000 = duration.to_milliseconds(wait)
   let assert llm_wire.Completed = failure.sent
   let assert True = duration.to_milliseconds(deadline.remaining(wall)) > 0
@@ -69,7 +69,7 @@ pub fn main() -> Nil {
       duration.seconds(0),
       duration.milliseconds(1500),
     )
-  let assert error.Status(429, _, _) = failure.error
+  let assert error.Status(429, _, _, _, _) = failure.error
   let assert Ok(llm_wire.Answer(text: "untouched", ..)) =
     llm_wire.run(client, call)
   http_gun.stop(client)

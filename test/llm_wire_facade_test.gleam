@@ -225,10 +225,12 @@ pub fn preparation_errors_are_typed_test() {
     )
 }
 
-pub fn infinity_lifts_a_timeout_test() {
+/// `Infinity` lifts the first-token and idle-gap timers; the whole call
+/// stays finite and may be long.
+pub fn infinity_lifts_a_timer_test() {
   let config =
     testing.config()
-    |> llm_wire.with_call_timeout(llm_wire.Infinity)
+    |> llm_wire.with_call_timeout(duration.hours(2))
     |> llm_wire.with_first_token_timeout(llm_wire.Infinity)
     |> llm_wire.with_idle_timeout(llm_wire.Infinity)
   let assert Ok(prepared) = llm_wire.prepare(config, hello())
@@ -340,7 +342,8 @@ pub fn status_failures_honor_retry_after_seconds_and_dates_test() {
   let assert Ok(prepared) = llm_wire.prepare(testing.config(), hello())
   let assert Error(failure) =
     respond(prepared, 429, [#("retry-after", "7")], "{\"error\":\"slow\"}")
-  let assert error.Status(429, "{\"error\":\"slow\"}", Some(_)) = failure.error
+  let assert error.Status(429, _, _, "{\"error\":\"slow\"}", Some(_)) =
+    failure.error
   failure.sent |> should.equal(llm_wire.Completed)
   llm_wire.advise(failure)
   |> should.equal(llm_wire.RetryAdvice(

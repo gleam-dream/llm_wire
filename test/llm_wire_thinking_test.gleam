@@ -195,36 +195,6 @@ fn tool_round_from(origin: message.Provider) -> List(message.Message) {
   ]
 }
 
-pub fn anthropic_refuses_a_level_while_a_tool_round_continues_test() {
-  refused(
-    anthropic_config(),
-    llm_wire.request("model-x", tool_round())
-      |> llm_wire.with_thinking_level(thinking.Low),
-  )
-  |> should.equal(error.ThinkingInToolRound)
-}
-
-pub fn anthropic_refuses_an_application_written_tool_turn_too_test() {
-  let messages = [
-    message.User("Weather in Paris?"),
-    message.Assistant(message.AssistantTurn(
-      provider: None,
-      text: "",
-      calls: [message.tool_call("call_1", "get_weather", "{}")],
-      response_id: None,
-      provider_data: None,
-    )),
-    message.ToolResult("call_1", "sunny"),
-    message.User("And tomorrow?"),
-  ]
-  refused(
-    anthropic_config(),
-    llm_wire.request("model-x", messages)
-      |> llm_wire.with_thinking_level(thinking.Low),
-  )
-  |> should.equal(error.ThinkingInToolRound)
-}
-
 pub fn anthropic_admits_a_level_after_a_turn_without_calls_test() {
   let messages =
     list.append(tool_round(), [
@@ -240,11 +210,15 @@ pub fn anthropic_admits_a_level_after_a_turn_without_calls_test() {
   at(text, ["thinking", "type"]) |> should.equal(Ok("adaptive"))
 }
 
-pub fn other_providers_admit_a_level_in_a_tool_round_test() {
+pub fn every_provider_admits_a_level_in_a_tool_round_test() {
+  use #(origin, config) <- list.each([
+    #(message.OpenAI, openai_config()),
+    #(message.Anthropic, anthropic_config()),
+  ])
   let request =
-    llm_wire.request("model-x", tool_round_from(message.OpenAI))
+    llm_wire.request("model-x", tool_round_from(origin))
     |> llm_wire.with_thinking_level(thinking.Low)
-  let assert Ok(_) = llm_wire.prepare(openai_config(), request)
+  let assert Ok(_) = llm_wire.prepare(config, request)
   Nil
 }
 

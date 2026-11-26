@@ -97,7 +97,7 @@ fn prepared(endpoint: String, path: String) -> llm_wire.Prepared(String) {
     adapter(endpoint, path)
     |> provider.config
     |> llm_wire.with_limit(limit.TextBytesPerBlock, 4_194_304)
-    |> llm_wire.with_call_timeout(llm_wire.After(duration.seconds(120)))
+    |> llm_wire.with_call_timeout(duration.seconds(120))
     |> llm_wire.with_first_token_timeout(llm_wire.After(duration.seconds(60)))
     |> llm_wire.with_idle_timeout(llm_wire.After(duration.seconds(60)))
   let assert Ok(call) =

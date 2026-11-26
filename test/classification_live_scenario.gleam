@@ -1,7 +1,6 @@
 import gleam/option.{None}
 import gleam/time/duration
 import json/blueprint/value
-import llm_wire
 import llm_wire/classify
 import llm_wire/classify/question
 
@@ -40,7 +39,7 @@ pub fn prepared(reveal: fn() -> String) -> classify.Prepared(Answers) {
     )
   let config =
     classify.config(reveal)
-    |> classify.with_timeout(llm_wire.After(duration.seconds(20)))
+    |> classify.with_timeout(duration.seconds(20))
   let assert Ok(prepared) =
     classify.prepare(
       classify.typesafe(),

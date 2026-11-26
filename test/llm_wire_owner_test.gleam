@@ -147,6 +147,53 @@ pub fn owner_concurrent_read_conflict_test() {
   ))) = process.receive(test_subject, 2000)
 }
 
+/// The creator hands the stream to a short-lived reader, and the reader is
+/// killed while it waits. Only that read is lost: the creator reads the
+/// events that arrive afterwards.
+pub fn a_dying_reader_that_did_not_create_the_stream_keeps_it_open_test() {
+  let assert Ok(stream) =
+    owner_provider_helper.start_openai_stream(
+      limits.default(),
+      config.default_timeouts(),
+      idle_port(),
+    )
+  let reader =
+    process.spawn_unlinked(fn() {
+      let _ = read_past_conflicts(stream)
+      Nil
+    })
+  wait_for_conflict(stream, 200) |> should.be_true
+
+  let monitor = process.monitor(reader)
+  process.kill(reader)
+  let assert Ok(Nil) =
+    process.new_selector()
+    |> process.select_specific_monitor(monitor, fn(_) { Nil })
+    |> process.selector_receive(1000)
+
+  owner.feed_chunk(stream, item_added())
+  owner.feed_chunk(stream, text_delta("Hi!"))
+  // The owner may learn of the reader's exit after this read arrives; until
+  // then the dead reader's read is still the pending one.
+  let assert Ok(stream_types.NextProgress(message.TextDelta(text:, ..))) =
+    read_past_conflicts_within(stream, 200)
+  text |> should.equal("Hi!")
+  owner.close(stream) |> should.equal(stream_types.ConsumerClosed)
+}
+
+fn read_past_conflicts_within(
+  stream: owner.Stream,
+  attempts: Int,
+) -> Result(stream_types.ReadResult, stream_types.ReadError) {
+  case owner.next(stream, Some(1000)) {
+    Error(stream_types.ConcurrentReadConflict) if attempts > 0 -> {
+      process.sleep(5)
+      read_past_conflicts_within(stream, attempts - 1)
+    }
+    other -> other
+  }
+}
+
 /// A waiting read; a conflict with one of the test's polls is retried.
 fn read_past_conflicts(
   stream: owner.Stream,
@@ -170,7 +217,7 @@ fn wait_for_conflict(stream: owner.Stream, attempts: Int) -> Bool {
 
 /// The first-token timer ends the call when no semantic progress arrives.
 pub fn owner_first_token_deadline_test() {
-  let timeouts = owner_provider_helper.timeouts(Some(10_000), Some(50), None)
+  let timeouts = owner_provider_helper.timeouts(10_000, Some(50), None)
   let assert Ok(stream) =
     owner_provider_helper.start_openai_stream(
       limits.default(),
@@ -187,7 +234,7 @@ pub fn owner_first_token_deadline_test() {
 /// The idle gap starts at the first progress event, so it fires only after
 /// a delta was delivered.
 pub fn owner_idle_gap_deadline_test() {
-  let timeouts = owner_provider_helper.timeouts(Some(10_000), None, Some(50))
+  let timeouts = owner_provider_helper.timeouts(10_000, None, Some(50))
   let assert Ok(stream) =
     owner_provider_helper.start_openai_stream(
       limits.default(),
@@ -206,7 +253,7 @@ pub fn owner_idle_gap_deadline_test() {
 }
 
 pub fn owner_overall_deadline_test() {
-  let timeouts = owner_provider_helper.timeouts(Some(50), None, None)
+  let timeouts = owner_provider_helper.timeouts(50, None, None)
   let assert Ok(stream) =
     owner_provider_helper.start_openai_stream(
       limits.default(),

@@ -401,23 +401,8 @@ fn validate_thinking(
       unsupported(error.LevelUnsupported(thinking.Max))
     message.Anthropic, Some(thinking.Minimal) ->
       unsupported(error.LevelUnsupported(thinking.Minimal))
-    message.Anthropic, Some(_) ->
-      case last_assistant_requested_tools(request.messages) {
-        True -> unsupported(error.ThinkingInToolRound)
-        False -> Ok(Nil)
-      }
     _, Some(_) -> Ok(Nil)
   }
-}
-
-fn last_assistant_requested_tools(messages: List(message.Message)) -> Bool {
-  list.fold(messages, False, fn(requested, item) {
-    case item {
-      message.Assistant(turn) -> turn.calls != []
-      message.AssistantParts(_) -> False
-      _ -> requested
-    }
-  })
 }
 
 fn in_float_range(value: Float, minimum: Float, maximum: Float) -> Bool {

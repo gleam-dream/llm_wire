@@ -22,7 +22,7 @@ pub fn main() -> Nil {
   let settings =
     openai.new("local-fixture")
     |> openai.config
-    |> llm_wire.with_call_timeout(llm_wire.Infinity)
+    |> llm_wire.with_call_timeout(duration.minutes(10))
     |> llm_wire.with_first_token_timeout(llm_wire.Infinity)
     |> llm_wire.with_idle_timeout(llm_wire.Infinity)
   let request = llm_wire.request("fixture", [llm_wire.user("hi")])
@@ -57,7 +57,7 @@ pub fn main() -> Nil {
       duration.milliseconds(200),
       duration.milliseconds(400),
     )
-  let assert error.Status(503, _, _) = failure.error
+  let assert error.Status(503, _, _, _, _) = failure.error
   wait_for_release(client, 100)
   http_gun.stop(client)
 }

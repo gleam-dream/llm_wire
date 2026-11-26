@@ -531,7 +531,9 @@ fn apply_finish_reason(
         }
       }
     }
-    "MAX_TOKENS" -> {
+    // `CONTINUATION`: the per-request token budget ran out before the answer
+    // finished, which is the output limit for one request.
+    "MAX_TOKENS" | "CONTINUATION" -> {
       let calls = build_unvalidated_tool_calls(reducer)
       let outcome =
         stream_types.StreamFinished(
@@ -540,15 +542,17 @@ fn apply_finish_reason(
         )
       Ok(Reducer(..reducer, terminal_outcome: Some(outcome)))
     }
-    // The safety, recitation, blocklist and sensitive-data filters
-    // (google-genai `FinishReason`).
+    // The safety, recitation, blocklist, sensitive-data and escalation
+    // filters (Gemini `FinishReason`).
     "SAFETY"
     | "RECITATION"
     | "BLOCKLIST"
     | "PROHIBITED_CONTENT"
     | "SPII"
     | "IMAGE_SAFETY"
-    | "IMAGE_PROHIBITED_CONTENT" -> {
+    | "IMAGE_PROHIBITED_CONTENT"
+    | "IMAGE_RECITATION"
+    | "ESCALATION" -> {
       let outcome =
         stream_types.StreamFailed(
           error.ContentFiltered(error.InOutput, reason),
@@ -556,22 +560,37 @@ fn apply_finish_reason(
         )
       Ok(Reducer(..reducer, terminal_outcome: Some(outcome)))
     }
-    "OTHER" -> {
+    // Faults the provider names: a malformed or unexpected function call,
+    // a tool loop, a missing thought signature, a malformed response, an
+    // unsupported language, a missing image, or a restricted account. The
+    // reason is known and describes no answer.
+    "MALFORMED_FUNCTION_CALL"
+    | "UNEXPECTED_TOOL_CALL"
+    | "TOO_MANY_TOOL_CALLS"
+    | "MISSING_THOUGHT_SIGNATURE"
+    | "MALFORMED_RESPONSE"
+    | "LANGUAGE"
+    | "NO_IMAGE"
+    | "IMAGE_OTHER"
+    | "PUP_LIMITED_DISABLED" -> {
       let outcome =
         stream_types.StreamFailed(
           error.Provider(
-            Some("OTHER"),
-            "Google generation stopped with reason: OTHER",
+            Some(reason),
+            "Google generation stopped with reason: " <> reason,
           ),
           evidence,
         )
       Ok(Reducer(..reducer, terminal_outcome: Some(outcome)))
     }
+    // `OTHER` is Gemini's own unknown reason, and any other value was added
+    // after this version: the caller decides what it means.
     other -> {
+      let calls = build_unvalidated_tool_calls(reducer)
       let outcome =
-        stream_types.StreamFailed(
-          error.Provider(Some(other), "Unknown Google finish reason: " <> other),
-          evidence,
+        stream_types.StreamFinished(
+          stream_types.UnrecognizedStop(other, reducer.text_buffer, calls),
+          reducer.usage,
         )
       Ok(Reducer(..reducer, terminal_outcome: Some(outcome)))
     }
@@ -660,14 +679,14 @@ fn dynamic_json(value: Dynamic) -> Result(json.Json, Nil) {
                     Error(_) ->
                       case decode.run(non_null, decode.list(decode.dynamic)) {
                         Ok(items) -> {
-                          let empty: Result(List(json.Json), Nil) = Ok([])
-                          use encoded <- result.try(
-                            list.fold(items, empty, fn(acc, item) {
-                              use values <- result.try(acc)
-                              use encoded_item <- result.try(dynamic_json(item))
-                              Ok(list.append(values, [encoded_item]))
-                            }),
-                          )
+                          // One pass in order. Appending each element to
+                          // the end of a list would copy the list every
+                          // time, and this runs in the call's owner on
+                          // provider-chosen sizes.
+                          use encoded <- result.try(list.try_map(
+                            items,
+                            dynamic_json,
+                          ))
                           Ok(json.array(encoded, fn(item) { item }))
                         }
                         Error(_) ->
@@ -678,20 +697,13 @@ fn dynamic_json(value: Dynamic) -> Result(json.Json, Nil) {
                             )
                           {
                             Ok(fields) -> {
-                              let empty: Result(List(#(String, json.Json)), Nil) =
-                                Ok([])
                               use encoded <- result.try(
                                 dict.to_list(fields)
-                                |> list.fold(empty, fn(acc, entry) {
-                                  use values <- result.try(acc)
+                                |> list.try_map(fn(entry) {
                                   use encoded_value <- result.try(dynamic_json(
                                     entry.1,
                                   ))
-                                  Ok(
-                                    list.append(values, [
-                                      #(entry.0, encoded_value),
-                                    ]),
-                                  )
+                                  Ok(#(entry.0, encoded_value))
                                 }),
                               )
                               Ok(json.object(encoded))

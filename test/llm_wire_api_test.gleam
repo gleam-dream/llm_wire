@@ -95,6 +95,48 @@ pub fn schema_only_tool_validates_json_without_a_native_codec_test() {
   |> should.be_true
 }
 
+/// An MCP tool's input schema often carries annotation keywords. They never
+/// constrain a value, so the tool is declared and its arguments validate.
+pub fn json_schema_tool_accepts_annotation_keywords_test() {
+  let assert Ok(search) =
+    tool.from_json_schema(
+      "search",
+      "Search",
+      json.object([
+        #("title", json.string("SearchInput")),
+        #("type", json.string("object")),
+        #(
+          "properties",
+          json.object([
+            #(
+              "q",
+              json.object([
+                #("type", json.string("string")),
+                #("title", json.string("Query")),
+                #("examples", json.array(["weather"], json.string)),
+              ]),
+            ),
+          ]),
+        ),
+        #("required", json.array(["q"], json.string)),
+        #("additionalProperties", json.bool(False)),
+      ]),
+    )
+  tool_def.check_arguments(search, 128, "{\"q\":\"weather\"}") |> should.be_ok
+  let assert Error(error.SchemaRejected(_)) =
+    tool_def.check_arguments(search, 128, "{\"q\":7}")
+  let request =
+    llm_wire.request("gpt-test", [llm_wire.user("search")])
+    |> llm_wire.with_tools([search])
+  let assert Ok(_) =
+    llm_wire.prepare(
+      openai.new("test-key")
+        |> openai.config
+        |> llm_wire.with_endpoint("http://127.0.0.1:4321/v1"),
+      request,
+    )
+}
+
 pub fn schema_only_tool_rejects_unsupported_projection_test() {
   let assert Ok(input_contract) =
     contract.from_codec(codec.pair(codec.int(), codec.int()))

@@ -5,11 +5,11 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import json/blueprint/value
 import llm_wire/error
 import llm_wire/internal/adapter
 import llm_wire/internal/anthropic
 import llm_wire/internal/google
-import llm_wire/internal/json_bounds
 import llm_wire/internal/limits
 import llm_wire/internal/openai
 import llm_wire/internal/schema
@@ -459,8 +459,10 @@ fn anthropic_message_json(
         ),
       )
     }
+    message.Assistant(
+      message.AssistantTurn(provider_data: Some(data), ..) as turn,
+    ) -> anthropic_replayed_turn(turn, data)
     message.Assistant(turn) -> {
-      use Nil <- result.try(require_canonical_data(turn))
       case turn.calls {
         [] ->
           Ok(
@@ -513,16 +515,7 @@ fn anthropic_tool_message(
   text: String,
   calls: List(message.ToolCall),
 ) -> String {
-  let blocks =
-    list.map(calls, fn(call) {
-      "{\"type\":\"tool_use\",\"id\":"
-      <> json.to_string(json.string(call.id))
-      <> ",\"name\":"
-      <> json.to_string(json.string(call.name))
-      <> ",\"input\":"
-      <> replayable_arguments_object(call.arguments_json)
-      <> "}"
-    })
+  let blocks = list.map(calls, anthropic_tool_use_block)
   let text_blocks = case text {
     "" -> []
     _ -> [
@@ -532,6 +525,108 @@ fn anthropic_tool_message(
   "{\"role\":\"assistant\",\"content\":["
   <> string.join(list.append(text_blocks, blocks), ",")
   <> "]}"
+}
+
+fn anthropic_tool_use_block(call: message.ToolCall) -> String {
+  "{\"type\":\"tool_use\",\"id\":"
+  <> json.to_string(json.string(call.id))
+  <> ",\"name\":"
+  <> json.to_string(json.string(call.name))
+  <> ",\"input\":"
+  <> replayable_arguments_object(call.arguments_json)
+  <> "}"
+}
+
+/// One block of an Anthropic turn's replay data.
+type ReplayBlock {
+  /// A block sent back exactly as received and never interpreted: thinking,
+  /// redacted thinking, or a type this version does not know.
+  Verbatim(raw: String)
+  ReplayText(raw: String, text: String)
+  /// A tool call, by id and name; its input is the turn's call arguments.
+  ReplayToolUse(id: String, name: String)
+}
+
+/// An Anthropic turn with replay data sends back its content blocks in the
+/// order the provider sent them, thinking blocks unchanged, after checking
+/// that the data's text and tool calls are exactly the turn's.
+fn anthropic_replayed_turn(
+  turn: message.AssistantTurn,
+  data: String,
+) -> Result(String, error.PrepareError) {
+  use raw_blocks <- result.try(
+    replay_strings(data)
+    |> result.replace_error(invalid_data(
+      "Anthropic data is not a list of content blocks nested at most 64 deep",
+    )),
+  )
+  use blocks <- result.try(list.try_map(raw_blocks, anthropic_replay_block))
+  let text =
+    list.filter_map(blocks, fn(block) {
+      case block {
+        ReplayText(_, text) -> Ok(text)
+        _ -> Error(Nil)
+      }
+    })
+    |> string.join("")
+  let uses =
+    list.filter_map(blocks, fn(block) {
+      case block {
+        ReplayToolUse(id, name) -> Ok(#(id, name))
+        _ -> Error(Nil)
+      }
+    })
+  let calls = list.map(turn.calls, fn(call) { #(call.id, call.name) })
+  use Nil <- result.try(case text == turn.text && uses == calls {
+    True -> Ok(Nil)
+    False ->
+      Error(invalid_data(
+        "Anthropic replay blocks disagree with the turn's text or calls",
+      ))
+  })
+  let #(_, content) =
+    list.map_fold(blocks, turn.calls, fn(remaining, block) {
+      case block, remaining {
+        ReplayToolUse(..), [call, ..rest] -> #(
+          rest,
+          anthropic_tool_use_block(call),
+        )
+        Verbatim(raw), _ | ReplayText(raw, _), _ -> #(remaining, raw)
+        // The check above matched every tool block to a call.
+        ReplayToolUse(..), [] -> #(remaining, "")
+      }
+    })
+  Ok(
+    "{\"role\":\"assistant\",\"content\":[" <> string.join(content, ",") <> "]}",
+  )
+}
+
+fn anthropic_replay_block(
+  raw: String,
+) -> Result(ReplayBlock, error.PrepareError) {
+  let block = {
+    use members <- result.try(replay_object(raw))
+    let member = string_member(members, _)
+    use kind <- result.try(member("type"))
+    case kind {
+      "text" -> {
+        use text <- result.try(member("text"))
+        Ok(ReplayText(raw, text))
+      }
+      "tool_use" -> {
+        use id <- result.try(member("id"))
+        use name <- result.try(member("name"))
+        Ok(ReplayToolUse(id, name))
+      }
+      // Thinking, redacted thinking and any type this version does not know
+      // go back unchanged; only text and calls are checked against the turn.
+      _ -> Ok(Verbatim(raw))
+    }
+  }
+  block
+  |> result.replace_error(invalid_data(
+    "an Anthropic replay block is not a typed content block nested at most 64 deep",
+  ))
 }
 
 fn anthropic_content_json(
@@ -1146,6 +1241,8 @@ fn map_builtin_terminal(
         stream_types.OutputLimited(text, calls) ->
           adapter.OutputLimited(text, calls, usage)
         stream_types.Refused(reason) -> adapter.Refusal(reason, usage)
+        stream_types.UnrecognizedStop(reason, text, calls) ->
+          adapter.UnrecognizedStop(reason, text, calls, usage)
       })
     Some(stream_types.StreamFailed(failure, _)) ->
       Some(adapter.Failed(failure, None))
@@ -1161,6 +1258,45 @@ fn require_canonical_data(
     None -> Ok(Nil)
     Some(_) ->
       Error(invalid_data("this provider accepts no opaque assistant data"))
+  }
+}
+
+/// Replay data comes back from the caller's stored history. Blueprint's
+/// parser bounds its nesting, as it bounds every JSON text the library
+/// parses; its size is already bounded by the provider metadata limit.
+fn replay_limits() -> value.Limits {
+  value.unlimited() |> value.with_max_depth(64)
+}
+
+/// A JSON array of strings.
+fn replay_strings(text: String) -> Result(List(String), Nil) {
+  case value.parse(text, replay_limits()) {
+    Ok(value.Array(items)) ->
+      list.try_map(items, fn(item) {
+        case item {
+          value.String(text) -> Ok(text)
+          _ -> Error(Nil)
+        }
+      })
+    _ -> Error(Nil)
+  }
+}
+
+/// The members of a JSON object.
+fn replay_object(text: String) -> Result(List(#(String, value.Value)), Nil) {
+  case value.parse(text, replay_limits()) {
+    Ok(value.Object(members)) -> Ok(members)
+    _ -> Error(Nil)
+  }
+}
+
+fn string_member(
+  members: List(#(String, value.Value)),
+  name: String,
+) -> Result(String, Nil) {
+  case list.key_find(members, name) {
+    Ok(value.String(text)) -> Ok(text)
+    _ -> Error(Nil)
   }
 }
 
@@ -1193,22 +1329,18 @@ fn google_signed_turn(
   turn: message.AssistantTurn,
   data: String,
 ) -> Result(String, error.PrepareError) {
-  use Nil <- result.try(
-    json_bounds.check_depth(data)
-    |> result.replace_error(invalid_data("Google data nesting exceeds 64")),
-  )
   use parts <- result.try(
-    json.parse(data, decode.list(decode.string))
-    |> result.replace_error(invalid_data("Google data is not a list of parts")),
+    replay_strings(data)
+    |> result.replace_error(invalid_data(
+      "Google data is not a list of parts nested at most 64 deep",
+    )),
   )
   use _ <- result.try(
     list.try_map(parts, fn(part) {
-      use Nil <- result.try(
-        json_bounds.check_depth(part)
-        |> result.replace_error(invalid_data("Google part nesting exceeds 64")),
-      )
-      json.parse(part, decode.dict(decode.string, decode.dynamic))
-      |> result.replace_error(invalid_data("a Google part is not an object"))
+      replay_object(part)
+      |> result.replace_error(invalid_data(
+        "a Google part is not an object nested at most 64 deep",
+      ))
     }),
   )
   let payload =

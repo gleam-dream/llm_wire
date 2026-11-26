@@ -470,31 +470,6 @@ pub fn anthropic_refusal_stop_is_content_filtered_test() {
   problem |> should.equal(error.ContentFiltered(error.InOutput, "refusal"))
 }
 
-pub fn anthropic_unknown_stop_reason_is_not_reported_as_success_test() {
-  let reducer = anthropic.new(limits.default())
-  let stop_reason =
-    sse.ServerSentEvent(
-      event: Some("message_delta"),
-      data: "{\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"future_state\"}}",
-      id: None,
-      retry: None,
-    )
-  let assert Ok(#(reducer, _)) = anthropic.step(reducer, stop_reason)
-  let message_stop =
-    sse.ServerSentEvent(
-      event: Some("message_stop"),
-      data: "{\"type\":\"message_stop\"}",
-      id: None,
-      retry: None,
-    )
-  let assert Ok(#(reducer, _)) = anthropic.step(reducer, message_stop)
-  case anthropic.terminal(reducer) {
-    Some(stream_types.StreamFailed(error.Provider(Some("future_state"), _), _)) ->
-      should.be_true(True)
-    _ -> should.fail()
-  }
-}
-
 pub fn anthropic_successful_hosted_effect_remains_effect_unknown_test() {
   let reducer = anthropic.new(limits.default())
   let start =

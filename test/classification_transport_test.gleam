@@ -62,14 +62,14 @@ pub fn status_and_redirects_are_not_retried_and_keep_provider_delay_test() {
   use url <- support.fixture
   let failed = post(support.config(url, "/busy")) |> should.be_error
   failed.sent |> should.equal(llm_wire.Completed)
-  let assert error.Status(429, _, _) = failed.error
+  let assert error.Status(429, _, _, _, _) = failed.error
   llm_wire.advise(failed)
   |> should.equal(llm_wire.RetryAdvice(
     llm_wire.MayHelp,
     llm_wire.ProviderDelay(duration.seconds(9)),
   ))
   let redirected = post(support.config(url, "/redirect")) |> should.be_error
-  let assert error.Status(307, _, _) = redirected.error
+  let assert error.Status(307, _, _, _, _) = redirected.error
   support.stats(url, "calls") |> should.equal(2)
 }
 
@@ -108,7 +108,7 @@ pub fn deadlines_and_owner_loss_close_the_actual_http_connection_test() {
         ..config,
         settings: classify.with_timeout(
           config.settings,
-          llm_wire.After(duration.milliseconds(100)),
+          duration.milliseconds(100),
         ),
       ),
     )

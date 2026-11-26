@@ -42,10 +42,22 @@ pub type Error {
   /// The HTTP exchange failed. The opaque `Failure` keeps HTTP Gun's
   /// `Kind`, evidence, status and response headers.
   Http(failure: http_error.Failure)
-  /// The provider answered with a status other than 200. `body` is at most
-  /// `limit.ErrorBodyBytes`; `retry_after` comes from a `Retry-After`
-  /// header in seconds or as an HTTP date.
-  Status(code: Int, body: String, retry_after: Option(Duration))
+  /// The provider answered with an HTTP `status` other than 200. `code` and
+  /// `message` are the provider's own, read from its error body: OpenAI's
+  /// `error.code` (or `error.type` when the code is null), such as
+  /// `"insufficient_quota"` or `"context_length_exceeded"`; Anthropic's
+  /// `error.type`, such as `"overloaded_error"`; Google's `error.status`,
+  /// such as `"RESOURCE_EXHAUSTED"`. Each is `None` when the body does not
+  /// carry it, as with a proxy's page. `body` is the body as sent, at most
+  /// `limit.ErrorBodyBytes`. `retry_after` comes from a `Retry-After` header
+  /// in seconds or as an HTTP date.
+  Status(
+    status: Int,
+    code: Option(String),
+    message: Option(String),
+    body: String,
+    retry_after: Option(Duration),
+  )
   /// The provider reported an error inside the stream.
   Provider(code: Option(String), message: String)
   /// The stream broke the provider's protocol. `detail` is diagnostic.
@@ -194,10 +206,6 @@ pub type ThinkingProblem {
   /// The provider has no value for this level: Google has no `Max`,
   /// Anthropic no `Minimal`.
   LevelUnsupported(level: thinking.Level)
-  /// Anthropic needs the thinking blocks of a tool-requesting turn sent back
-  /// with its results, which LLM Wire does not carry yet; a level is refused
-  /// while the conversation's last assistant message contains a tool call.
-  ThinkingInToolRound
 }
 
 /// Where an unsupported schema was found.
@@ -220,8 +228,15 @@ pub type ResultProblem {
 pub fn describe(error: Error) -> String {
   case error {
     Http(failure) -> "HTTP failure: " <> http_error.describe(failure)
-    Status(code, _, _) ->
-      "Provider answered with HTTP status " <> int.to_string(code)
+    // The provider's message stays out: an authentication message can quote
+    // part of the key.
+    Status(status, code, _, _, _) ->
+      "Provider answered with HTTP status "
+      <> int.to_string(status)
+      <> case code {
+        Some(code) -> " " <> code
+        None -> ""
+      }
     Provider(Some(code), message) ->
       "Provider error " <> code <> ": " <> message
     Provider(None, message) -> "Provider error: " <> message
@@ -387,7 +402,5 @@ fn describe_problem(problem: RequestProblem) -> String {
     InvalidProviderData(reason) -> "invalid provider data: " <> reason
     ThinkingUnsupported(LevelUnsupported(level)) ->
       "thinking level " <> thinking.name(level) <> " is not supported"
-    ThinkingUnsupported(ThinkingInToolRound) ->
-      "a thinking level cannot continue a tool round on this provider"
   }
 }

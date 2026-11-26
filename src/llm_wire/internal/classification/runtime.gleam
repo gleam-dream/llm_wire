@@ -5,10 +5,9 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
-import gleam/time/duration
+import gleam/time/duration.{type Duration}
 import gleam/uri
 import http_gun
-import http_gun/config as http_config
 import http_gun/destination
 import http_gun/error as http_error
 import json/blueprint/codec
@@ -55,7 +54,7 @@ pub opaque type Config {
   Config(
     auth: Auth,
     endpoint: Option(String),
-    timeout: llm_wire.Bound,
+    timeout: Duration,
     request_bytes: Int,
     response_bytes: Int,
   )
@@ -105,13 +104,7 @@ pub fn wire(
 }
 
 pub fn config(reveal: fn() -> String) -> Config {
-  Config(
-    ApiKey(reveal),
-    None,
-    llm_wire.After(duration.seconds(600)),
-    1_048_576,
-    1_048_576,
-  )
+  Config(ApiKey(reveal), None, duration.seconds(600), 1_048_576, 1_048_576)
 }
 
 pub fn with_headers(
@@ -133,7 +126,7 @@ pub fn with_receipt_response_limit(wire: Wire, bytes: Int) -> Wire {
   Wire(..wire, response_bytes: bytes)
 }
 
-pub fn with_timeout(config: Config, timeout: llm_wire.Bound) -> Config {
+pub fn with_timeout(config: Config, timeout: Duration) -> Config {
   Config(..config, timeout:)
 }
 
@@ -174,17 +167,13 @@ pub fn prepare(
     "" -> Error(error.InvalidSetting(error.Model, "must be nonempty"))
     _ -> Ok(Nil)
   })
-  use Nil <- result.try(case config.timeout {
-    llm_wire.After(d) ->
-      case duration.to_milliseconds(d) <= 0 {
-        True ->
-          Error(error.InvalidSetting(
-            error.TimeoutSetting(error.WholeCall),
-            "must be positive",
-          ))
-        False -> Ok(Nil)
-      }
-    _ -> Ok(Nil)
+  use Nil <- result.try(case duration.to_milliseconds(config.timeout) <= 0 {
+    True ->
+      Error(error.InvalidSetting(
+        error.TimeoutSetting(error.WholeCall),
+        "must be positive",
+      ))
+    False -> Ok(Nil)
   })
   use http <- result.try(
     http_request.to(endpoint)
@@ -273,10 +262,7 @@ pub fn run(
       message.provider_name(prepared.wire.provider),
     )
   observe.emit(context, telemetry.Started, telemetry.Accepted)
-  let client = case config.timeout {
-    llm_wire.After(d) -> http_gun.with_timeout(client, http_config.After(d))
-    llm_wire.Infinity -> http_gun.with_timeout(client, http_config.Infinity)
-  }
+  let client = http_gun.with_timeout(client, config.timeout)
   let client =
     http_gun.with_body_limit(client, config.response_bytes, http_gun.Fail)
   let client = case prepared.http.scheme {
@@ -319,7 +305,13 @@ pub fn run(
       status ->
         Error(failure_for(
           prepared,
-          error.Status(status, "", retry_after.from_headers(response.headers)),
+          error.Status(
+            status:,
+            code: None,
+            message: None,
+            body: "",
+            retry_after: retry_after.from_headers(response.headers),
+          ),
           llm_wire.Completed,
         ))
     })

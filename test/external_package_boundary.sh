@@ -117,7 +117,7 @@ pub fn openai_settings() -> llm_wire.Config {
   |> openai.config
   |> llm_wire.with_endpoint("https://api.example.test/v1")
   |> llm_wire.with_limit(limit.TotalTextBytes, 1_000_000)
-  |> llm_wire.with_call_timeout(llm_wire.After(duration.seconds(30)))
+  |> llm_wire.with_call_timeout(duration.seconds(30))
   |> llm_wire.with_idle_timeout(llm_wire.Infinity)
 }
 
@@ -241,7 +241,7 @@ pub fn scripts_a_provider_failure(
   let cut = testing.interrupted(testing.text("partial"))
   let served = testing.http_response(message.OpenAI, cut)
   let failure =
-    testing.failure(message.OpenAI, error.Status(429, "slow", None))
+    testing.failure(message.OpenAI, error.Status(429, None, None, "slow", None))
   #(limited, failure, case served.status {
     200 -> Ok(Nil)
     _ -> Error(Nil)

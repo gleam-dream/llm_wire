@@ -72,7 +72,7 @@ import llm_wire/provider
 
 /// One scripted HTTP reply: a stream of server-sent events, or an error
 /// status. Build it with `text`, `tool_calls`, `refusal`, `output_limited`,
-/// `content_filtered`, `prompt_blocked`, the failure builders or `events`;
+/// `unrecognized_stop`, `content_filtered`, `prompt_blocked`, the failure builders or `events`;
 /// serve it with `exchange` or `http_response`.
 ///
 /// A reply is in the provider-neutral scripted wire until `events_for`
@@ -140,6 +140,19 @@ pub fn refusal(reason: String) -> Reply {
 /// Output cut off at the token limit after `partial_text`.
 pub fn output_limited(partial_text: String) -> Reply {
   scripted(list.append(text_events(partial_text), [end_event("length", "")]))
+}
+
+/// The provider ends the output after `partial_text` with a stop reason
+/// LLM Wire does not know; the call answers
+/// `llm_wire.UnrecognizedStop(reason:, partial_text:, ..)`. `events_for`
+/// writes `reason` as the wire's own value: OpenAI's
+/// `incomplete_details.reason`, Anthropic's `stop_reason` and Gemini's
+/// `finishReason`. Choose a reason the wire does not define, or the call
+/// ends as that reason means.
+pub fn unrecognized_stop(reason: String, partial_text: String) -> Reply {
+  scripted(
+    list.append(text_events(partial_text), [end_event("unrecognized", reason)]),
+  )
 }
 
 /// The provider's content filter stops the output after `partial_text`.
@@ -845,6 +858,8 @@ fn step(
           Ok(adapter.ToolCalls(turn.text, calls, None, None, turn.usage))
         "refusal", [] -> Ok(adapter.Refusal(reason, turn.usage))
         "length", _ -> Ok(adapter.OutputLimited(turn.text, calls, turn.usage))
+        "unrecognized", _ ->
+          Ok(adapter.UnrecognizedStop(reason, turn.text, calls, turn.usage))
         "filtered", _ ->
           Ok(adapter.Failed(
             error.ContentFiltered(error.InOutput, reason),
@@ -1096,6 +1111,11 @@ fn openai_events(script: Script) -> List(String) {
       Some("max_output_tokens"),
     )
     "filtered" -> #("response.incomplete", "incomplete", Some("content_filter"))
+    "unrecognized" -> #(
+      "response.incomplete",
+      "incomplete",
+      Some(script.reason),
+    )
     "blocked" -> unsupported(message.OpenAI, "prompt_blocked")
     _ -> #("response.completed", "completed", None)
   }
@@ -1247,6 +1267,7 @@ fn anthropic_events(script: Script) -> List(String) {
     "tool_calls" -> "tool_use"
     "length" -> "max_tokens"
     "filtered" -> "refusal"
+    "unrecognized" -> script.reason
     _ -> "end_turn"
   }
   list.flatten([
@@ -1375,12 +1396,13 @@ fn google_events(script: Script) -> List(String) {
       let finish = case script.stop {
         "length" -> "MAX_TOKENS"
         "filtered" -> "SAFETY"
+        "unrecognized" -> script.reason
         _ -> "STOP"
       }
       [
-        "data: {\"responseId\":\"resp_scripted\",\"candidates\":[{\"finishReason\":\""
-        <> finish
-        <> "\",\"content\":{\"role\":\"model\",\"parts\":["
+        "data: {\"responseId\":\"resp_scripted\",\"candidates\":[{\"finishReason\":"
+        <> json.to_string(json.string(finish))
+        <> ",\"content\":{\"role\":\"model\",\"parts\":["
         <> string.join(list.append(text_parts, call_parts), ",")
         <> "]}}]"
         <> usage_field

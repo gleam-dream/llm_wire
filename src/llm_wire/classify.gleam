@@ -7,6 +7,7 @@
 //// Confidence is provider concentration evidence, not answer correctness.
 
 import gleam/option.{type Option}
+import gleam/time/duration.{type Duration}
 import http_gun
 import json/blueprint/codec
 import json/blueprint/value.{type Value}
@@ -44,7 +45,8 @@ pub fn typesafe() -> Wire {
 /// Another wire projects the question vocabulary into its own protocol.
 /// Both callbacks must be pure and must not capture credentials. Shared JSON
 /// syntax and duplicate-key checks precede decoding within the admitted byte
-/// allowance. No depth, value-count or numeric-token limit is added here. The
+/// allowance and Blueprint's default nesting depth of 128. No value-count or
+/// numeric-token limit is added here. The
 /// wire checks its own mandatory fields and precise numbers before Float conversion;
 /// shared admission checks candidate evidence against the authored questions.
 pub fn wire(
@@ -93,7 +95,7 @@ pub fn with_endpoint(config: Config, url: String) -> Config {
   runtime.with_endpoint(config, url)
 }
 
-pub fn with_timeout(config: Config, timeout: llm_wire.Bound) -> Config {
+pub fn with_timeout(config: Config, timeout: Duration) -> Config {
   runtime.with_timeout(config, timeout)
 }
 

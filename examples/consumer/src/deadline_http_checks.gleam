@@ -17,22 +17,19 @@ import llm_wire/openai
 fn endpoint() -> String
 
 pub fn main() -> Nil {
-  let assert Ok(client) =
+  let assert Ok(started) =
     http_gun.start(
       config.default()
-      |> config.with_destination(destination.loopback_only())
-      |> config.with_request_timeout(config.After(duration.milliseconds(200))),
+      |> config.with_destination(destination.loopback_only()),
     )
-  streaming_deadline(
-    client,
-    "/outer",
-    1000,
-    llm_wire.After(duration.seconds(5)),
-  )
+  // A short request timeout on the view: each call's own budget replaces it.
+  let client = http_gun.with_timeout(started, duration.milliseconds(200))
+  streaming_deadline(client, "/outer", 1000, duration.seconds(5))
   wait_for_release(client, 200)
-  streaming_deadline(client, "/own", 5000, llm_wire.After(duration.seconds(1)))
+  streaming_deadline(client, "/own", 5000, duration.seconds(1))
   wait_for_release(client, 200)
-  streaming_deadline(client, "/infinite", 1000, llm_wire.Infinity)
+  // The client's deadline stays a ceiling under a long call budget.
+  streaming_deadline(client, "/infinite", 1000, duration.minutes(10))
   wait_for_release(client, 200)
   reported_usage_survives(client)
   wait_for_release(client, 200)
@@ -40,18 +37,15 @@ pub fn main() -> Nil {
   wait_for_release(client, 200)
   // The original client has no expired view and remains usable.
   let assert Ok(llm_wire.Answer(text: "x", ..)) =
-    llm_wire.run(
-      client,
-      prepare("/health", llm_wire.After(duration.seconds(5))),
-    )
-  http_gun.stop(client)
+    llm_wire.run(client, prepare("/health", duration.seconds(5)))
+  http_gun.stop(started)
 }
 
 fn streaming_deadline(
   client: http_gun.Client,
   path: String,
   outer_ms: Int,
-  own: llm_wire.Bound,
+  own: duration.Duration,
 ) -> Nil {
   let prepared = prepare(path, own)
   let outer = deadline.after(duration.milliseconds(outer_ms))
@@ -80,7 +74,7 @@ fn wait_for_release(client: http_gun.Client, attempts: Int) -> Nil {
   }
 }
 
-fn prepare(path: String, own: llm_wire.Bound) -> llm_wire.Prepared(String) {
+fn prepare(path: String, own: duration.Duration) -> llm_wire.Prepared(String) {
   let assert Ok(prepared) =
     llm_wire.prepare(
       openai.new("local-fixture")
@@ -95,17 +89,15 @@ fn prepare(path: String, own: llm_wire.Bound) -> llm_wire.Prepared(String) {
 }
 
 fn default_timeout_is_replaced(client: http_gun.Client) -> Nil {
-  let prepared = prepare("/default", llm_wire.After(duration.seconds(5)))
+  let prepared = prepare("/default", duration.seconds(5))
   let assert Ok(stream) = llm_wire.stream(client, prepared)
   let assert Ok(llm_wire.Progress(_)) = llm_wire.next(stream)
   // The fixture holds completion behind a release request. Wait past the
-  // 200ms client default before allowing completion; no short upper bound.
+  // view's 200ms request timeout before allowing completion; no short upper
+  // bound.
   process.sleep(300)
   let assert Ok(llm_wire.Answer(text: "x", ..)) =
-    llm_wire.run(
-      client,
-      prepare("/release", llm_wire.After(duration.seconds(5))),
-    )
+    llm_wire.run(client, prepare("/release", duration.seconds(5)))
   let assert Ok(llm_wire.Answer(text: "x", ..)) = llm_wire.collect(stream)
   Nil
 }
@@ -116,7 +108,7 @@ fn reported_usage_survives(client: http_gun.Client) -> Nil {
       anthropic.new("local-fixture")
         |> anthropic.config
         |> llm_wire.with_endpoint(endpoint() <> "/usage")
-        |> llm_wire.with_call_timeout(llm_wire.Infinity)
+        |> llm_wire.with_call_timeout(duration.minutes(10))
         |> llm_wire.with_first_token_timeout(llm_wire.Infinity)
         |> llm_wire.with_idle_timeout(llm_wire.Infinity),
       llm_wire.request("fixture", [llm_wire.user("hi")]),

@@ -1,7 +1,8 @@
 //// The per-call owner process. It frames SSE, steps the reducer, bounds
 //// every queue and text, runs the call's three timers and delivers progress
-//// to exactly one reader at a time. It monitors the caller: caller death
-//// releases the HTTP stream.
+//// to exactly one reader at a time. It monitors its creator and is not
+//// linked to it: creator death releases the HTTP stream, and an owner exit
+//// reaches a reader as a typed read error, never as an exit signal.
 
 import gleam/bit_array
 import gleam/erlang/process
@@ -158,27 +159,35 @@ pub fn owner_pid(stream: Stream) -> Result(process.Pid, Nil) {
   process.subject_owner(stream.subject)
 }
 
-/// Starts the owner. `whole_call_ms` is the time left in the call's budget,
-/// or `None` when the whole call is unbounded. The transport starts inside
+/// Starts the owner. `whole_call_ms` is the time left in the call's budget.
+/// The transport starts inside
 /// the owner, so its linked worker shares the owner's lifetime.
 pub fn start(
   setup: Setup,
-  whole_call_ms: Option(Int),
+  whole_call_ms: Int,
   start_transport: fn(Stream) -> TransportPort,
 ) -> Result(Stream, Nil) {
   let consumer_pid = process.self()
   let builder =
     actor.new_with_initialiser(5000, fn(subject) {
+      // The owner's lifetime follows its creator through this monitor alone.
+      // `actor.start` links the two, and a link would also end the creator
+      // whenever the owner exits abnormally or is killed by `close`; the
+      // creator learns of an owner exit from its own monitor in `next` and
+      // `close`. Monitor first, so no creator exit goes unseen.
+      let consumer_monitor = process.monitor(consumer_pid)
+      process.unlink(consumer_pid)
       let transport = start_transport(Stream(subject))
       let whole_call_timer =
-        option.map(whole_call_ms, fn(ms) {
-          process.send_after(subject, ms, TimerFired(error.WholeCall))
-        })
+        Some(process.send_after(
+          subject,
+          whole_call_ms,
+          TimerFired(error.WholeCall),
+        ))
       let first_token_timer =
         option.map(setup.timeouts.first_token, fn(ms) {
           process.send_after(subject, ms, TimerFired(error.FirstToken))
         })
-      let consumer_monitor = process.monitor(consumer_pid)
       let selector =
         process.new_selector()
         |> process.select(subject)
@@ -306,7 +315,8 @@ fn delivered_before_exit(
 }
 
 /// Ends the call. Idempotent; an owner that does not answer within 5 s is
-/// killed, which also ends its transport worker.
+/// killed, which also ends its transport worker. The kill reaches no other
+/// process: the owner is linked to its worker only.
 pub fn close(stream: Stream) -> stream_types.CloseOutcome {
   case owner_pid(stream) {
     Error(Nil) -> stream_types.AlreadyTerminal
@@ -674,8 +684,8 @@ fn validate_progress(
     // Reducers bound argument bytes per call and in total.
     message.ToolArgumentsDelta(..) -> Ok(state)
     message.UsageUpdate(_) -> Ok(state)
-    message.ProviderExtension(provider_name, event_name) -> {
-      let bytes = string.byte_size(provider_name) + string.byte_size(event_name)
+    message.UnrecognizedEvent(provider_name, name) -> {
+      let bytes = string.byte_size(provider_name) + string.byte_size(name)
       case bytes > state.limits.extension_bytes_limit {
         True ->
           Error(error.LimitExceeded(
@@ -947,9 +957,13 @@ fn handle_timer(
   }
 }
 
+/// The owner holds two kinds of monitor: one on its creator for its whole
+/// life, and one on the reader of the pending read. Only the creator's exit
+/// ends the call. A reader's exit loses that reader's read and nothing else,
+/// so another holder of the handle can keep reading.
 fn handle_down(state: State, down: process.Down) -> actor.Next(State, Message) {
-  case down {
-    process.ProcessDown(..) -> {
+  case down, state.pending_read {
+    process.ProcessDown(monitor:, ..), _ if monitor == state.consumer_monitor -> {
       let cleaned = perform_cleanup(state)
       // A latched outcome still reaches a reader already waiting.
       case state.ending {
@@ -961,7 +975,10 @@ fn handle_down(state: State, down: process.Down) -> actor.Next(State, Message) {
       }
       actor.stop()
     }
-    _ -> actor.continue(state)
+    process.ProcessDown(monitor:, ..), Some(pending)
+      if monitor == pending.monitor
+    -> actor.continue(State(..state, pending_read: None))
+    _, _ -> actor.continue(state)
   }
 }
 
@@ -1023,6 +1040,8 @@ fn terminal_outcome_name(terminal: TerminalOutcome) -> telemetry.Outcome {
       ) -> telemetry.ToolsRequested
     stream_types.StreamFinished(stream_types.OutputLimited(_, _), _) ->
       telemetry.OutputLimited
+    stream_types.StreamFinished(stream_types.UnrecognizedStop(..), _) ->
+      telemetry.UnrecognizedStop
     stream_types.StreamFailed(_, _) -> telemetry.Failed
     stream_types.StreamCancelledLocally(_) -> telemetry.CallCancelled
   }
@@ -1112,6 +1131,23 @@ fn terminal_provider(
         )),
       )
     }
+    Some(adapter.UnrecognizedStop(reason, text, calls, usage)) -> {
+      use Nil <- result.try(call_admission.validate_text(state.limits, reason))
+      use Nil <- result.try(call_admission.validate_text(state.limits, text))
+      use Nil <- result.try(call_admission.validate_metadata(
+        state.limits,
+        calls,
+        None,
+        None,
+      ))
+      use Nil <- result.try(validate_partial_calls(state.limits, calls))
+      Ok(
+        Some(stream_types.StreamFinished(
+          stream_types.UnrecognizedStop(reason, text, calls),
+          usage,
+        )),
+      )
+    }
     Some(adapter.Refusal(reason, usage)) ->
       call_admission.validate_text(state.limits, reason)
       |> result.map(fn(_) {
@@ -1170,7 +1206,7 @@ fn validate_partial_calls(
 /// not end the first-token wait and are not partial output.
 fn is_semantic_progress(progress: message.Progress) -> Bool {
   case progress {
-    message.ProviderExtension(_, _) | message.UsageUpdate(_) -> False
+    message.UnrecognizedEvent(_, _) | message.UsageUpdate(_) -> False
     _ -> True
   }
 }
@@ -1190,7 +1226,7 @@ fn size_of_progress(progress: message.Progress) -> Int {
     | message.ToolArgumentsDelta(id, t) ->
       string.byte_size(id) + string.byte_size(t) + 32
     message.UsageUpdate(_) -> 24
-    message.ProviderExtension(provider_name, e) ->
+    message.UnrecognizedEvent(provider_name, e) ->
       string.byte_size(provider_name) + string.byte_size(e) + 16
   }
 }

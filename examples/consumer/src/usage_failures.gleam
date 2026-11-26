@@ -29,7 +29,7 @@ pub fn main() -> Nil {
   let limited =
     testing.failure(
       message.OpenAI,
-      error.Status(429, "slow down", Some(duration.seconds(2))),
+      error.Status(429, None, None, "slow down", Some(duration.seconds(2))),
     )
   // The provider named a wait: the caller may snooze without counting an attempt.
   let assert llm_wire.RetryAdvice(
@@ -40,7 +40,7 @@ pub fn main() -> Nil {
 
   // No named wait: the caller's own backoff applies.
   let unavailable =
-    testing.failure(message.OpenAI, error.Status(503, "busy", None))
+    testing.failure(message.OpenAI, error.Status(503, None, None, "busy", None))
   let assert llm_wire.RetryAdvice(
     prospect: llm_wire.MayHelp,
     delay: llm_wire.Backoff,

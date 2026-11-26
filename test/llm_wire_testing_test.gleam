@@ -158,7 +158,13 @@ pub fn scripted_status_fails_after_the_request_was_sent_test() {
       ),
     )
   failure.error
-  |> should.equal(error.Status(429, "{\"error\":\"slow down\"}", None))
+  |> should.equal(error.Status(
+    429,
+    None,
+    None,
+    "{\"error\":\"slow down\"}",
+    None,
+  ))
   // A finished response with an error status is `Completed` (it was
   // RequestMayHaveReachedProvider with response bytes observed).
   failure.sent |> should.equal(llm_wire.Completed)
@@ -381,7 +387,7 @@ pub fn events_for_status_still_fails_with_the_status_test() {
       request([llm_wire.user("Hi")]),
       testing.http_status(message.Custom("scripted"), 503, "busy"),
     )
-  failure.error |> should.equal(error.Status(503, "busy", None))
+  failure.error |> should.equal(error.Status(503, None, None, "busy", None))
   failure.provider |> should.equal(provider)
 }
 
@@ -459,7 +465,7 @@ pub fn interrupted_on_the_scripted_wire_fails_the_call_test() {
 pub fn rate_limited_is_a_429_status_in_every_wire_test() {
   use #(provider, config) <- list.each(wires())
   let assert Error(failure) = run_in(config, testing.rate_limited(provider))
-  let assert error.Status(429, body, None) = failure.error
+  let assert error.Status(429, _, _, body, None) = failure.error
   string.contains(body, "Rate limit reached") |> should.be_true
   failure.provider |> should.equal(provider)
   failure.sent |> should.equal(llm_wire.Completed)
@@ -475,7 +481,7 @@ pub fn retry_after_makes_the_advice_a_provider_delay_in_every_wire_test() {
     |> testing.with_retry_after(duration.seconds(7)),
   ])
   let assert Error(failure) = llm_wire.run(client, prepared)
-  let assert error.Status(429, _, Some(delay)) = failure.error
+  let assert error.Status(429, _, _, _, Some(delay)) = failure.error
   delay |> should.equal(duration.seconds(7))
   llm_wire.advise(failure)
   |> should.equal(llm_wire.RetryAdvice(
@@ -544,7 +550,7 @@ pub fn overloaded_uses_each_providers_status_test() {
 pub fn overloaded_fails_with_a_status_that_may_help_in_every_wire_test() {
   use #(provider, config) <- list.each(wires())
   let assert Error(failure) = run_in(config, testing.overloaded(provider))
-  let assert error.Status(code, _, None) = failure.error
+  let assert error.Status(code, _, _, _, None) = failure.error
   { code == 503 || code == 529 } |> should.be_true
   llm_wire.advise(failure).prospect |> should.equal(llm_wire.MayHelp)
 }
@@ -577,7 +583,7 @@ pub fn http_status_fails_with_that_status_in_every_wire_test() {
   use #(provider, config) <- list.each(wires())
   let assert Error(failure) =
     run_in(config, testing.http_status(provider, 400, "bad request"))
-  let assert error.Status(400, body, None) = failure.error
+  let assert error.Status(400, _, _, body, None) = failure.error
   string.contains(body, "bad request") |> should.be_true
   llm_wire.advise(failure).prospect
   |> should.equal(llm_wire.WillNotHelpUnchanged)
@@ -662,7 +668,8 @@ pub fn http_response_of_an_interrupted_reply_has_the_chunks_so_far_test() {
 // --- failure values ---------------------------------------------------------------
 
 pub fn failure_builds_what_a_failed_call_returns_test() {
-  let built = testing.failure(message.OpenAI, error.Status(429, "slow", None))
+  let built =
+    testing.failure(message.OpenAI, error.Status(429, None, None, "slow", None))
   built.provider |> should.equal(message.OpenAI)
   built.sent |> should.equal(llm_wire.Completed)
   built.partial_output |> should.be_false
@@ -703,7 +710,8 @@ pub fn failure_follows_the_error_for_what_was_sent_test() {
 }
 
 pub fn a_built_failure_feeds_advise_and_describe_test() {
-  let built = testing.failure(message.Anthropic, error.Status(529, "", None))
+  let built =
+    testing.failure(message.Anthropic, error.Status(529, None, None, "", None))
   llm_wire.advise(built).prospect |> should.equal(llm_wire.MayHelp)
   llm_wire.describe_failure(built)
   |> string.contains("anthropic")
@@ -884,11 +892,9 @@ pub fn response_incomplete_by_the_content_filter_is_not_an_output_limit_test() {
   |> should.equal(llm_wire.WillNotHelpUnchanged)
 }
 
-pub fn response_incomplete_with_an_unknown_reason_is_a_provider_error_test() {
-  let assert Error(failure) =
+pub fn response_incomplete_with_an_unknown_reason_is_an_unrecognized_stop_test() {
+  let assert Ok(llm_wire.UnrecognizedStop(reason: "something_new", ..)) =
     run_in(openai_config(), testing.events([incomplete("something_new")]))
-  let assert error.Provider(Some("something_new"), _) = failure.error
-  llm_wire.advise(failure).prospect |> should.equal(llm_wire.Unknown)
 }
 
 pub fn response_incomplete_without_details_is_still_an_output_limit_test() {
