@@ -1400,9 +1400,9 @@ fn google_events(script: Script) -> List(String) {
         _ -> "STOP"
       }
       [
-        "data: {\"responseId\":\"resp_scripted\",\"candidates\":[{\"finishReason\":\""
-        <> finish
-        <> "\",\"content\":{\"role\":\"model\",\"parts\":["
+        "data: {\"responseId\":\"resp_scripted\",\"candidates\":[{\"finishReason\":"
+        <> json.to_string(json.string(finish))
+        <> ",\"content\":{\"role\":\"model\",\"parts\":["
         <> string.join(list.append(text_parts, call_parts), ",")
         <> "]}}]"
         <> usage_field

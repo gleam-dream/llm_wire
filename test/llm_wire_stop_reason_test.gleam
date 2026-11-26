@@ -166,3 +166,25 @@ pub fn the_testing_kit_scripts_an_unrecognized_stop_in_every_wire_test() {
       testing.unrecognized_stop("vendor_reason", "so far"),
     )
 }
+
+/// A reason with characters that JSON escapes reaches the outcome unchanged
+/// in every wire.
+pub fn the_testing_kit_escapes_an_unrecognized_stop_reason_test() {
+  use config <- list.each([
+    testing.config(),
+    openai.new("k") |> openai.config,
+    anthropic_config(),
+    google_config(),
+  ])
+  let assert Ok(prepared) =
+    llm_wire.prepare(config, llm_wire.request("fixture", [message.User("hi")]))
+  let assert Ok(llm_wire.UnrecognizedStop(
+    reason: "vendor \"reason\"\\",
+    partial_text: "so far",
+    ..,
+  )) =
+    http_test_helpers.run_reply(
+      prepared,
+      testing.unrecognized_stop("vendor \"reason\"\\", "so far"),
+    )
+}
