@@ -86,7 +86,7 @@ pub fn main() -> Nil {
   let assert Error(error.InvalidSetting(error.ApiKey, _)) =
     transcribe.prepare(transcribe.google(""), settings, audio)
   let assert Some(429) = case failure.error {
-    error.Status(code, ..) -> Some(code)
+    error.Status(status:, ..) -> Some(status)
     _ -> None
   }
   Nil
