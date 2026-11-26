@@ -238,39 +238,11 @@ type ContentBlockStartPayload {
 fn decode_content_block_start() -> decode.Decoder(ContentBlockStartPayload) {
   use index <- decode.field("index", decode.int)
   use block_type <- decode.subfield(["content_block", "type"], decode.string)
-  use id <- decode.optional_field(
-    "content_block",
-    None,
-    decode.optional_field("id", None, decode.optional(decode.string), fn(i) {
-      decode.success(i)
-    }),
-  )
-  use name <- decode.optional_field(
-    "content_block",
-    None,
-    decode.optional_field("name", None, decode.optional(decode.string), fn(n) {
-      decode.success(n)
-    }),
-  )
-  use signature <- decode.optional_field(
-    "content_block",
-    None,
-    decode.optional_field(
-      "signature",
-      None,
-      decode.optional(decode.string),
-      decode.success,
-    ),
-  )
-  use data <- decode.optional_field(
-    "content_block",
-    None,
-    decode.optional_field(
-      "data",
-      None,
-      decode.optional(decode.string),
-      decode.success,
-    ),
+  // Only a known block type gives `id`, `name`, `signature` and `data` a
+  // meaning; an unknown type may use those names for other values.
+  use #(id, name, signature, data) <- decode.subfield(
+    ["content_block"],
+    block_fields(block_type),
   )
   decode.success(ContentBlockStartPayload(
     index,
@@ -280,6 +252,36 @@ fn decode_content_block_start() -> decode.Decoder(ContentBlockStartPayload) {
     signature,
     data,
   ))
+}
+
+fn block_fields(
+  block_type: String,
+) -> decode.Decoder(
+  #(Option(String), Option(String), Option(String), Option(String)),
+) {
+  case block_type {
+    "tool_use" -> {
+      use id <- optional_string("id")
+      use name <- optional_string("name")
+      decode.success(#(id, name, None, None))
+    }
+    "thinking" -> {
+      use signature <- optional_string("signature")
+      decode.success(#(None, None, signature, None))
+    }
+    "redacted_thinking" -> {
+      use data <- optional_string("data")
+      decode.success(#(None, None, None, data))
+    }
+    _ -> decode.success(#(None, None, None, None))
+  }
+}
+
+fn optional_string(
+  key: String,
+  next: fn(Option(String)) -> decode.Decoder(a),
+) -> decode.Decoder(a) {
+  decode.optional_field(key, None, decode.optional(decode.string), next)
 }
 
 fn handle_content_block_start(

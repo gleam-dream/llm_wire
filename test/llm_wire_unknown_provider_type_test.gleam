@@ -71,6 +71,24 @@ pub fn anthropic_unknown_content_block_is_skipped_test() {
   assert extensions == ["content_block_start:future_block"]
 }
 
+/// An unknown block may use the member names of known blocks with values of
+/// other types. Those members belong to the unknown type, so the block is
+/// still skipped.
+pub fn anthropic_unknown_block_with_known_member_names_is_skipped_test() {
+  let #(extensions, outcome) =
+    read(anthropic(), [
+      anthropic_start,
+      "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"future_block\",\"id\":5,\"name\":[\"n\"],\"signature\":true,\"data\":{\"value\":1}}}\n\n",
+      "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+      "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+      "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\n",
+      "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":1}\n\n",
+      anthropic_end,
+    ])
+  let assert Ok(llm_wire.Answer(text: "hello", ..)) = outcome
+  assert extensions == ["content_block_start:future_block"]
+}
+
 /// A delta of a type the reducer does not know, inside a block it knows, is
 /// skipped. The block keeps its text.
 pub fn anthropic_unknown_delta_in_a_known_block_is_skipped_test() {
